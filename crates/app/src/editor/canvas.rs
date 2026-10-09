@@ -4,7 +4,7 @@ use super::length_box::{BoxKind, LengthBox, Outcome};
 use super::{EMPTY_TABLE, HIT_PX, PatternEditor, Selection, Tool, project_bounds};
 use crate::tr;
 use egui::{Event, Key, PointerButton, Response, Sense, vec2};
-use opendrape_core::{Edge, Piece, PieceId, Point2, Units, VertexKind};
+use opendrape_core::{Edge, HandleEnd, Piece, PieceId, Point2, Project, Units, VertexKind};
 use opendrape_geom as geom;
 
 /// How close (mm) a typed pen point may land to an existing pen point and still count as being
@@ -32,6 +32,68 @@ pub(super) struct CanvasState {
     pub cursor: Option<Point2>,
     /// Add-point tool: where a click would add the point.
     pub preview: Option<Point2>,
+    /// Edit tool: what is being dragged.
+    pub drag: Option<Drag>,
+}
+
+/// Something under the pointer, in the order the edit tool prefers them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Hit {
+    /// A curve handle of an edge of the selected piece.
+    Handle(PieceId, usize, HandleEnd),
+    Vertex(PieceId, usize),
+    Edge(PieceId, usize),
+    Inside(PieceId),
+}
+
+impl Hit {
+    fn piece(self) -> PieceId {
+        match self {
+            Self::Handle(id, ..) | Self::Vertex(id, _) | Self::Edge(id, _) | Self::Inside(id) => id,
+        }
+    }
+
+    fn selection(self) -> Selection {
+        match self {
+            Self::Handle(id, i, _) | Self::Edge(id, i) => Selection::Edge(id, i),
+            Self::Vertex(id, i) => Selection::Vertex(id, i),
+            Self::Inside(id) => Selection::Piece(id),
+        }
+    }
+}
+
+/// An edit-tool drag. Every frame recomputes the piece from how it was when the drag began
+/// plus the pointer's offset from where it grabbed, so no movement is lost between frames.
+pub(super) struct Drag {
+    original: Piece,
+    hit: Hit,
+    grab: Point2,
+}
+
+impl Drag {
+    fn moved(&self, d: Point2) -> Piece {
+        let o = &self.original;
+        let mut p = o.clone();
+        match self.hit {
+            Hit::Vertex(_, i) => p.move_vertex(i, o.vertices[i].pos + d),
+            Hit::Handle(_, i, end) => {
+                if let Edge::Curve { c1, c2 } = o.edges[i] {
+                    let from = match end {
+                        HandleEnd::Start => c1,
+                        HandleEnd::End => c2,
+                    };
+                    p.set_handle(i, end, from + d);
+                }
+            }
+            Hit::Edge(_, i) => {
+                let j = o.next(i);
+                p.move_vertex(i, o.vertices[i].pos + d);
+                p.move_vertex(j, o.vertices[j].pos + d);
+            }
+            Hit::Inside(_) => p.translate(d),
+        }
+        p
+    }
 }
 
 impl PatternEditor {
@@ -72,7 +134,8 @@ impl PatternEditor {
         match self.tool {
             Tool::Pen => self.pen_tool(&response, press, pointer, tol, shift),
             Tool::Rectangle => self.rectangle_tool(&response, press, pointer, latest, tol),
-            Tool::Edit | Tool::AddPoint => {} // Task 6
+            Tool::Edit => self.edit_tool(&response, press, pointer, tol),
+            Tool::AddPoint => self.add_point_tool(&response, hover, pointer, tol),
         }
         if keys_free {
             self.canvas_keys(ui, &response);
@@ -254,7 +317,15 @@ impl PatternEditor {
                 }
             }
             Tool::Rectangle if pressed(Key::Escape) => self.canvas.rect_start = None,
-            _ => {} // Task 6 adds the edit-tool keys
+            Tool::Edit => {
+                if pressed(Key::Escape) {
+                    self.selection = Selection::None;
+                }
+                if pressed(Key::Delete) || pressed(Key::Backspace) {
+                    self.delete_selection();
+                }
+            }
+            _ => {}
         }
     }
 
@@ -328,6 +399,131 @@ impl PatternEditor {
         }
     }
 
+    fn edit_tool(
+        &mut self,
+        response: &Response,
+        press: Option<Point2>,
+        pointer: Option<Point2>,
+        tol: f64,
+    ) {
+        if response.drag_started_by(PointerButton::Primary)
+            && let Some(grab) = press
+            && let Some(hit) = self.hit(grab, tol)
+            && let Some(original) = self.doc.project().piece(hit.piece()).cloned()
+        {
+            self.selection = hit.selection();
+            self.doc.begin_gesture();
+            self.canvas.drag = Some(Drag {
+                original,
+                hit,
+                grab,
+            });
+        }
+        if response.dragged_by(PointerButton::Primary)
+            && let (Some(drag), Some(now)) = (&self.canvas.drag, pointer)
+        {
+            let moved = drag.moved(now - drag.grab);
+            let id = moved.id;
+            self.doc.gesture_edit(|p| {
+                if let Some(piece) = p.piece_mut(id) {
+                    *piece = moved;
+                }
+            });
+        }
+        if response.drag_stopped() && self.canvas.drag.take().is_some() {
+            self.doc.end_gesture();
+        }
+        if response.clicked()
+            && let Some(at) = pointer
+        {
+            self.selection = self.hit(at, tol).map_or(Selection::None, Hit::selection);
+        }
+    }
+
+    /// What the edit tool picks at `w`: the selected piece's curve handles first, then points,
+    /// edges and piece insides, topmost piece first.
+    fn hit(&self, w: Point2, tol: f64) -> Option<Hit> {
+        let project = self.doc.project();
+        if let Some(piece) = self.selection.piece().and_then(|id| project.piece(id)) {
+            for (i, edge) in piece.edges.iter().enumerate() {
+                if let Edge::Curve { c1, c2 } = *edge {
+                    if c1.distance(w) <= tol {
+                        return Some(Hit::Handle(piece.id, i, HandleEnd::Start));
+                    }
+                    if c2.distance(w) <= tol {
+                        return Some(Hit::Handle(piece.id, i, HandleEnd::End));
+                    }
+                }
+            }
+        }
+        let pieces = || project.pieces.iter().rev();
+        pieces()
+            .find_map(|p| {
+                p.vertices
+                    .iter()
+                    .position(|v| v.pos.distance(w) <= tol)
+                    .map(|i| Hit::Vertex(p.id, i))
+            })
+            .or_else(|| {
+                pieces().find_map(|p| {
+                    geom::nearest_edge(p, w)
+                        .filter(|e| e.2 <= tol)
+                        .map(|(i, _, _)| Hit::Edge(p.id, i))
+                })
+            })
+            .or_else(|| {
+                pieces()
+                    .find(|p| geom::contains(p, w))
+                    .map(|p| Hit::Inside(p.id))
+            })
+    }
+
+    /// Deletes the selected point or piece. A piece keeps at least 3 points.
+    pub(super) fn delete_selection(&mut self) {
+        match self.selection {
+            Selection::Piece(id) => {
+                self.doc.edit(|p| p.remove_piece(id));
+                self.selection = Selection::None;
+            }
+            Selection::Vertex(id, i) => {
+                if self
+                    .doc
+                    .edit(|p| p.piece_mut(id).is_some_and(|piece| piece.remove_vertex(i)))
+                {
+                    self.selection = Selection::Piece(id);
+                } else {
+                    self.notice = Some(tr!("notice-min-points"));
+                }
+            }
+            Selection::Edge(..) | Selection::None => {}
+        }
+    }
+
+    fn add_point_tool(
+        &mut self,
+        response: &Response,
+        hover: Option<Point2>,
+        pointer: Option<Point2>,
+        tol: f64,
+    ) {
+        let project = self.doc.project();
+        self.canvas.preview = hover
+            .and_then(|w| nearest_edge(project, w, tol))
+            .and_then(|(id, i, t)| Some(geom::point_on_edge(project.piece(id)?, i, t)));
+        if response.clicked()
+            && let Some(at) = pointer
+            && let Some((id, i, t)) = nearest_edge(self.doc.project(), at, tol)
+        {
+            match self.doc.edit(|p| {
+                p.piece_mut(id)
+                    .and_then(|piece| geom::split_edge(piece, i, t))
+            }) {
+                Some(v) => self.selection = Selection::Vertex(id, v),
+                None => self.notice = Some(tr!("notice-too-close")),
+            }
+        }
+    }
+
     pub(super) fn add_rectangle(&mut self, min: Point2, width: f64, height: f64) {
         let id = self.doc.edit(|p| {
             let name = p.next_piece_name(&tr!("piece-default-name"));
@@ -340,6 +536,21 @@ impl PatternEditor {
 /// A typed length the pattern can hold: the same range `geom::set_edge_length` accepts.
 fn valid_length(mm: f64) -> bool {
     mm.is_finite() && (geom::MIN_EDGE_MM..=geom::MAX_EDGE_MM).contains(&mm)
+}
+
+/// The edge nearest to `w` within `tol` mm over all pieces: (piece, edge, curve parameter).
+pub(super) fn nearest_edge(
+    project: &Project,
+    w: Point2,
+    tol: f64,
+) -> Option<(PieceId, usize, f64)> {
+    project
+        .pieces
+        .iter()
+        .filter_map(|p| geom::nearest_edge(p, w).map(|(i, t, d)| (p.id, i, t, d)))
+        .filter(|hit| hit.3 <= tol)
+        .min_by(|a, b| a.3.total_cmp(&b.3))
+        .map(|(id, i, t, _)| (id, i, t))
 }
 
 /// The closed piece the pen points make. A point with a handle is smooth: the edge leaving it

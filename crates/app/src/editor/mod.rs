@@ -164,6 +164,7 @@ impl PatternEditor {
     /// Undo. While a piece is being drawn with the pen, removes its last point instead.
     pub fn undo(&mut self) {
         if self.canvas.pen.pop().is_none() {
+            self.canvas.drag = None;
             self.doc.undo();
         }
         self.selection = self.selection.validated(self.doc.project());
@@ -171,6 +172,7 @@ impl PatternEditor {
 
     pub fn redo(&mut self) {
         if self.canvas.pen.is_empty() {
+            self.canvas.drag = None;
             self.doc.redo();
         }
         self.selection = self.selection.validated(self.doc.project());

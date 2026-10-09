@@ -499,3 +499,125 @@ fn draws_concave_and_curved_pieces() {
     h.run();
     assert_eq!(h.state().selection, Selection::Vertex(id, 3));
 }
+
+#[test]
+fn clicking_selects_points_edges_and_pieces() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    for ((x, y), expected) in [
+        ((400.0, 100.0), Selection::Vertex(id, 1)),
+        ((250.0, 100.0), Selection::Edge(id, 0)),
+        ((250.0, 300.0), Selection::Piece(id)),
+        ((700.0, 550.0), Selection::None),
+    ] {
+        click(&mut h, x, y);
+        assert_eq!(h.state().selection, expected, "click at {x},{y}");
+    }
+}
+
+#[test]
+fn dragging_a_point_is_one_undo_step() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    drag(&mut h, (100.0, 100.0), (150.0, 120.0));
+    let piece = h.state().doc.project().piece(id).unwrap().clone();
+    close(piece.vertices[0].pos, Point2::new(150.0, 120.0));
+    assert_eq!(piece.vertices[1].pos, Point2::new(400.0, 100.0));
+    assert_eq!(h.state().selection, Selection::Vertex(id, 0));
+    cmd(&mut h, Key::Z);
+    assert_eq!(
+        h.state().doc.project().piece(id).unwrap().vertices[0].pos,
+        Point2::new(100.0, 100.0)
+    );
+}
+
+#[test]
+fn dragging_an_edge_moves_both_ends() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    drag(&mut h, (250.0, 100.0), (250.0, 60.0));
+    let piece = h.state().doc.project().piece(id).unwrap().clone();
+    close(piece.vertices[0].pos, Point2::new(100.0, 60.0));
+    close(piece.vertices[1].pos, Point2::new(400.0, 60.0));
+    assert_eq!(piece.vertices[2].pos, Point2::new(400.0, 500.0));
+}
+
+#[test]
+fn dragging_inside_moves_the_whole_piece() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    drag(&mut h, (250.0, 300.0), (300.0, 350.0));
+    let piece = h.state().doc.project().piece(id).unwrap().clone();
+    for (v, (x, y)) in piece.vertices.iter().zip(SQUARE) {
+        close(v.pos, Point2::new(x + 50.0, y + 50.0));
+    }
+}
+
+#[test]
+fn dragging_a_curve_handle_bends_its_edge() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    h.state_mut()
+        .doc
+        .edit(|p| p.piece_mut(id).unwrap().set_curved(0, true));
+    click(&mut h, 250.0, 300.0); // select the piece so its handles show
+    drag(&mut h, (200.0, 100.0), (200.0, 40.0));
+    let Edge::Curve { c1, c2 } = h.state().doc.project().piece(id).unwrap().edges[0] else {
+        panic!("curved")
+    };
+    close(c1, Point2::new(200.0, 40.0));
+    close(c2, Point2::new(300.0, 100.0));
+    assert_eq!(h.state().selection, Selection::Edge(id, 0));
+}
+
+#[test]
+fn add_point_splits_the_edge_under_the_pointer() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    key(&mut h, Key::X);
+    click(&mut h, 250.0, 101.0);
+    let piece = h.state().doc.project().piece(id).unwrap().clone();
+    assert_eq!(piece.len(), 5);
+    close(piece.vertices[1].pos, Point2::new(250.0, 100.0));
+    assert_eq!(h.state().selection, Selection::Vertex(id, 1));
+    click(&mut h, 102.0, 100.0); // right next to a corner: refused
+    assert_eq!(h.state().doc.project().piece(id).unwrap().len(), 5);
+    assert!(h.state().notice.is_some());
+}
+
+#[test]
+fn delete_removes_points_then_pieces() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    click(&mut h, 400.0, 100.0);
+    key(&mut h, Key::Delete);
+    assert_eq!(h.state().doc.project().piece(id).unwrap().len(), 3);
+    assert_eq!(h.state().selection, Selection::Piece(id));
+    click(&mut h, 100.0, 100.0);
+    key(&mut h, Key::Backspace);
+    assert_eq!(
+        h.state().doc.project().piece(id).unwrap().len(),
+        3,
+        "a triangle keeps its points"
+    );
+    assert!(h.state().notice.is_some());
+    click(&mut h, 150.0, 300.0); // inside the triangle
+    key(&mut h, Key::Delete);
+    assert!(h.state().doc.project().pieces.is_empty());
+}
+
+#[test]
+fn selection_survives_undo_of_its_piece() {
+    let mut h = harness();
+    key(&mut h, Key::S);
+    drag(&mut h, (100.0, 100.0), (400.0, 500.0));
+    key(&mut h, Key::Z);
+    click(&mut h, 400.0, 500.0);
+    assert!(matches!(h.state().selection, Selection::Vertex(_, 2)));
+    cmd(&mut h, Key::Z); // takes the rectangle away again
+    assert_eq!(h.state().selection, Selection::None);
+    key(&mut h, Key::Delete); // nothing selected: nothing happens, nothing panics
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+    h.run();
+    assert_eq!(h.state().doc.project().pieces.len(), 1);
+}
