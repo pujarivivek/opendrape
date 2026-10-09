@@ -23,6 +23,7 @@ pub(crate) struct Holes {
 pub(crate) fn holes(shape: &Shape, outline: &[[f64; 2]], h: f64) -> Holes {
     let mut left_out = 0;
     let mut candidates: Vec<Vec<[f64; 2]>> = Vec::new();
+    let (outline_lo, outline_hi) = box_of(outline);
     for line in shape
         .piece
         .lines
@@ -32,7 +33,28 @@ pub(crate) fn holes(shape: &Shape, outline: &[[f64; 2]], h: f64) -> Holes {
         // match its points; a project built without it must not panic the mesher.
         .filter(|l| l.vertices.len() >= 3 && l.edges.len() == l.edge_count())
     {
-        let sampled = resampled_loop(&geom::line_points(line, 0.1), h);
+        let points = geom::line_points(line, 0.1);
+        // A cut-out inside the outline is inside its bounding box. One that isn't is left out
+        // before it is resampled: `Piece::check` lets a cut-out reach a kilometre from the
+        // piece, and a loop of that length is many thousands of points to check against each
+        // other, a stall (seconds) for a hole that was going to be left out anyway.
+        let (lo, hi) = points
+            .iter()
+            .fold(([f64::MAX; 2], [f64::MIN; 2]), |(lo, hi), q| {
+                (
+                    [lo[0].min(q.x), lo[1].min(q.y)],
+                    [hi[0].max(q.x), hi[1].max(q.y)],
+                )
+            });
+        if !(lo[0] >= outline_lo[0]
+            && lo[1] >= outline_lo[1]
+            && hi[0] <= outline_hi[0]
+            && hi[1] <= outline_hi[1])
+        {
+            left_out += 1;
+            continue;
+        }
+        let sampled = resampled_loop(&points, h);
         // Too few points, or no length at all: there is nothing to cut.
         let Some(first) = sampled.first().copied() else {
             continue;

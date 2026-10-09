@@ -639,6 +639,42 @@ fn a_cut_out_outside_the_outline_is_left_out_not_made_into_an_island() {
 }
 
 #[test]
+fn a_cut_out_reaching_far_outside_the_piece_is_left_out_at_once() {
+    // `Piece::check` accepts internal-line points anywhere within a kilometre of the origin, so
+    // this is a valid project: a 100 mm piece whose closed cut-out starts inside it and runs out
+    // 100 m. Made into holes, that is tens of thousands of points to check against each other
+    // (seconds, on the thread that draws the window); it is not inside the outline, so it is
+    // left out without being looked at closely.
+    let mut pr = Project::new();
+    let mut piece = Piece::rectangle(PieceId(0), "Small", p(0.0, 0.0), 100.0, 100.0);
+    piece.lines = vec![
+        cutout(&[
+            p(50.0, 50.0),
+            p(100_000.0, 50.0),
+            p(100_000.0, 100_000.0),
+            p(50.0, 100_000.0),
+        ]),
+        circle(30.0, 30.0, 8.0),
+    ];
+    let id = pr.add_piece(piece);
+    assert_eq!(pr.check(), Ok(()), "a valid project");
+    let params = MeshParams {
+        edge_mm: 20.0,
+        ..MeshParams::default()
+    };
+    let start = std::time::Instant::now();
+    let mesh = build(&pr, &params);
+    let took = start.elapsed();
+    // Well under a tenth of a second here; the bound leaves room for a slow debug build.
+    assert!(took.as_secs_f64() < 0.5, "meshing took {took:?}");
+    assert_eq!(mesh.notes, vec![MeshNote::CutoutLeftOut(id)], "one note");
+    assert_eq!(mesh.panels.len(), 1, "the piece is still made");
+    // The small round cut-out inside the piece is still cut.
+    assert_hole_at(&mesh, 30.0, 30.0, 8.0);
+    assert!(meshed_area(&mesh) < 100.0 * 100.0 - 150.0);
+}
+
+#[test]
 fn a_half_cut_out_on_the_fold_leaves_the_whole_piece_made() {
     // A half round cut-out whose diameter lies on the fold: its mirror image shares that
     // diameter, so together they touch. They are left out (with a note) rather than the piece.
