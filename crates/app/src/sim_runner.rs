@@ -233,6 +233,27 @@ fn guarded<T>(work: impl FnOnce() -> T) -> Option<T> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).ok()
 }
 
+/// Makes drape `number` with `make` (its first frame too) and publishes that frame; the drape
+/// goes on to be stepped. If `make` panics, or gives no drape because its first frame is not
+/// made of numbers the renderer can take, the drape went wrong: it is reported (see
+/// [`Status::fail`]) and there is nothing to step.
+fn start_drape(
+    status: &Status,
+    number: u64,
+    make: impl FnOnce() -> Option<(Drape, SimFrame)>,
+) -> Option<Drape> {
+    match guarded(make).flatten() {
+        Some((drape, first)) => {
+            status.latest.store(Some(Arc::new(first)));
+            Some(drape)
+        }
+        None => {
+            status.fail(number);
+            None
+        }
+    }
+}
+
 fn run(stage: &Stage, rx: &Receiver<Command>, status: &Status, on_frame: &dyn Fn()) {
     let mut drape: Option<Drape> = None;
     let mut seq = 0;
@@ -252,23 +273,16 @@ fn run(stage: &Stage, rx: &Receiver<Command>, status: &Status, on_frame: &dyn Fn
         match cmd {
             Some(Command::Shutdown) => return,
             Some(Command::Play(project, number)) => {
-                drape = None;
+                // The old drape goes first, so its memory is free for the new one.
+                drop(drape.take());
                 seq += 1;
                 // Making the fabric, and the first frame, are checked like every later frame.
-                let made = guarded(|| {
+                drape = start_drape(status, number, || {
                     let (solver, notes) = build_drape(&project, stage);
                     let mut d = Drape::new(number, solver, notes);
                     let first = d.frame(seq, 0.0);
                     first.map(|f| (d, f))
-                })
-                .flatten();
-                match made {
-                    Some((d, first)) => {
-                        status.latest.store(Some(Arc::new(first)));
-                        drape = Some(d);
-                    }
-                    None => status.fail(number),
-                }
+                });
                 settled_frames = 0;
                 on_frame();
                 next = Instant::now();
@@ -489,10 +503,66 @@ mod tests {
         }
     }
 
+    /// The state the thread shares with the window, as `SimRunner::start` makes it.
+    fn status() -> Status {
+        Status {
+            latest: Arc::new(ArcSwapOption::empty()),
+            draping: Arc::new(AtomicBool::new(false)),
+            playing: Arc::new(AtomicBool::new(false)),
+            idle: Arc::new(AtomicBool::new(false)),
+            went_wrong: Arc::new(AtomicBool::new(false)),
+            shown: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
     #[test]
     fn a_panic_while_making_the_fabric_is_a_drape_gone_wrong_not_a_dead_thread() {
-        // A cut-out with no points at all: `Document` refuses it, but the mesher panics on it.
-        // (If the mesher ever learns to cope with this, use another input that makes it panic.)
+        // Whatever sends the mesher or the solver somewhere it should never go, the work is
+        // done inside `guarded`, and a panic there is reported like any other failed drape.
+        let status = status();
+        status.shown.store(3, Ordering::Release); // the third Play
+        status.draping.store(true, Ordering::Relaxed);
+        status.playing.store(true, Ordering::Relaxed);
+        let made = start_drape(&status, 3, || -> Option<(Drape, SimFrame)> {
+            panic!("the mesher gave up")
+        });
+        assert!(made.is_none(), "there is nothing to step");
+        assert!(status.went_wrong.load(Ordering::Acquire));
+        assert!(status.latest.load().is_none());
+        assert!(!status.draping.load(Ordering::Relaxed));
+        assert!(!status.playing.load(Ordering::Relaxed));
+
+        // A drape the student has already moved on from (a newer Play) goes quietly.
+        status.went_wrong.store(false, Ordering::Release);
+        status.shown.store(4, Ordering::Release);
+        let made = start_drape(&status, 3, || -> Option<(Drape, SimFrame)> {
+            panic!("late")
+        });
+        assert!(made.is_none());
+        assert!(
+            !status.went_wrong.load(Ordering::Acquire),
+            "only the drape being shown can go wrong"
+        );
+
+        // A drape that is made is kept, and its first frame is published.
+        let (solver, notes) = build_drape(&two_panels(), &Stage::shared());
+        let mut drape = Drape::new(4, solver, notes);
+        let first = drape.frame(1, 0.0).expect("an ordinary first frame");
+        let made = start_drape(&status, 4, move || Some((drape, first)));
+        assert!(made.is_some());
+        assert_eq!(status.latest.load().as_ref().map(|f| f.drape), Some(4));
+        assert!(!status.went_wrong.load(Ordering::Acquire));
+
+        // A first frame the renderer can't take is a drape gone wrong, too.
+        let made = start_drape(&status, 4, || None);
+        assert!(made.is_none());
+        assert!(status.went_wrong.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn a_cut_out_of_no_points_does_not_stop_the_drape() {
+        // `Document` refuses such a cut-out, but the runner takes any project it is handed: the
+        // mesher skips the cut-out and the piece drapes.
         let mut pr = Project::new();
         let mut piece = Piece::rectangle(PieceId(0), "Bad", Point2::new(0.0, 0.0), 100.0, 100.0);
         piece.lines = vec![opendrape_core::InternalLine {
@@ -504,13 +574,7 @@ mod tests {
         pr.add_piece(piece);
         let r = SimRunner::start(Stage::shared(), || {});
         r.play(Arc::new(pr));
-        wait_for("the drape to be dropped", || r.went_wrong());
-        assert!(r.latest().is_none() && !r.is_draping() && !r.is_playing());
-        // The thread is still there: the next drape runs.
-        r.play(two_panels());
-        wait_for("a drape after the panic", || {
-            r.latest().is_some_and(|f| f.time > 0.05)
-        });
+        wait_for("a drape", || r.latest().is_some_and(|f| f.time > 0.05));
         assert!(!r.went_wrong());
     }
 

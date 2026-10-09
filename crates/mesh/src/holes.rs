@@ -28,6 +28,9 @@ pub(crate) fn holes(shape: &Shape, outline: &[[f64; 2]], h: f64) -> Holes {
         .lines
         .iter()
         .filter(|l| l.closed && l.kind == LineKind::Cutout)
+        // `Piece::check` refuses a cut-out with fewer than 3 points, or one whose edges don't
+        // match its points; a project built without it must not panic the mesher.
+        .filter(|l| l.vertices.len() >= 3 && l.edges.len() == l.edge_count())
     {
         let sampled = resampled_loop(&geom::line_points(line, 0.1), h);
         // Too few points, or no length at all: there is nothing to cut.

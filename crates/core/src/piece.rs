@@ -1037,6 +1037,26 @@ mod tests {
         let mut short = square();
         short.lines = vec![InternalLine::open(&[p(10.0, 10.0)])];
         assert_eq!(short.check(), Err(ModelError::BadLine(PieceId(1))));
+        // No points at all, open or closed, marking or cut-out: nothing to draw or cut (the
+        // mesher and the painter would index the first point of each).
+        for (closed, kind) in [
+            (false, LineKind::Marking),
+            (true, LineKind::Marking),
+            (true, LineKind::Cutout),
+        ] {
+            let mut empty = square();
+            empty.lines = vec![InternalLine {
+                vertices: vec![],
+                edges: vec![],
+                closed,
+                kind,
+            }];
+            assert_eq!(
+                empty.check(),
+                Err(ModelError::BadLine(PieceId(1))),
+                "{closed} {kind:?}"
+            );
+        }
         let mut closed_two = square();
         closed_two.lines = vec![InternalLine {
             closed: true,

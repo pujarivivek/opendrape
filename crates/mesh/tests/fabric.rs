@@ -675,6 +675,61 @@ fn a_cut_out_that_crosses_itself_is_left_out_not_the_piece() {
 }
 
 #[test]
+fn a_cut_out_with_too_few_points_is_skipped_not_a_panic() {
+    // `Piece::check` refuses these (and `Document` with it), but the mesher takes any project
+    // it is handed: a project built without `check()` must give fabric, not a panic.
+    let closed = |vertices: Vec<opendrape_core::Vertex>, edges: Vec<Edge>| InternalLine {
+        vertices,
+        edges,
+        closed: true,
+        kind: LineKind::Cutout,
+    };
+    let corner = |x: f64, y: f64| opendrape_core::Vertex::corner(p(x, y));
+    let broken = [
+        ("no points at all", closed(vec![], vec![])),
+        (
+            "one point",
+            closed(vec![corner(100.0, 100.0)], vec![Edge::Line]),
+        ),
+        (
+            "two points",
+            closed(
+                vec![corner(100.0, 100.0), corner(200.0, 100.0)],
+                vec![Edge::Line; 2],
+            ),
+        ),
+        (
+            "fewer edges than points",
+            closed(
+                vec![
+                    corner(100.0, 100.0),
+                    corner(200.0, 100.0),
+                    corner(200.0, 200.0),
+                    corner(100.0, 200.0),
+                ],
+                vec![Edge::Line],
+            ),
+        ),
+    ];
+    for (what, bad) in broken {
+        let mut pr = Project::new();
+        let mut piece = Piece::rectangle(PieceId(0), "Front", p(0.0, 0.0), 300.0, 300.0);
+        piece.lines = vec![bad, circle(220.0, 220.0, 30.0)];
+        pr.add_piece(piece);
+        assert!(pr.check().is_err(), "{what}: not a project `check` allows");
+        let mesh = build(&pr, &MeshParams::default());
+        assert_eq!(mesh.panels.len(), 1, "{what}: the piece is still made");
+        assert_eq!(mesh.notes, vec![], "{what}");
+        assert_hole_at(&mesh, 220.0, 220.0, 30.0);
+        let want = 300.0 * 300.0 - std::f64::consts::PI * 30.0 * 30.0;
+        assert!(
+            (meshed_area(&mesh) / want - 1.0).abs() < 0.01,
+            "{what}: the good cut-out is still cut"
+        );
+    }
+}
+
+#[test]
 fn a_small_cut_out_keeps_its_shape() {
     // The holes are sampled about 12 mm apart, but at least 16 points round: a 16 mm round
     // cut-out used to mesh as a 64 % hole, and a 6 mm one as a triangle.
