@@ -1,0 +1,246 @@
+//! The open project and its undo history.
+
+use opendrape_core::Project;
+use std::path::PathBuf;
+
+/// Undo steps kept; older ones are dropped.
+pub const UNDO_LIMIT: usize = 200;
+
+/// The project being edited. Undo keeps whole snapshots of the project (a pattern is small), so
+/// there is no reverse-edit code to get wrong.
+pub struct Document {
+    project: Project,
+    undo: Vec<Project>,
+    redo: Vec<Project>,
+    /// The project as it was when the current drag began.
+    gesture: Option<Project>,
+    /// The project as last saved or opened, to tell whether there are unsaved changes.
+    saved: Project,
+    /// Where the project was last saved or opened from.
+    pub path: Option<PathBuf>,
+}
+
+impl Default for Document {
+    fn default() -> Self {
+        Self::new(Project::new(), None)
+    }
+}
+
+impl Document {
+    pub fn new(project: Project, path: Option<PathBuf>) -> Self {
+        Self {
+            saved: project.clone(),
+            project,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            gesture: None,
+            path,
+        }
+    }
+    pub fn project(&self) -> &Project {
+        &self.project
+    }
+    /// Changes the project as one undo step. A change that leaves the project as it was adds
+    /// no step. A change that leaves the project invalid (see [`Project::check`]) is refused:
+    /// the project is left as it was and no step is added.
+    pub fn edit<R>(&mut self, f: impl FnOnce(&mut Project) -> R) -> R {
+        self.end_gesture();
+        let before = self.project.clone();
+        let result = f(&mut self.project);
+        if self.project.check().is_err() {
+            // Never keep a project that could not be saved and opened again.
+            self.project = before;
+        } else if self.project != before {
+            self.push_undo(before);
+        }
+        result
+    }
+    /// Starts a drag: everything changed with [`Self::gesture_edit`] until [`Self::end_gesture`]
+    /// is one undo step.
+    pub fn begin_gesture(&mut self) {
+        if self.gesture.is_none() {
+            self.gesture = Some(self.project.clone());
+        }
+    }
+    /// Changes the project as part of the current drag (starting one if needed). An invalid
+    /// result is refused, as in [`Self::edit`]: the project is left as it was.
+    pub fn gesture_edit<R>(&mut self, f: impl FnOnce(&mut Project) -> R) -> R {
+        self.begin_gesture();
+        let before = self.project.clone();
+        let result = f(&mut self.project);
+        if self.project.check().is_err() {
+            self.project = before;
+        }
+        result
+    }
+    pub fn end_gesture(&mut self) {
+        if let Some(before) = self.gesture.take()
+            && before != self.project
+        {
+            self.push_undo(before);
+        }
+    }
+    fn push_undo(&mut self, before: Project) {
+        self.undo.push(before);
+        if self.undo.len() > UNDO_LIMIT {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+    }
+    pub fn undo(&mut self) -> bool {
+        self.end_gesture();
+        let Some(previous) = self.undo.pop() else {
+            return false;
+        };
+        self.redo
+            .push(std::mem::replace(&mut self.project, previous));
+        true
+    }
+    pub fn redo(&mut self) -> bool {
+        self.end_gesture();
+        let Some(next) = self.redo.pop() else {
+            return false;
+        };
+        self.undo.push(std::mem::replace(&mut self.project, next));
+        true
+    }
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+    /// The project differs from the version last saved or opened.
+    pub fn is_dirty(&self) -> bool {
+        self.project != self.saved
+    }
+    pub fn mark_saved(&mut self, path: PathBuf) {
+        self.saved = self.project.clone();
+        self.path = Some(path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use opendrape_core::{Piece, PieceId, Point2};
+
+    fn rect() -> Piece {
+        Piece::rectangle(PieceId(0), "R", Point2::new(0.0, 0.0), 100.0, 50.0)
+    }
+
+    #[test]
+    fn edits_undo_and_redo() {
+        let mut doc = Document::default();
+        assert!(!doc.can_undo() && !doc.can_redo());
+        let id = doc.edit(|p| p.add_piece(rect()));
+        assert_eq!(doc.project().pieces.len(), 1);
+        assert!(doc.undo());
+        assert!(doc.project().pieces.is_empty());
+        assert!(!doc.undo(), "nothing left to undo");
+        assert!(doc.redo());
+        assert!(doc.project().piece(id).is_some());
+        assert!(!doc.redo());
+    }
+
+    #[test]
+    fn a_change_that_changes_nothing_adds_no_step() {
+        let mut doc = Document::default();
+        doc.edit(|p| p.remove_piece(PieceId(7)));
+        assert!(!doc.can_undo());
+    }
+
+    #[test]
+    fn a_new_edit_clears_redo() {
+        let mut doc = Document::default();
+        doc.edit(|p| p.add_piece(rect()));
+        doc.undo();
+        doc.edit(|p| p.add_piece(rect()));
+        assert!(!doc.can_redo());
+    }
+
+    #[test]
+    fn a_whole_drag_is_one_step() {
+        let mut doc = Document::default();
+        let id = doc.edit(|p| p.add_piece(rect()));
+        doc.begin_gesture();
+        for k in 1..=10 {
+            doc.gesture_edit(|p| {
+                p.piece_mut(id)
+                    .unwrap()
+                    .move_vertex(0, Point2::new(-f64::from(k), 0.0))
+            });
+        }
+        doc.end_gesture();
+        assert_eq!(
+            doc.project().piece(id).unwrap().vertices[0].pos,
+            Point2::new(-10.0, 0.0)
+        );
+        assert!(doc.undo());
+        assert_eq!(
+            doc.project().piece(id).unwrap().vertices[0].pos,
+            Point2::new(0.0, 0.0)
+        );
+        assert!(doc.undo(), "then the piece itself");
+        assert!(!doc.can_undo());
+    }
+
+    #[test]
+    fn a_drag_that_moved_nothing_adds_no_step() {
+        let mut doc = Document::default();
+        doc.begin_gesture();
+        doc.end_gesture();
+        assert!(!doc.can_undo());
+    }
+
+    #[test]
+    fn history_keeps_the_last_200_steps() {
+        let mut doc = Document::default();
+        for _ in 0..UNDO_LIMIT + 50 {
+            doc.edit(|p| p.add_piece(rect()));
+        }
+        let mut undone = 0;
+        while doc.undo() {
+            undone += 1;
+        }
+        assert_eq!(undone, UNDO_LIMIT);
+        assert_eq!(doc.project().pieces.len(), 50);
+    }
+
+    #[test]
+    fn dirty_follows_the_saved_version() {
+        let mut doc = Document::default();
+        assert!(!doc.is_dirty());
+        doc.edit(|p| p.add_piece(rect()));
+        assert!(doc.is_dirty());
+        doc.undo();
+        assert!(!doc.is_dirty(), "undone back to the saved version");
+        doc.redo();
+        doc.mark_saved(PathBuf::from("skirt.odp"));
+        assert!(!doc.is_dirty());
+        assert_eq!(doc.path, Some(PathBuf::from("skirt.odp")));
+        doc.undo();
+        assert!(doc.is_dirty());
+    }
+
+    #[test]
+    fn a_change_that_breaks_the_project_is_refused() {
+        let mut doc = Document::default();
+        let id = doc.edit(|p| p.add_piece(rect()));
+        doc.edit(|p| {
+            p.piece_mut(id)
+                .unwrap()
+                .move_vertex(0, Point2::new(2e6, 0.0))
+        });
+        assert_eq!(
+            doc.project().piece(id).unwrap().vertices[0].pos,
+            Point2::new(0.0, 0.0)
+        );
+        doc.begin_gesture();
+        doc.gesture_edit(|p| p.piece_mut(id).unwrap().vertices.truncate(2));
+        doc.end_gesture();
+        assert_eq!(doc.project().piece(id).unwrap().len(), 4);
+        assert!(doc.undo(), "only adding the piece was a step");
+        assert!(!doc.can_undo());
+    }
+}

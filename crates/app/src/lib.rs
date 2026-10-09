@@ -3,6 +3,7 @@
 mod app;
 pub mod cli;
 pub mod diagnostics;
+pub mod editor;
 pub mod gpu;
 #[doc(hidden)]
 pub mod i18n;

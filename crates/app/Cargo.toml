@@ -9,9 +9,13 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+opendrape-core.workspace = true
+opendrape-geom.workspace = true
+opendrape-io.workspace = true
 opendrape-render.workspace = true
 opendrape-sim.workspace = true
 opendrape-testkit.workspace = true
+earcut.workspace = true
 glam.workspace = true
 arc-swap.workspace = true
 crossbeam-channel.workspace = true
