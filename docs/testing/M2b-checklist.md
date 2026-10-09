@@ -8,7 +8,7 @@ in M3.
 
 - [ ] Every piece shows a light grey band around it: the 1 cm seam allowance. The outer line
       is where you cut. **Show seam allowance** at the top hides and shows it.
-- [ ] Click a piece. In **Properties**, change **Seam allowance** to **1,5**: the band
+- [ ] Click a piece. In **Properties**, change **Seam allowance** to **1.5**: the band
       widens all round.
 - [ ] Click one edge. Type **2** in its **Seam allowance**: only that edge changes. **Same as
       piece** puts it back. Tick **Hem**: that edge gets 3 cm, and the corners at its ends
