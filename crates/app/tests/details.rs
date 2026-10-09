@@ -3,7 +3,7 @@
 
 mod common;
 use common::*;
-use egui::{Key, Modifiers, vec2};
+use egui::{Key, Modifiers, accesskit::Role, vec2};
 use egui_kittest::kittest::Queryable;
 use opendrape::editor::Selection;
 use opendrape_core::{Piece, PieceId, Point2};
@@ -234,5 +234,222 @@ fn everything_draws_without_trouble() {
         h.state_mut().selection = sel;
         h.run();
         assert_eq!(h.state().selection, sel);
+    }
+}
+
+#[test]
+fn allowance_for_the_whole_piece_and_for_one_edge() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    click(&mut h, 250.0, 300.0);
+    assert_eq!(field_text(&h, "Seam allowance"), "1.0");
+    type_into(&mut h, "Seam allowance", "1,5");
+    assert_eq!(piece_of(&h, id).allowance, 15.0);
+    click(&mut h, 250.0, 100.0); // bottom edge
+    assert_eq!(field_text(&h, "Seam allowance"), "1.5");
+    type_into(&mut h, "Seam allowance", "2");
+    assert_eq!(piece_of(&h, id).edge_props[0].allowance, Some(20.0));
+    h.get_by_label("Same as piece").click();
+    h.run();
+    assert_eq!(piece_of(&h, id).edge_props[0].allowance, None);
+}
+
+#[test]
+fn an_allowance_out_of_range_is_refused() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    click(&mut h, 250.0, 300.0);
+    type_into(&mut h, "Seam allowance", "12"); // 12 cm
+    assert_eq!(piece_of(&h, id).allowance, 10.0);
+    assert!(
+        h.state()
+            .notice
+            .as_deref()
+            .is_some_and(|n| n.contains("between 0 and 10 cm"))
+    );
+}
+
+#[test]
+fn the_hem_checkbox_gives_three_centimetres() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    click(&mut h, 250.0, 100.0);
+    h.get_by_label("Hem").click();
+    h.run();
+    assert!(piece_of(&h, id).edge_props[0].hem);
+    assert_eq!(field_text(&h, "Seam allowance"), "3.0");
+}
+
+#[test]
+fn set_a_fold_then_unfold_or_remove_it() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h); // (100,100)-(400,500)
+    click(&mut h, 100.0, 300.0); // left edge
+    assert_eq!(h.state().selection, Selection::Edge(id, 3));
+    h.get_by_label("Set as fold line").click();
+    h.run();
+    assert_eq!(piece_of(&h, id).fold, Some(3));
+    h.get_by_label("This edge is the fold line.");
+    click(&mut h, 250.0, 300.0);
+    h.get_by_label("2400.0 cm²"); // the full 60 × 40 cm piece
+    h.get_by_label("Unfold").click();
+    h.run();
+    assert_eq!((piece_of(&h, id).len(), piece_of(&h, id).fold), (6, None));
+    cmd(&mut h, Key::Z);
+    assert_eq!(
+        (piece_of(&h, id).len(), piece_of(&h, id).fold),
+        (4, Some(3))
+    );
+    h.get_by_label("Remove fold").click();
+    h.run();
+    assert_eq!((piece_of(&h, id).len(), piece_of(&h, id).fold), (4, None));
+}
+
+#[test]
+fn a_fold_that_would_cross_the_piece_is_refused() {
+    let mut h = harness();
+    // A U shape: the inner edge x = 300 has parts of the piece on both sides of its line.
+    let id = h.state_mut().doc.edit(|p| {
+        let pts = [
+            (100.0, 100.0),
+            (400.0, 100.0),
+            (400.0, 400.0),
+            (300.0, 400.0),
+            (300.0, 200.0),
+            (200.0, 200.0),
+            (200.0, 400.0),
+            (100.0, 400.0),
+        ];
+        p.add_piece(Piece::polygon(
+            PieceId(0),
+            "U",
+            &pts.map(|(x, y)| Point2::new(x, y)),
+        ))
+    });
+    h.run();
+    click(&mut h, 300.0, 300.0);
+    assert_eq!(h.state().selection, Selection::Edge(id, 3));
+    h.get_by_label("Set as fold line").click();
+    h.run();
+    assert_eq!(piece_of(&h, id).fold, None);
+    assert!(
+        h.state()
+            .notice
+            .as_deref()
+            .is_some_and(|n| n.contains("one side"))
+    );
+}
+
+#[test]
+fn make_rename_and_break_a_pair() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    click(&mut h, 250.0, 300.0);
+    h.get_by_label("Make mirrored pair").click();
+    h.run();
+    let twin = piece_of(&h, id).twin.unwrap().id;
+    assert_eq!(h.state().selection, Selection::Piece(twin));
+    assert_eq!(
+        piece_of(&h, id).twin.unwrap().offset,
+        Point2::new(850.0, 0.0)
+    );
+    assert_eq!(field_text(&h, "Name"), "Front (mirror)");
+    h.get_by_label("Mirror image of Front");
+    type_into(&mut h, "Name", "Back right");
+    assert_eq!(h.state().doc.project().name_of(twin), Some("Back right"));
+    assert_eq!(piece_of(&h, id).name, "Front");
+    h.get_by_label("Break pair").click();
+    h.run();
+    assert!(piece_of(&h, id).twin.is_none());
+    assert_eq!(piece_of(&h, twin).name, "Back right");
+    assert_eq!(h.state().selection, Selection::Piece(twin));
+}
+
+#[test]
+fn undo_of_make_pair_drops_the_twin_selection() {
+    let mut h = harness();
+    with_rectangle(&mut h);
+    click(&mut h, 250.0, 300.0);
+    h.get_by_label("Make mirrored pair").click();
+    h.run();
+    cmd(&mut h, Key::Z);
+    assert_eq!(h.state().selection, Selection::None);
+}
+
+#[test]
+fn a_twin_point_is_shown_where_the_twin_is() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    click(&mut h, 250.0, 300.0);
+    h.get_by_label("Make mirrored pair").click();
+    h.run();
+    let twin = piece_of(&h, id).twin.unwrap().id;
+    click(&mut h, 450.0, 100.0); // the twin's image of corner 1
+    assert_eq!(h.state().selection, Selection::Vertex(twin, 1));
+    assert_eq!(field_text(&h, "X"), "45.0");
+    type_into(&mut h, "X", "47");
+    assert_eq!(piece_of(&h, id).vertices[1].pos, Point2::new(380.0, 100.0)); // 850 - 470
+}
+
+#[test]
+fn a_twin_shows_and_sets_the_mirrored_grain_angle() {
+    let mut h = harness();
+    let (id, twin) = with_pair(&mut h);
+    click(&mut h, 250.0, 300.0);
+    type_into(&mut h, "Grain angle", "30");
+    assert_eq!(piece_of(&h, id).grain_deg, 30.0);
+    click(&mut h, 600.0, 300.0);
+    assert_eq!(h.state().selection, Selection::Piece(twin));
+    assert_eq!(field_text(&h, "Grain angle"), "150.0"); // 180 - 30
+    type_into(&mut h, "Grain angle", "100");
+    assert_eq!(piece_of(&h, id).grain_deg, 80.0); // 180 - 100
+}
+
+#[test]
+fn a_twin_edge_has_the_pieces_sewing_controls_but_cannot_be_folded() {
+    let mut h = harness();
+    let (id, twin) = with_pair(&mut h);
+    click(&mut h, 600.0, 100.0); // the twin's bottom edge
+    assert_eq!(h.state().selection, Selection::Edge(twin, 0));
+    assert_eq!(field_text(&h, "Length"), "30.0");
+    assert_eq!(field_text(&h, "Seam allowance"), "1.0");
+    assert!(h.query_by_label("Set as fold line").is_none());
+    type_into(&mut h, "Seam allowance", "2");
+    assert_eq!(piece_of(&h, id).edge_props[0].allowance, Some(20.0));
+    h.get_by_label("Hem").click();
+    h.run();
+    assert!(piece_of(&h, id).edge_props[0].hem);
+    h.get_by_label("Same as piece").click();
+    h.run();
+    assert_eq!(piece_of(&h, id).edge_props[0].allowance, None);
+    assert_eq!(field_text(&h, "Seam allowance"), "3.0"); // the hem's
+}
+
+#[test]
+fn the_fold_edge_offers_only_removing_the_fold() {
+    for fold in 0..4 {
+        let mut h = harness();
+        let id = with_rectangle(&mut h);
+        h.state_mut()
+            .doc
+            .edit(|p| p.piece_mut(id).unwrap().fold = Some(fold));
+        h.state_mut().selection = Selection::Edge(id, fold);
+        h.run();
+        assert_eq!(h.state().selection, Selection::Edge(id, fold));
+        h.get_by_label("This edge is the fold line.");
+        assert!(h.query_by_label("Hem").is_none(), "fold {fold}");
+        assert!(
+            h.query_by_label("Set as fold line").is_none(),
+            "fold {fold}"
+        );
+        assert!(
+            h.query_by_role_and_label(Role::TextInput, "Seam allowance")
+                .is_none(),
+            "fold {fold}"
+        );
+        field_text(&h, "Length");
+        h.get_by_label("Remove fold").click();
+        h.run();
+        assert_eq!(piece_of(&h, id).fold, None, "fold {fold}");
     }
 }

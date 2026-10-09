@@ -109,3 +109,17 @@ error-ok = OK
 
 toolbar-show-allowance = Show seam allowance
 fold-label = Place on fold
+
+panel-allowance = Seam allowance
+panel-allowance-reset = Same as piece
+panel-hem = Hem
+panel-set-fold = Set as fold line
+panel-fold-line = This edge is the fold line.
+panel-unfold = Unfold
+panel-remove-fold = Remove fold
+panel-make-pair = Make mirrored pair
+panel-break-pair = Break pair
+panel-twin-of = Mirror image of { $name }
+twin-name = { $name } (mirror)
+notice-bad-allowance = The seam allowance must be between 0 and 10 cm.
+notice-fold-refused = The fold line must be a straight edge with the whole piece on one side of it.

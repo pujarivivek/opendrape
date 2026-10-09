@@ -4,12 +4,16 @@
 use super::{PatternEditor, Selection, Tool, select_all_on_focus};
 use crate::tr;
 use egui::{Id, Key};
-use opendrape_core::{Edge, PieceId, Point2, Project, Units, VertexKind};
+use opendrape_core::{
+    Edge, MAX_ALLOWANCE_MM, Piece, PieceId, Point2, Project, Side, Units, VertexKind,
+};
 use opendrape_geom::{self as geom, Anchor};
 use std::collections::HashMap;
 
 /// Furthest from the origin a point may be typed (100 m), so a slip can't lose a piece.
-const MAX_COORDINATE_MM: f64 = 100_000.0;
+const MAX_TYPED_COORDINATE_MM: f64 = 100_000.0;
+/// Gap (mm) between a piece and the twin "Make mirrored pair" puts beside it.
+const PAIR_GAP_MM: f64 = 50.0;
 
 #[derive(Default)]
 pub(super) struct PanelState {
@@ -47,23 +51,35 @@ impl PatternEditor {
     }
 
     fn piece_properties(&mut self, ui: &mut egui::Ui, id: PieceId) {
-        let Some(piece) = self.doc.project().piece(id).cloned() else {
+        let project = self.doc.project();
+        let Some((piece, side)) = project.owner(id).map(|(p, s)| (p.clone(), s)) else {
             return;
         };
-        let units = self.doc.project().units;
+        let Some(shape) = geom::shape_of(project, id) else {
+            return;
+        };
+        let units = project.units;
+        let source = piece.id;
         ui.strong(tr!("panel-piece"));
+        if side == Side::Twin {
+            ui.label(tr!("panel-twin-of", name = piece.name.clone()));
+        }
         egui::Grid::new("piece_properties")
             .num_columns(3)
             .show(ui, |ui| {
-                if let Some(name) = self.field(ui, tr!("panel-name"), &piece.name, "") {
+                if let Some(name) = self.field(ui, tr!("panel-name"), &shape.piece.name, "") {
                     let name = name.trim().to_owned();
                     if name.is_empty() {
                         self.notice = Some(tr!("notice-name-empty"));
                     } else {
-                        self.doc.edit(|p| {
-                            if let Some(pc) = p.piece_mut(id) {
-                                pc.name = name;
+                        self.doc.edit(|p| match p.owner_mut(id) {
+                            Some((pc, Side::Master)) => pc.name = name,
+                            Some((pc, Side::Twin)) => {
+                                if let Some(t) = &mut pc.twin {
+                                    t.name = name;
+                                }
                             }
+                            None => {}
                         });
                         self.note_if_refused();
                     }
@@ -71,44 +87,90 @@ impl PatternEditor {
                 let grain = self.field(
                     ui,
                     tr!("panel-grain"),
-                    &format!("{:.1}", piece.grain_deg),
+                    &format!("{:.1}", shape.piece.grain_deg),
                     "°",
                 );
-                self.apply_typed(grain, false, |p, deg| {
-                    p.piece_mut(id).is_some_and(|pc| {
-                        pc.grain_deg = deg.rem_euclid(360.0);
+                self.apply_typed(grain, false, tr!("notice-bad-number"), |p, deg| {
+                    p.piece_mut(source).is_some_and(|pc| {
+                        // A twin shows its piece's grain mirrored: 180° − angle.
+                        let stored = if side == Side::Twin { 180.0 - deg } else { deg };
+                        pc.grain_deg = stored.rem_euclid(360.0);
                         true
                     })
                 });
+                let allowance = self.field(
+                    ui,
+                    tr!("panel-allowance"),
+                    &units.format_number(piece.allowance),
+                    units.suffix(),
+                );
+                self.apply_typed(allowance, true, tr!("notice-bad-allowance"), |p, mm| {
+                    allowance_ok(mm)
+                        && p.piece_mut(source).is_some_and(|pc| {
+                            pc.allowance = mm;
+                            true
+                        })
+                });
                 ui.label(tr!("panel-area"));
-                ui.label(units.format_area(geom::area(&piece)));
+                ui.label(units.format_area(geom::area(&shape.piece)));
                 ui.end_row();
                 ui.label(tr!("panel-perimeter"));
-                ui.label(units.format(geom::perimeter(&piece)));
+                ui.label(units.format(geom::perimeter(&shape.piece)));
                 ui.end_row();
             });
         ui.add_space(6.0);
+        if piece.fold.is_some() {
+            ui.horizontal(|ui| {
+                if ui.button(tr!("panel-unfold")).clicked() {
+                    self.unfold(source);
+                }
+                if ui.button(tr!("panel-remove-fold")).clicked() {
+                    self.remove_fold(source);
+                }
+            });
+        } else if piece.twin.is_some() {
+            if ui.button(tr!("panel-break-pair")).clicked() {
+                self.break_pair(source);
+            }
+        } else if ui.button(tr!("panel-make-pair")).clicked() {
+            self.make_pair(&piece);
+        }
         if ui.button(tr!("panel-delete-piece")).clicked() {
             self.delete_selection();
         }
     }
 
     fn edge_properties(&mut self, ui: &mut egui::Ui, id: PieceId, i: usize) {
-        let Some(piece) = self.doc.project().piece(id).cloned() else {
+        let Some((piece, side)) = self.doc.project().owner(id).map(|(p, s)| (p.clone(), s)) else {
             return;
         };
         let units = self.doc.project().units;
+        let source = piece.id;
         let anchor = self.panel.anchor;
+        // Everything here is the stored piece's: edge `i` is its index, and a twin has the same
+        // edges. The fold's own edge is on no outline, so it has no allowance or hem to show.
+        let is_fold = piece.fold == Some(i);
         ui.strong(tr!("panel-edge"));
         egui::Grid::new("edge_properties")
             .num_columns(3)
             .show(ui, |ui| {
                 let length = units.format_number(geom::edge_length(&piece, i));
                 let typed = self.field(ui, tr!("panel-length"), &length, units.suffix());
-                self.apply_typed(typed, true, |p, mm| {
-                    p.piece_mut(id)
+                self.apply_typed(typed, true, tr!("notice-bad-number"), |p, mm| {
+                    p.piece_mut(source)
                         .is_some_and(|pc| geom::set_edge_length(pc, i, mm, anchor))
                 });
+                if !is_fold {
+                    let own = units.format_number(piece.edge_allowance(i));
+                    let typed = self.field(ui, tr!("panel-allowance"), &own, units.suffix());
+                    self.apply_typed(typed, true, tr!("notice-bad-allowance"), |p, mm| {
+                        allowance_ok(mm)
+                            && p.piece_mut(source).is_some_and(|pc| {
+                                pc.edge_props[i].allowance = Some(mm);
+                                true
+                            })
+                    });
+                }
             });
         ui.label(tr!("panel-keep-fixed"));
         ui.horizontal(|ui| {
@@ -119,27 +181,74 @@ impl PatternEditor {
             );
             ui.radio_value(&mut self.panel.anchor, Anchor::End, tr!("panel-anchor-end"));
         });
+        if is_fold {
+            ui.label(tr!("panel-fold-line"));
+            if ui.button(tr!("panel-remove-fold")).clicked() {
+                self.remove_fold(source);
+            }
+            return;
+        }
+        if piece.edge_props[i].allowance.is_some()
+            && ui.button(tr!("panel-allowance-reset")).clicked()
+        {
+            self.doc.edit(|p| {
+                if let Some(pc) = p.piece_mut(source) {
+                    pc.edge_props[i].allowance = None;
+                }
+            });
+            self.note_if_refused();
+        }
+        let mut hem = piece.edge_props[i].hem;
+        if ui.checkbox(&mut hem, tr!("panel-hem")).changed() {
+            self.doc.edit(|p| {
+                if let Some(pc) = p.piece_mut(source) {
+                    pc.edge_props[i].hem = hem;
+                }
+            });
+            self.note_if_refused();
+        }
         let mut curved = matches!(piece.edges[i], Edge::Curve { .. });
         if ui.checkbox(&mut curved, tr!("panel-curved")).changed() {
             self.doc.edit(|p| {
-                if let Some(pc) = p.piece_mut(id) {
+                if let Some(pc) = p.piece_mut(source) {
                     pc.set_curved(i, curved);
                 }
             });
             self.note_if_refused();
         }
+        let can_fold = side == Side::Master
+            && piece.twin.is_none()
+            && piece.fold.is_none()
+            && piece.edges[i] == Edge::Line;
+        if can_fold && ui.button(tr!("panel-set-fold")).clicked() {
+            self.doc.edit(|p| {
+                if let Some(pc) = p.piece_mut(source) {
+                    pc.fold = Some(i);
+                }
+            });
+            if self.note_if_refused() {
+                self.notice = Some(tr!("notice-fold-refused"));
+            }
+        }
     }
 
     fn vertex_properties(&mut self, ui: &mut egui::Ui, id: PieceId, i: usize) {
-        let Some(piece) = self.doc.project().piece(id).cloned() else {
+        let project = self.doc.project();
+        let Some((piece, _)) = project.owner(id).map(|(p, s)| (p.clone(), s)) else {
             return;
         };
-        let units = self.doc.project().units;
-        let pos = piece.vertices[i].pos;
-        let move_to = move |p: &mut Project, to: Point2| {
-            to.x.abs() <= MAX_COORDINATE_MM
-                && to.y.abs() <= MAX_COORDINATE_MM
-                && p.piece_mut(id).is_some_and(|pc| {
+        let Some(shape) = geom::shape_of(project, id) else {
+            return;
+        };
+        let units = project.units;
+        let source = piece.id;
+        // Shown (and typed) where this shape shows the point: a twin's image for a twin.
+        let shown = shape.from_stored(piece.vertices[i].pos);
+        let move_to = move |p: &mut Project, to_shown: Point2| {
+            let to = shape.to_stored(to_shown);
+            to.x.abs() <= MAX_TYPED_COORDINATE_MM
+                && to.y.abs() <= MAX_TYPED_COORDINATE_MM
+                && p.piece_mut(source).is_some_and(|pc| {
                     pc.move_vertex(i, to);
                     true
                 })
@@ -151,17 +260,21 @@ impl PatternEditor {
                 let x = self.field(
                     ui,
                     tr!("panel-x"),
-                    &units.format_number(pos.x),
+                    &units.format_number(shown.x),
                     units.suffix(),
                 );
-                self.apply_typed(x, true, |p, mm| move_to(p, Point2::new(mm, pos.y)));
+                self.apply_typed(x, true, tr!("notice-bad-number"), |p, mm| {
+                    move_to(p, Point2::new(mm, shown.y))
+                });
                 let y = self.field(
                     ui,
                     tr!("panel-y"),
-                    &units.format_number(pos.y),
+                    &units.format_number(shown.y),
                     units.suffix(),
                 );
-                self.apply_typed(y, true, |p, mm| move_to(p, Point2::new(pos.x, mm)));
+                self.apply_typed(y, true, tr!("notice-bad-number"), |p, mm| {
+                    move_to(p, Point2::new(shown.x, mm))
+                });
             });
         let mut smooth = piece.vertices[i].kind == VertexKind::Smooth;
         if ui.checkbox(&mut smooth, tr!("panel-smooth")).changed() {
@@ -171,7 +284,7 @@ impl PatternEditor {
                 VertexKind::Corner
             };
             self.doc.edit(|p| {
-                if let Some(pc) = p.piece_mut(id) {
+                if let Some(pc) = p.piece_mut(source) {
                     pc.set_vertex_kind(i, kind);
                 }
             });
@@ -181,6 +294,46 @@ impl PatternEditor {
         if ui.button(tr!("panel-delete-point")).clicked() {
             self.delete_selection();
         }
+    }
+
+    fn make_pair(&mut self, piece: &Piece) {
+        let name = tr!("twin-name", name = piece.name.clone());
+        let offset = twin_offset_beside(piece);
+        let source = piece.id;
+        let twin = self.doc.edit(|p| p.add_twin(source, name, offset));
+        if !self.note_if_refused()
+            && let Some(t) = twin
+        {
+            self.selection = Selection::Piece(t);
+        }
+    }
+
+    fn break_pair(&mut self, source: PieceId) {
+        let piece = self.doc.edit(|p| p.break_twin(source));
+        if !self.note_if_refused()
+            && let Some(t) = piece
+        {
+            self.selection = Selection::Piece(t);
+        }
+    }
+
+    fn unfold(&mut self, source: PieceId) {
+        self.doc.edit(|p| {
+            if let Some(pc) = p.piece_mut(source) {
+                let full = geom::unfolded(pc);
+                *pc = full;
+            }
+        });
+        self.note_if_refused();
+    }
+
+    fn remove_fold(&mut self, source: PieceId) {
+        self.doc.edit(|p| {
+            if let Some(pc) = p.piece_mut(source) {
+                pc.fold = None;
+            }
+        });
+        self.note_if_refused();
     }
 
     /// One row of a 3-column grid (label, text field, unit). Returns what the user typed once
@@ -204,23 +357,24 @@ impl PatternEditor {
     /// Applies a typed number as one undo step. Lengths (`is_length`) are typed in the current
     /// units and passed on in millimetres. `apply` returns false to refuse the value, and the
     /// document may refuse the result: either way the pattern stays unchanged and a notice
-    /// says why.
+    /// says why (`refusal` for a value that isn't a number or that `apply` refused).
     fn apply_typed(
         &mut self,
         typed: Option<String>,
         is_length: bool,
+        refusal: String,
         apply: impl FnOnce(&mut Project, f64) -> bool,
     ) {
         let Some(text) = typed else { return };
         let units = self.doc.project().units;
         let value = Units::parse(&text).map(|v| if is_length { units.to_mm(v) } else { v });
         let Some(value) = value else {
-            self.notice = Some(tr!("notice-bad-number"));
+            self.notice = Some(refusal);
             return;
         };
         let applied = self.doc.edit(|p| apply(p, value));
         if !self.note_if_refused() && !applied {
-            self.notice = Some(tr!("notice-bad-number"));
+            self.notice = Some(refusal);
         }
     }
 
@@ -252,6 +406,21 @@ impl PatternEditor {
             Tool::AddPoint => tr!("hint-add-point"),
         }
     }
+}
+
+/// A seam allowance the pattern can hold: 0 to [`MAX_ALLOWANCE_MM`].
+fn allowance_ok(mm: f64) -> bool {
+    mm.is_finite() && (0.0..=MAX_ALLOWANCE_MM).contains(&mm)
+}
+
+/// The offset that puts a piece's mirror image [`PAIR_GAP_MM`] to its right, at the same
+/// height (see `opendrape_core::Twin`).
+fn twin_offset_beside(piece: &Piece) -> Point2 {
+    let max_x = geom::outline_points(piece, 1.0)
+        .iter()
+        .map(|p| p.x)
+        .fold(f64::MIN, f64::max);
+    Point2::new(2.0 * max_x + PAIR_GAP_MM, 0.0)
 }
 
 /// A one-line text box for a property. Typing edits a private copy; Enter or clicking
