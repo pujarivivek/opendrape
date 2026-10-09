@@ -61,6 +61,7 @@ fn main() -> ExitCode {
         store: store.clone(),
         smoke_test: cli.smoke_test,
         autoplay: true,
+        file_dialogs: opendrape::FileDialogs::Native,
     };
     let app_shared = shared.clone();
     stage("opening the window");

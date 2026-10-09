@@ -1,6 +1,10 @@
-use egui_kittest::{Harness, kittest::Queryable};
+use egui_kittest::{
+    Harness,
+    kittest::{NodeT, Queryable},
+};
 use opendrape::gpu::{Decision, GpuChoice, GpuState, Reason, StateStore};
-use opendrape::{OpenDrapeApp, Shared, SharedState, Startup};
+use opendrape::{FileDialogs, OpenDrapeApp, Shared, SharedState, Startup};
+use opendrape_core::{Piece, PieceId, Point2, Project};
 use std::{path::Path, rc::Rc};
 
 const SAVED_AUTO: Decision = Decision {
@@ -9,12 +13,21 @@ const SAVED_AUTO: Decision = Decision {
 };
 
 fn harness(config_dir: &Path, shared: SharedState) -> Harness<'static, OpenDrapeApp> {
+    harness_with(config_dir, shared, FileDialogs::always_cancel())
+}
+
+fn harness_with(
+    config_dir: &Path,
+    shared: SharedState,
+    file_dialogs: FileDialogs,
+) -> Harness<'static, OpenDrapeApp> {
     let startup = Startup {
         decision: SAVED_AUTO,
         previous: GpuState::default(),
         store: StateStore::new(Some(config_dir)),
         smoke_test: false,
         autoplay: false,
+        file_dialogs,
     };
     Harness::builder()
         .with_size(egui::vec2(1000.0, 700.0))
@@ -100,6 +113,7 @@ fn tiny_window_does_not_crash() {
         store: StateStore::new(Some(dir.path())),
         smoke_test: false,
         autoplay: false,
+        file_dialogs: FileDialogs::always_cancel(),
     };
     let mut h = Harness::builder()
         .with_size(egui::vec2(120.0, 40.0)) // the menu bar leaves almost no room for the 3D panel
@@ -125,6 +139,7 @@ fn crash_marker_is_cleared_only_after_frames_were_presented() {
         store: StateStore::new(Some(dir.path())),
         smoke_test: false,
         autoplay: false,
+        file_dialogs: FileDialogs::always_cancel(),
     };
     let app_shared = shared.clone();
     // The harness draws one frame plus at most `max_steps` more while it is being built.
@@ -217,4 +232,280 @@ fn stats_text_is_readable() {
         OpenDrapeApp::stats_text(None, 11.73, 4794),
         "simulation 11.7 ms per step · 4794 points"
     );
+}
+
+type App = Harness<'static, OpenDrapeApp>;
+
+/// A piece drawn in the pattern window, leaving unsaved changes.
+fn add_piece(h: &mut App) {
+    h.state_mut().editor_mut().doc.edit(|p| {
+        p.add_piece(Piece::rectangle(
+            PieceId(0),
+            "Front",
+            Point2::new(0.0, 0.0),
+            300.0,
+            500.0,
+        ))
+    });
+    h.run();
+}
+
+fn file_menu(h: &mut App, item: &str) {
+    h.get_by_label("File").click();
+    h.run();
+    h.get_by_label(item).click();
+    h.run();
+}
+
+fn pieces(h: &App) -> usize {
+    h.state().editor().doc.project().pieces.len()
+}
+
+#[test]
+fn pattern_window_sits_beside_the_3d_view() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    let canvas = h.state().editor().canvas_rect;
+    assert!(
+        canvas.width() > 200.0 && canvas.left() > 300.0,
+        "{canvas:?}"
+    );
+    h.get_by_label("Play"); // the 3D controls are still there
+    h.get_by_label("Pen (H)");
+    assert_eq!(h.state().window_title(), "Untitled — OpenDrape");
+}
+
+#[test]
+fn save_as_writes_a_project_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let chosen = dir.path().join("skirt"); // no extension: OpenDrape adds .odp
+    let mut h = harness_with(
+        dir.path(),
+        SharedState::default(),
+        FileDialogs::scripted(vec![Some(chosen)]),
+    );
+    h.run();
+    add_piece(&mut h);
+    assert_eq!(h.state().window_title(), "• Untitled — OpenDrape");
+    file_menu(&mut h, "Save As…");
+    let saved = dir.path().join("skirt.odp");
+    assert_eq!(
+        opendrape_io::load(&saved).unwrap(),
+        *h.state().editor().doc.project()
+    );
+    assert_eq!(h.state().window_title(), "skirt.odp — OpenDrape");
+}
+
+#[test]
+fn save_shortcut_saves_again_without_asking() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("skirt.odp");
+    let mut h = harness_with(
+        dir.path(),
+        SharedState::default(),
+        FileDialogs::scripted(vec![Some(file.clone())]),
+    );
+    h.run();
+    add_piece(&mut h);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+    h.run();
+    assert_eq!(opendrape_io::load(&file).unwrap().pieces.len(), 1);
+    add_piece(&mut h);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+    h.run();
+    assert_eq!(
+        opendrape_io::load(&file).unwrap().pieces.len(),
+        2,
+        "same file, no second dialog"
+    );
+}
+
+#[test]
+fn cancelling_the_save_dialog_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default()); // every dialog is cancelled
+    h.run();
+    add_piece(&mut h);
+    file_menu(&mut h, "Save As…");
+    assert!(h.state().editor().doc.is_dirty());
+    assert_eq!(h.state().window_title(), "• Untitled — OpenDrape");
+}
+
+#[test]
+fn open_replaces_the_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("bodice.odp");
+    let mut project = Project::new();
+    project.add_piece(Piece::rectangle(
+        PieceId(0),
+        "Bodice",
+        Point2::new(0.0, 0.0),
+        200.0,
+        400.0,
+    ));
+    opendrape_io::save(&project, &file).unwrap();
+    let mut h = harness_with(
+        dir.path(),
+        SharedState::default(),
+        FileDialogs::scripted(vec![Some(file)]),
+    );
+    h.run();
+    file_menu(&mut h, "Open…");
+    assert_eq!(*h.state().editor().doc.project(), project);
+    assert_eq!(h.state().window_title(), "bodice.odp — OpenDrape");
+    assert!(!h.state().editor().can_undo(), "a fresh history");
+}
+
+#[test]
+fn opening_a_bad_file_keeps_the_current_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let bad = dir.path().join("bad.odp");
+    std::fs::write(&bad, b"not a zip file").unwrap();
+    let mut h = harness_with(
+        dir.path(),
+        SharedState::default(),
+        FileDialogs::scripted(vec![Some(bad)]),
+    );
+    h.run();
+    add_piece(&mut h);
+    let before = h.state().editor().doc.project().clone();
+    file_menu(&mut h, "Open…");
+    h.get_by_label("Don't save").click(); // there are unsaved changes: asked first
+    h.run();
+    h.get_by_label_contains("not an OpenDrape project file");
+    assert_eq!(*h.state().editor().doc.project(), before);
+    h.get_by_label("OK").click();
+    h.run();
+    assert!(
+        h.query_by_label_contains("not an OpenDrape project file")
+            .is_none()
+    );
+}
+
+#[test]
+fn new_with_unsaved_changes_asks_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    add_piece(&mut h);
+    file_menu(&mut h, "New");
+    h.get_by_label("Save your changes?");
+    h.get_by_label("Cancel").click();
+    h.run();
+    assert_eq!(pieces(&h), 1, "Cancel keeps the work");
+    file_menu(&mut h, "New");
+    h.get_by_label("Don't save").click();
+    h.run();
+    assert_eq!(pieces(&h), 0);
+    assert!(!h.state().editor().doc.is_dirty());
+}
+
+#[test]
+fn saving_from_the_question_then_starts_the_new_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let chosen = dir.path().join("draft.odp");
+    let mut h = harness_with(
+        dir.path(),
+        SharedState::default(),
+        FileDialogs::scripted(vec![Some(chosen.clone())]),
+    );
+    h.run();
+    add_piece(&mut h);
+    file_menu(&mut h, "New");
+    h.get_by_label("Save").click();
+    h.run();
+    assert_eq!(opendrape_io::load(&chosen).unwrap().pieces.len(), 1);
+    assert_eq!(pieces(&h), 0);
+    assert_eq!(h.state().window_title(), "Untitled — OpenDrape");
+}
+
+#[test]
+fn closing_with_unsaved_changes_asks_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    add_piece(&mut h);
+    h.input_mut()
+        .viewports
+        .entry(egui::ViewportId::ROOT)
+        .or_default()
+        .events
+        .push(egui::ViewportEvent::Close);
+    h.step();
+    let cancelled = h
+        .output()
+        .viewport_output
+        .get(&egui::ViewportId::ROOT)
+        .is_some_and(|v| {
+            v.commands
+                .iter()
+                .any(|c| matches!(c, egui::ViewportCommand::CancelClose))
+        });
+    assert!(cancelled, "the window must stay open");
+    h.run();
+    assert!(!h.state().is_closing());
+    h.get_by_label("Don't save").click();
+    h.run();
+    assert!(h.state().is_closing());
+}
+
+#[test]
+fn edit_menu_undoes_and_redoes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    add_piece(&mut h);
+    h.get_by_label("Edit").click();
+    h.run();
+    h.get_by_label("Undo").click();
+    h.run();
+    assert_eq!(pieces(&h), 0);
+    h.get_by_label("Edit").click();
+    h.run();
+    h.get_by_label("Redo").click();
+    h.run();
+    assert_eq!(pieces(&h), 1);
+}
+
+#[test]
+fn file_menu_items_announce_their_shortcuts() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    h.get_by_label("File").click();
+    h.run();
+    // The shortcut is the item's keyboard shortcut, not part of its name.
+    let shortcut = h
+        .get_by_label("Save As…")
+        .accesskit_node()
+        .data()
+        .keyboard_shortcut()
+        .map(String::from);
+    assert!(shortcut.is_some_and(|s| s.contains('S')));
+}
+
+#[test]
+fn edit_menu_greys_out_what_cannot_be_done() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    h.get_by_label("Edit").click();
+    h.run();
+    assert!(
+        h.get_by_label("Undo").accesskit_node().is_disabled(),
+        "nothing to undo yet"
+    );
+    assert!(
+        h.get_by_label("Redo").accesskit_node().is_disabled(),
+        "nothing to redo yet"
+    );
+    // Escape closes the menu; draw a piece, then look again.
+    h.key_press(egui::Key::Escape);
+    h.run();
+    add_piece(&mut h);
+    h.get_by_label("Edit").click();
+    h.run();
+    assert!(!h.get_by_label("Undo").accesskit_node().is_disabled());
+    assert!(h.get_by_label("Redo").accesskit_node().is_disabled());
 }
