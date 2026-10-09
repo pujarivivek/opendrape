@@ -238,6 +238,11 @@ impl OpenDrapeApp {
             .scene(self.editor.doc.project(), self.stage.shoulder_y())
     }
 
+    /// What the pointer does in the 3D view: the gizmo handle under it, a drag in progress.
+    pub fn arranger(&self) -> &Arranger {
+        &self.arranger
+    }
+
     /// The 3D view's camera and rectangle as last drawn.
     pub fn view_camera(&self) -> Option<ScreenCamera> {
         self.view_camera
@@ -362,6 +367,9 @@ impl OpenDrapeApp {
         self.toolbar(ui);
         self.notes(ui);
         ui.separator();
+        // From the moment Play is pressed, not from the first frame of the drape: the drape is
+        // made from the pieces as they are then.
+        let draping = self.is_draping();
         let (Some(viewport), Some(rs)) = (self.viewport.as_mut(), frame.wgpu_render_state()) else {
             ui.centered_and_justified(|ui| ui.label(tr!("viewport-no-gpu")));
             return;
@@ -386,18 +394,27 @@ impl OpenDrapeApp {
                 selected: self.editor.selection.piece(),
             },
         };
-        if let Some(drawn) = viewport.ui(ui, rs, show) {
-            self.view_camera = Some(drawn.camera);
-            if sim.is_none() {
-                self.arrange(ui, &drawn.response, &drawn.camera, &scene);
+        let drawn = viewport.ui(ui, rs, show);
+        match &drawn {
+            Some(drawn) if !draping => self.arrange(ui, &drawn.response, &drawn.camera, &scene),
+            _ => {
+                // No arranging now (a drape, or no view to arrange in): a gizmo drag still held
+                // ends where it is, and nothing is lit.
+                self.arranger.release(&mut self.editor.doc);
+                self.arranger.hovered = None;
             }
+        }
+        if let Some(drawn) = &drawn {
+            self.view_camera = Some(drawn.camera);
             if let Some(viewport) = self.viewport.as_mut() {
-                // A drag that didn't grab the gizmo turns the camera.
+                // A drag that didn't grab the gizmo turns the camera; while one has, the camera
+                // stays put (the handle is held at a screen point), scroll-zoom included.
+                let grabbed = self.arranger.is_dragging();
                 let drag = drawn.response.drag_delta();
-                if drag != egui::Vec2::ZERO && !self.arranger.is_dragging() {
+                if drag != egui::Vec2::ZERO && !grabbed {
                     viewport.camera_mut().drag(drag.x, drag.y);
                 }
-                if drawn.response.hovered() {
+                if drawn.response.hovered() && !grabbed {
                     let scroll = ui.input(|i| i.smooth_scroll_delta.y);
                     if scroll != 0.0 {
                         viewport.camera_mut().zoom(scroll);
@@ -428,6 +445,10 @@ impl OpenDrapeApp {
         let at = |p: egui::Pos2| glam::DVec2::new(f64::from(p.x), f64::from(p.y));
         let shift = ui.input(|i| i.modifiers.shift);
         let editor = &mut self.editor;
+        // Esc gives a gizmo drag up: the piece goes back, with no undo step.
+        if self.arranger.is_dragging() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.arranger.cancel(&mut editor.doc);
+        }
         if response.drag_started_by(egui::PointerButton::Primary)
             && let Some(p) = ui.input(|i| i.pointer.press_origin())
         {
@@ -436,8 +457,10 @@ impl OpenDrapeApp {
         }
         if self.arranger.is_dragging()
             && let Some(p) = response.interact_pointer_pos()
+            && self.arranger.drag_to(cam, &mut editor.doc, at(p), shift)
         {
-            self.arranger.drag_to(cam, &mut editor.doc, at(p), shift);
+            // The first move of this drag the project refused.
+            editor.notice = Some(tr!("notice-refused"));
         }
         if response.drag_stopped() {
             self.arranger.release(&mut editor.doc);
@@ -459,10 +482,10 @@ impl OpenDrapeApp {
         if let Some(id) = self.menu_for {
             response.context_menu(|ui| editor.place_menu(ui, id));
         }
-        if !self.arranger.is_dragging()
-            && let Some(p) = response.hover_pos()
-        {
-            self.arranger.hover(cam, scene, &editor.selection, at(p));
+        if !self.arranger.is_dragging() {
+            // Off the view, nothing is under the pointer.
+            let over = response.hover_pos().map(at);
+            self.arranger.hover(cam, scene, &editor.selection, over);
         }
         // Drawn where the piece is now, after this frame's drag.
         let scene = self
@@ -941,6 +964,9 @@ impl eframe::App for OpenDrapeApp {
             0.9 * self.fps + 0.1 / dt
         };
         let width = ui.available_width();
+        // Decided before the 3D view has run: Escape that gives a gizmo drag up, or an Undo or
+        // Delete typed while it is held, is not also the pattern table's.
+        let gizmo_drag = self.arranger.is_dragging();
         egui::Panel::left("view_3d")
             .resizable(true)
             .default_size(width * 0.42)
@@ -949,7 +975,7 @@ impl eframe::App for OpenDrapeApp {
         // Decided here, before the question or message box below has run: when one of them is
         // closed by Escape this frame, that Escape must not reach the pattern table too.
         let keys_for_pattern =
-            self.pending.is_none() && self.error.is_none() && self.offered.is_none();
+            self.pending.is_none() && self.error.is_none() && self.offered.is_none() && !gizmo_drag;
         egui::CentralPanel::default().show(ui, |ui| self.editor.ui_with_keys(ui, keys_for_pattern));
         self.unsaved_changes_modal(frame, &ctx);
         self.error_modal(&ctx);

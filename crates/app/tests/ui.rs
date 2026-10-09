@@ -1415,3 +1415,374 @@ fn right_clicking_a_piece_in_3d_offers_place_at() {
     let placed = h.state().editor().doc.project().placement_of(PieceId(1));
     assert!(placed.is_some_and(|p| p.curve.is_some()), "{placed:?}");
 }
+
+// The gizmo in the 3D view of the real app (drawn off-screen): who gets a press, when it is
+// live, and what the camera does while a handle is held. The maths and the undo steps are
+// tested without a window in `tests/arrange.rs`.
+
+use glam::DVec2;
+use opendrape::arrange::gizmo::{AXES, Gizmo};
+
+fn screen(p: DVec2) -> egui::Pos2 {
+    egui::pos2(p.x as f32, p.y as f32)
+}
+
+fn pointer_button(h: &mut App, at: DVec2, pressed: bool) {
+    h.event(egui::Event::PointerButton {
+        pos: screen(at),
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    });
+}
+
+/// Presses at `from` and moves to `to` in four frames, holding the button.
+fn grab_and_pull(h: &mut App, from: DVec2, to: DVec2) {
+    h.hover_at(screen(from));
+    h.step();
+    pointer_button(h, from, true);
+    h.step();
+    for k in 1..=4 {
+        h.hover_at(screen(from.lerp(to, f64::from(k) / 4.0)));
+        h.step();
+    }
+}
+
+fn let_go(h: &mut App, at: DVec2) {
+    pointer_button(h, at, false);
+    h.step();
+}
+
+/// A piece in the pattern window, selected, with the 3D view drawn: the view's camera and the
+/// piece's gizmo.
+fn piece_with_gizmo(h: &mut App) -> (opendrape::arrange::ScreenCamera, Gizmo) {
+    add_piece(h);
+    h.state_mut().editor_mut().selection = Selection::Piece(PieceId(1));
+    h.run();
+    let cam = h.state().view_camera().expect("the 3D view was drawn");
+    let scene = h.state_mut().arranged_scene();
+    let g = opendrape::arrange::Arranger::gizmo(&cam, &scene, &Selection::Piece(PieceId(1)))
+        .expect("a selected piece has a gizmo");
+    (cam, g)
+}
+
+fn near_tip(cam: &opendrape::arrange::ScreenCamera, g: &Gizmo, axis: usize) -> DVec2 {
+    cam.project(g.arrow_tip(axis) - AXES[axis] * g.size * 0.1)
+        .unwrap()
+}
+
+fn own_place(h: &App) -> Option<opendrape_core::Placement> {
+    h.state().editor().doc.project().placement_of(PieceId(1))
+}
+
+#[test]
+fn a_click_on_the_gizmo_keeps_the_piece_selected() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    let (cam, g) = piece_with_gizmo(&mut h);
+    // The tip of the x arrow, the middle of the y arrow and the centre square: nothing of the
+    // piece is under the tips, and a press and release there is a click, not a drag.
+    for at in [
+        near_tip(&cam, &g, 0),
+        near_tip(&cam, &g, 1),
+        cam.project(g.centre).unwrap(),
+    ] {
+        assert!(g.hit(&cam, at).is_some());
+        click_at(&mut h, at);
+        assert_eq!(
+            h.state().editor().selection,
+            Selection::Piece(PieceId(1)),
+            "a click on the gizmo at {at}"
+        );
+    }
+    assert_eq!(own_place(&h), None, "and it moved nothing");
+    // A click on nothing still clears it.
+    let (corner, _) = cam.rect();
+    click_at(&mut h, corner + DVec2::new(8.0, 8.0));
+    assert_eq!(h.state().editor().selection, Selection::None);
+}
+
+#[test]
+fn the_handle_under_the_pointer_is_lit_until_the_pointer_leaves_the_view() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    let (cam, g) = piece_with_gizmo(&mut h);
+    h.hover_at(screen(near_tip(&cam, &g, 2)));
+    h.step();
+    assert_eq!(
+        h.state().arranger().hovered,
+        Some(opendrape::arrange::gizmo::Handle::Move(2))
+    );
+    // Over the pattern window on the right.
+    h.hover_at(egui::pos2(900.0, 300.0));
+    h.step();
+    assert_eq!(h.state().arranger().hovered, None);
+    // Back on the handle, and then the selection goes while the pointer stays there.
+    h.hover_at(screen(near_tip(&cam, &g, 2)));
+    h.step();
+    assert!(h.state().arranger().hovered.is_some());
+    h.state_mut().editor_mut().selection = Selection::None;
+    h.step();
+    assert_eq!(h.state().arranger().hovered, None);
+}
+
+#[test]
+fn the_camera_stays_put_while_a_handle_is_held_scroll_zoom_included() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    let (cam, g) = piece_with_gizmo(&mut h);
+    let before = h.state().orbit_camera().unwrap();
+    let from = near_tip(&cam, &g, 1);
+    grab_and_pull(&mut h, from, from + DVec2::new(0.0, -30.0));
+    assert!(h.state().arranger().is_dragging());
+    for _ in 0..3 {
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, 60.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.step();
+    }
+    let held = h.state().orbit_camera().unwrap();
+    assert_eq!(
+        (held.yaw, held.pitch, held.distance),
+        (before.yaw, before.pitch, before.distance),
+        "no orbit and no zoom while a handle is held"
+    );
+    let_go(&mut h, from + DVec2::new(0.0, -30.0));
+    assert!(!h.state().arranger().is_dragging());
+    assert!(own_place(&h).is_some(), "the piece moved");
+    // The scroll wheel does zoom when nothing is held.
+    for _ in 0..3 {
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, 60.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.step();
+    }
+    assert!(h.state().orbit_camera().unwrap().distance < before.distance);
+}
+
+#[test]
+fn escape_gives_a_gizmo_drag_up_and_the_piece_goes_back_with_no_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    let (cam, g) = piece_with_gizmo(&mut h);
+    let before = h.state().editor().doc.project().clone();
+    let from = near_tip(&cam, &g, 1);
+    grab_and_pull(&mut h, from, from + DVec2::new(0.0, -40.0));
+    assert!(own_place(&h).is_some(), "it followed the pointer");
+    h.key_press(egui::Key::Escape);
+    h.step();
+    assert!(!h.state().arranger().is_dragging());
+    assert_eq!(
+        *h.state().editor().doc.project(),
+        before,
+        "back where it was"
+    );
+    assert_eq!(
+        h.state().editor().selection,
+        Selection::Piece(PieceId(1)),
+        "Escape was the drag's, not the pattern window's"
+    );
+    // The pointer going on moving, and letting go, change nothing.
+    h.hover_at(screen(from + DVec2::new(0.0, -60.0)));
+    h.step();
+    let_go(&mut h, from + DVec2::new(0.0, -60.0));
+    assert_eq!(*h.state().editor().doc.project(), before);
+    // The only step in the history is the piece being drawn.
+    h.state_mut().editor_mut().undo();
+    assert_eq!(pieces(&h), 0);
+    assert!(!h.state().editor().can_undo());
+}
+
+#[test]
+fn a_refused_gizmo_move_shows_the_notice_once_per_drag() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    // A project that is already invalid (an internal line of one point) refuses every change.
+    let mut project = Project::new();
+    let mut piece = Piece::rectangle(PieceId(0), "Front", Point2::new(0.0, 0.0), 300.0, 500.0);
+    piece.lines = vec![InternalLine::open(&[Point2::new(10.0, 10.0)])];
+    project.add_piece(piece);
+    assert!(project.check().is_err());
+    h.state_mut().editor_mut().set_project(project, None);
+    h.state_mut().editor_mut().selection = Selection::Piece(PieceId(1));
+    h.run();
+    let cam = h.state().view_camera().expect("the 3D view was drawn");
+    let scene = h.state_mut().arranged_scene();
+    let g = opendrape::arrange::Arranger::gizmo(&cam, &scene, &Selection::Piece(PieceId(1)))
+        .expect("a gizmo");
+    let from = cam.project(g.centre).unwrap();
+    h.hover_at(screen(from));
+    h.step();
+    pointer_button(&mut h, from, true);
+    h.step();
+    h.hover_at(screen(from + DVec2::new(20.0, 0.0)));
+    h.step();
+    h.hover_at(screen(from + DVec2::new(30.0, 0.0)));
+    h.step();
+    let refused = "That change can't be made: the pattern would become too large or invalid.";
+    assert_eq!(h.state().editor().notice.as_deref(), Some(refused));
+    // Dismissed, it does not come back with the next move of the same drag.
+    h.state_mut().editor_mut().notice = None;
+    h.hover_at(screen(from + DVec2::new(40.0, 0.0)));
+    h.step();
+    h.hover_at(screen(from + DVec2::new(50.0, 0.0)));
+    h.step();
+    assert_eq!(h.state().editor().notice, None);
+    let_go(&mut h, from + DVec2::new(50.0, 0.0));
+    assert_eq!(own_place(&h), None, "nothing was written");
+}
+
+#[test]
+fn the_gizmo_is_not_live_from_the_moment_play_is_pressed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    // Big, so that making its fabric takes the simulation thread longer than this test needs
+    // frames to press and pull at a handle.
+    h.state_mut().editor_mut().doc.edit(|p| {
+        p.add_piece(Piece::rectangle(
+            PieceId(0),
+            "Front",
+            Point2::new(0.0, 0.0),
+            2400.0,
+            2400.0,
+        ))
+    });
+    h.state_mut().editor_mut().selection = Selection::Piece(PieceId(1));
+    h.run();
+    let cam = h.state().view_camera().expect("the 3D view was drawn");
+    let scene = h.state_mut().arranged_scene();
+    let g = opendrape::arrange::Arranger::gizmo(&cam, &scene, &Selection::Piece(PieceId(1)))
+        .expect("a gizmo");
+    let from = near_tip(&cam, &g, 1);
+    let project = h.state().editor().doc.project().clone();
+
+    // Between Play and the first frame of the drape, the pointer goes to the y arrow, presses,
+    // pulls, and lets go. If the computer was so slow that the first frame came before that was
+    // over, the attempt means nothing and is made again.
+    let mut waited = 0;
+    for _attempt in 0..10 {
+        h.get_by_label("Play").click();
+        h.step();
+        assert!(h.state().is_draping(), "Play was pressed");
+        waited = 0;
+        let mut watch = |h: &mut App| {
+            h.step();
+            let app = h.state();
+            if app.is_draping() && app.sim_frame().is_none() {
+                waited += 1;
+            }
+            assert!(
+                !app.arranger().is_dragging() && app.arranger().hovered.is_none(),
+                "the gizmo is not live"
+            );
+        };
+        h.hover_at(screen(from));
+        watch(&mut h);
+        pointer_button(&mut h, from, true);
+        watch(&mut h);
+        for k in 1..=4 {
+            h.hover_at(screen(from + DVec2::new(0.0, -10.0 * f64::from(k))));
+            watch(&mut h);
+        }
+        pointer_button(&mut h, from, false);
+        watch(&mut h);
+        assert_eq!(
+            *h.state().editor().doc.project(),
+            project,
+            "the piece was not moved"
+        );
+        assert!(
+            h.state().is_draping(),
+            "so the drape was not reset by an edit"
+        );
+        if waited >= 7 {
+            break;
+        }
+        h.get_by_label("Reset").click();
+        h.run_steps(2);
+        wait_until(&mut h, "arranging again", |a| !a.is_draping());
+    }
+    assert!(waited >= 7, "the drape was always ahead of the test");
+}
+
+#[test]
+fn a_gizmo_drag_in_the_real_view_is_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    let (cam, g) = piece_with_gizmo(&mut h);
+    let from = near_tip(&cam, &g, 1);
+    let to = from + DVec2::new(0.0, -40.0);
+    grab_and_pull(&mut h, from, to);
+    let_go(&mut h, to);
+    let moved = own_place(&h).expect("it moved");
+    assert!(moved.position[1] > g.centre.y, "up the screen is up");
+    h.state_mut().editor_mut().undo();
+    assert_eq!(own_place(&h), None, "one step undoes the whole drag");
+    assert_eq!(pieces(&h), 1);
+}
+
+#[test]
+fn a_gizmo_drag_still_held_when_play_is_pressed_ends_where_it_is() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    h.state_mut().editor_mut().doc.edit(|p| {
+        p.add_piece(Piece::rectangle(
+            PieceId(0),
+            "Front",
+            Point2::new(0.0, 0.0),
+            2400.0,
+            2400.0,
+        ))
+    });
+    h.state_mut().editor_mut().selection = Selection::Piece(PieceId(1));
+    h.run();
+    let cam = h.state().view_camera().expect("the 3D view was drawn");
+    let scene = h.state_mut().arranged_scene();
+    let g = opendrape::arrange::Arranger::gizmo(&cam, &scene, &Selection::Piece(PieceId(1)))
+        .expect("a gizmo");
+    let from = near_tip(&cam, &g, 1);
+    grab_and_pull(&mut h, from, from + DVec2::new(0.0, -30.0));
+    assert!(h.state().arranger().is_dragging());
+    // Play is pressed from the keyboard, with the handle still held.
+    h.get_by_label("Play").focus();
+    h.key_press(egui::Key::Enter);
+    h.step();
+    assert!(h.state().is_draping(), "Play was pressed");
+    let snapshot = h.state().editor().doc.project().clone();
+    h.hover_at(screen(from + DVec2::new(0.0, -50.0)));
+    h.step();
+    h.hover_at(screen(from + DVec2::new(0.0, -70.0)));
+    h.step();
+    assert!(
+        !h.state().arranger().is_dragging(),
+        "the drag ended with Play"
+    );
+    assert_eq!(
+        *h.state().editor().doc.project(),
+        snapshot,
+        "and moved nothing since"
+    );
+    assert!(
+        h.state().is_draping(),
+        "so the drape was not reset by an edit"
+    );
+    let_go(&mut h, from + DVec2::new(0.0, -70.0));
+    // The history has the piece and the drag, as separate steps.
+    h.state_mut().editor_mut().undo();
+    assert_eq!(own_place(&h), None);
+    assert_eq!(pieces(&h), 1);
+}

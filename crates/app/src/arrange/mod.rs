@@ -32,14 +32,20 @@ pub enum Moved {
 struct GizmoDrag {
     handle: Handle,
     shape: PieceId,
-    /// The piece's placement when the drag began.
+    /// The piece's placement when the drag began, as shown (its own, or the one it takes).
     original: Placement,
+    /// What the project stored for the piece then: None when it had no placement of its own. A
+    /// drag that ends where it began gives the piece this back, not a copy of `original`.
+    stored: Option<Placement>,
     start: DVec2,
     /// A turn is followed move by move: where the pointer was at the last move...
     last: DVec2,
     /// ...and the angle (radians) turned so far, which can go past half a turn.
     turned: f64,
+    /// What the piece has done as of the last move the project accepted.
     moved: Option<Moved>,
+    /// A refused move of this drag has been reported already: one notice per drag.
+    refusal_noted: bool,
 }
 
 /// What the pointer does in the 3D view while arranging: clicking picks a piece, and the
@@ -66,7 +72,8 @@ impl Arranger {
     }
 
     /// A click: the piece under the pointer becomes the selection (in the pattern window too);
-    /// a click on nothing clears it.
+    /// a click on nothing clears it. A click on a handle of the selected piece's gizmo is the
+    /// gizmo's: it neither clears the selection nor picks the piece behind the handle.
     pub fn click(
         &mut self,
         cam: &ScreenCamera,
@@ -74,21 +81,35 @@ impl Arranger {
         selection: &mut Selection,
         pos: DVec2,
     ) {
+        if Self::handle_at(cam, scene, selection, pos).is_some() {
+            return;
+        }
         let (origin, dir) = cam.ray(pos);
         *selection = scene
             .pick(origin, dir)
             .map_or(Selection::None, Selection::Piece);
     }
 
-    /// The pointer moved with no button down: note the handle under it.
+    /// The handle of the selected piece's gizmo under screen point `pos`, if any.
+    fn handle_at(
+        cam: &ScreenCamera,
+        scene: &ArrangedScene,
+        selection: &Selection,
+        pos: DVec2,
+    ) -> Option<Handle> {
+        Self::gizmo(cam, scene, selection).and_then(|g| g.hit(cam, pos))
+    }
+
+    /// The pointer is at `pos` with no button down (None: it is not over the view): note the
+    /// handle under it, or none.
     pub fn hover(
         &mut self,
         cam: &ScreenCamera,
         scene: &ArrangedScene,
         selection: &Selection,
-        pos: DVec2,
+        pos: Option<DVec2>,
     ) {
-        self.hovered = Self::gizmo(cam, scene, selection).and_then(|g| g.hit(cam, pos));
+        self.hovered = pos.and_then(|p| Self::handle_at(cam, scene, selection, p));
     }
 
     /// A drag starts at `pos`: on a handle of the selected piece's gizmo, it grabs it and
@@ -117,24 +138,45 @@ impl Arranger {
             handle,
             shape,
             original: panel.placement,
+            stored: doc.project().placement_of(shape),
             start: pos,
             last: pos,
             turned: 0.0,
             moved: None,
+            refusal_noted: false,
         });
         true
     }
 
     /// The pointer moved to `pos` during a gizmo drag: the piece follows. Shift snaps a turn
     /// to 15° steps.
-    pub fn drag_to(&mut self, cam: &ScreenCamera, doc: &mut Document, pos: DVec2, shift: bool) {
-        let Some(d) = &mut self.drag else { return };
+    ///
+    /// A move the maths can't answer (None), or one that would put the piece where no placement
+    /// may be (not a number, or beyond [`opendrape_core::MAX_PLACEMENT_M`] of the form), leaves
+    /// the piece where it last was valid, and the readout with it. A move that brings the piece
+    /// back to where the drag found it gives it back what it had stored before (nothing, for a
+    /// piece that takes its place from elsewhere), so a drag that nets to nothing changes
+    /// nothing and makes no undo step.
+    ///
+    /// Returns true the first time in a drag that the project refused the piece's new place: the
+    /// caller shows the refusal notice then (once per drag, as the pattern table does).
+    pub fn drag_to(
+        &mut self,
+        cam: &ScreenCamera,
+        doc: &mut Document,
+        pos: DVec2,
+        shift: bool,
+    ) -> bool {
+        let Some(d) = &mut self.drag else {
+            return false;
+        };
         let o = d.original;
         let centre = DVec3::from_array(o.position);
-        let (moved, placement) = match d.handle {
+        let mut turned = d.turned;
+        let (moved, mut placement) = match d.handle {
             Handle::Move(k) => {
                 let Some(m) = axis_drag(cam, centre, AXES[k], d.start, pos) else {
-                    return;
+                    return false;
                 };
                 let to = centre + AXES[k] * m;
                 (
@@ -147,7 +189,7 @@ impl Arranger {
             }
             Handle::Plane => {
                 let Some(v) = plane_drag(cam, centre, d.start, pos) else {
-                    return;
+                    return false;
                 };
                 (
                     Moved::Across(v),
@@ -162,27 +204,57 @@ impl Arranger {
                 // added up from the small angles between successive pointer positions. A
                 // position the ring can't be read at changes nothing.
                 let Some(step) = ring_angle(cam, centre, AXES[k], d.last, pos) else {
-                    return;
+                    return false;
                 };
-                d.turned += step;
-                d.last = pos;
-                let mut a = d.turned;
+                turned += step;
+                let mut a = turned;
                 if shift {
                     a = snap_angle(a, SNAP_DEG);
                 }
-                let turned = DQuat::from_axis_angle(AXES[k], a) * DQuat::from_array(o.rotation);
+                let q = DQuat::from_axis_angle(AXES[k], a) * DQuat::from_array(o.rotation);
                 (
                     Moved::Turned(a),
                     Placement {
-                        rotation: turned.normalize().to_array(),
+                        rotation: q.normalize().to_array(),
                         ..o
                     },
                 )
             }
         };
-        d.moved = Some(moved);
+        let nothing = match moved {
+            Moved::Along(_, m) => m == 0.0,
+            Moved::Across(v) => v == DVec3::ZERO,
+            Moved::Turned(a) => a == 0.0,
+        };
+        if nothing {
+            placement = o; // not "o, give or take the last bit of a normalised turn"
+        }
+        if !placement.is_valid() {
+            return false;
+        }
+        d.turned = turned;
+        d.last = pos;
         let shape = d.shape;
-        doc.gesture_edit(|p| p.set_placement(shape, Some(placement)));
+        let stored = if placement == o {
+            d.stored
+        } else {
+            Some(placement)
+        };
+        doc.gesture_edit(|p| p.set_placement(shape, stored));
+        if doc.last_change_refused() {
+            return !std::mem::replace(&mut d.refusal_noted, true);
+        }
+        d.moved = Some(moved);
+        false
+    }
+
+    /// The drag is given up (Esc): the piece goes back to where the drag found it, and the
+    /// drag makes no undo step.
+    pub fn cancel(&mut self, doc: &mut Document) {
+        if let Some(d) = self.drag.take() {
+            doc.gesture_edit(|p| p.set_placement(d.shape, d.stored));
+            doc.end_gesture();
+        }
     }
 
     /// The drag ended: everything it did is one undo step.
