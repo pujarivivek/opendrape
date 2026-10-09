@@ -1300,3 +1300,54 @@ fn quit_still_works_while_the_restore_question_is_shown() {
         "quitting without an answer keeps the copy for next time"
     );
 }
+
+/// Presses and releases the primary button at screen point `pos`.
+fn click_at(h: &mut App, pos: glam::DVec2) {
+    let p = egui::pos2(pos.x as f32, pos.y as f32);
+    h.hover_at(p);
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    h.run();
+}
+
+#[test]
+fn clicking_a_piece_in_3d_selects_it_in_the_pattern_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    add_piece(&mut h);
+    let camera = h.state().view_camera().expect("the 3D view was drawn");
+    let centre = h.state_mut().arranged_scene().panels[0].placement.position;
+    let on_piece = camera.project(glam::DVec3::from_array(centre)).unwrap();
+    click_at(&mut h, on_piece);
+    assert_eq!(h.state().editor().selection, Selection::Piece(PieceId(1)));
+    // The view's top-left corner: only background there.
+    let (corner, _) = camera.rect();
+    click_at(&mut h, corner + glam::DVec2::new(8.0, 8.0));
+    assert_eq!(h.state().editor().selection, Selection::None);
+}
+
+#[test]
+fn the_view_buttons_turn_the_camera_to_each_side() {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    for (label, yaw) in [
+        ("Back", PI),
+        ("Left side", FRAC_PI_2),
+        ("Right side", -FRAC_PI_2),
+        ("Front", 0.0),
+    ] {
+        h.get_by_label(label).click();
+        h.run();
+        let camera = h.state().orbit_camera().unwrap();
+        assert!((camera.yaw - yaw).abs() < 1e-6, "{label}: {}", camera.yaw);
+    }
+}

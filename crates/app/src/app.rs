@@ -1,3 +1,4 @@
+use crate::arrange::{ArrangedScene, Arranger, SceneCache, ScreenCamera};
 use crate::diagnostics::Diagnostics;
 use crate::editor::{self, PatternEditor};
 use crate::file_dialogs::{DialogKind, FileDialogs};
@@ -6,10 +7,12 @@ use crate::recovery::Recovery;
 use crate::sim_runner::{DrapeNote, SimFrame, SimRunner};
 use crate::stage::Stage;
 use crate::tr;
-use crate::viewport::Viewport;
+use crate::viewport::{Show, Viewport};
 use egui::{Key, KeyboardShortcut, Modifiers, ViewportCommand};
 use opendrape_core::{PieceId, Project};
 use opendrape_mesh::MeshNote;
+use opendrape_mesh::place::PlaceAt;
+use opendrape_render::OrbitCamera;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -110,6 +113,12 @@ pub struct OpenDrapeApp {
     stage: Arc<Stage>,
     /// The project as it was when Play was pressed: any change to it returns to arranging.
     draped: Option<Arc<Project>>,
+    /// The pieces as the 3D view shows them while arranging.
+    arranged: SceneCache,
+    /// What the pointer does in the 3D view while arranging.
+    arranger: Arranger,
+    /// The 3D view's camera as last drawn.
+    view_camera: Option<ScreenCamera>,
     pending: Option<Pending>,
     /// An action requested from code rather than the menu or keyboard; handled on the next frame.
     queued: Option<FileAction>,
@@ -154,6 +163,9 @@ impl OpenDrapeApp {
             editor: PatternEditor::new(),
             stage,
             draped: None,
+            arranged: SceneCache::default(),
+            arranger: Arranger::default(),
+            view_camera: None,
             pending: None,
             queued: None,
             error: None,
@@ -214,6 +226,22 @@ impl OpenDrapeApp {
         &self.stage
     }
 
+    /// The pieces as the 3D view shows them while arranging.
+    pub fn arranged_scene(&mut self) -> Rc<ArrangedScene> {
+        self.arranged
+            .scene(self.editor.doc.project(), self.stage.shoulder_y())
+    }
+
+    /// The 3D view's camera and rectangle as last drawn.
+    pub fn view_camera(&self) -> Option<ScreenCamera> {
+        self.view_camera
+    }
+
+    /// The 3D view's orbit camera.
+    pub fn orbit_camera(&self) -> Option<OrbitCamera> {
+        self.viewport.as_ref().map(|v| *v.camera())
+    }
+
     /// `fps` is `None` while paused: the window then only redraws on input.
     pub fn stats_text(fps: Option<f32>, step_ms: f64, points: usize) -> String {
         let (ms, points) = (format!("{step_ms:.1}"), points.to_string());
@@ -251,6 +279,17 @@ impl OpenDrapeApp {
             {
                 clicked = Some(Toolbar::Reset);
             }
+            ui.separator();
+            for (side, label) in [
+                (PlaceAt::Front, tr!("view-front")),
+                (PlaceAt::Back, tr!("view-back")),
+                (PlaceAt::LeftSide, tr!("view-left")),
+                (PlaceAt::RightSide, tr!("view-right")),
+            ] {
+                if ui.button(label).clicked() {
+                    clicked = Some(Toolbar::Look(side));
+                }
+            }
         });
         match clicked {
             Some(Toolbar::Play) => {
@@ -263,6 +302,11 @@ impl OpenDrapeApp {
             Some(Toolbar::Reset) => {
                 runner.reset();
                 self.draped = None;
+            }
+            Some(Toolbar::Look(side)) => {
+                if let Some(v) = &mut self.viewport {
+                    v.look_from(side.angle());
+                }
             }
             None => {}
         }
@@ -300,35 +344,76 @@ impl OpenDrapeApp {
         }
     }
 
-    /// The 3D view: its toolbar and notes, the form and the drape, and the speed overlay.
+    /// The 3D view: its toolbar and notes, the form with the pieces being arranged or the
+    /// drape, and the speed overlay.
     fn view_3d(&mut self, ui: &mut egui::Ui, frame: &eframe::Frame) {
         self.reset_if_edited();
         self.toolbar(ui);
         self.notes(ui);
         ui.separator();
-        let sim = self.sim_frame();
+        let (Some(viewport), Some(rs)) = (self.viewport.as_mut(), frame.wgpu_render_state()) else {
+            ui.centered_and_justified(|ui| ui.label(tr!("viewport-no-gpu")));
+            return;
+        };
+        let sim = self.runner.as_ref().and_then(SimRunner::latest);
         let fps = self
             .runner
             .as_ref()
             .is_some_and(SimRunner::is_playing)
             .then_some(self.fps);
-        match (self.viewport.as_mut(), frame.wgpu_render_state()) {
-            (Some(viewport), Some(rs)) => {
-                let rect = ui.available_rect_before_wrap();
-                viewport.ui(ui, rs, sim.as_deref());
-                if let Some(f) = &sim {
-                    ui.painter().text(
-                        rect.left_top() + egui::vec2(10.0, 8.0),
-                        egui::Align2::LEFT_TOP,
-                        Self::stats_text(fps, f.step_ms, f.positions.len()),
-                        egui::FontId::proportional(13.0),
-                        egui::Color32::from_gray(60),
-                    );
+        // Kept up to date while draping too: the project doesn't change then, so it costs
+        // nothing, and Reset shows the pieces at once.
+        let scene = self
+            .arranged
+            .scene(self.editor.doc.project(), self.stage.shoulder_y());
+        let rect = ui.available_rect_before_wrap();
+        // Arranging until the drape's first frame arrives.
+        let show = match &sim {
+            Some(f) => Show::Drape(f),
+            None => Show::Pieces {
+                scene: &scene,
+                selected: self.editor.selection.piece(),
+            },
+        };
+        if let Some(drawn) = viewport.ui(ui, rs, show) {
+            self.view_camera = Some(drawn.camera);
+            if sim.is_none() {
+                self.arrange(&drawn.response, &drawn.camera, &scene);
+            }
+            if let Some(viewport) = self.viewport.as_mut() {
+                // A drag turns the camera.
+                let drag = drawn.response.drag_delta();
+                if drag != egui::Vec2::ZERO {
+                    viewport.camera_mut().drag(drag.x, drag.y);
+                }
+                if drawn.response.hovered() {
+                    let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+                    if scroll != 0.0 {
+                        viewport.camera_mut().zoom(scroll);
+                    }
                 }
             }
-            _ => {
-                ui.centered_and_justified(|ui| ui.label(tr!("viewport-no-gpu")));
-            }
+        }
+        if let Some(f) = &sim {
+            ui.painter().text(
+                rect.left_top() + egui::vec2(10.0, 8.0),
+                egui::Align2::LEFT_TOP,
+                Self::stats_text(fps, f.step_ms, f.positions.len()),
+                egui::FontId::proportional(13.0),
+                egui::Color32::from_gray(60),
+            );
+        }
+    }
+
+    /// The pointer in the 3D view while arranging: a click picks a piece (or clears the
+    /// selection).
+    fn arrange(&mut self, response: &egui::Response, cam: &ScreenCamera, scene: &ArrangedScene) {
+        if response.clicked()
+            && let Some(p) = response.interact_pointer_pos()
+        {
+            let at = glam::DVec2::new(f64::from(p.x), f64::from(p.y));
+            self.arranger
+                .click(cam, scene, &mut self.editor.selection, at);
         }
     }
 
@@ -736,6 +821,8 @@ enum Toolbar {
     Pause,
     Resume,
     Reset,
+    /// Turn the camera to look from this side of the form.
+    Look(PlaceAt),
 }
 
 /// A drape note as the student reads it, naming pieces as the project does now.
