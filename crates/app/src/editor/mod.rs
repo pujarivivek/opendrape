@@ -206,8 +206,11 @@ impl PatternEditor {
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         // Sampled before any text box runs this frame. Escape has already cleared focus by
-        // now, so an open number box also counts as owning the keyboard.
-        let keys_free = !ui.ctx().text_edit_focused() && self.canvas.length_box.is_none();
+        // now, so an open number box, or a property field that was being typed in last frame,
+        // also counts as owning the keyboard.
+        let keys_free = !ui.ctx().text_edit_focused()
+            && self.canvas.length_box.is_none()
+            && !self.panel.is_editing();
         if keys_free {
             self.shortcuts(ui);
         }

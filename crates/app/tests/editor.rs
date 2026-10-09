@@ -801,3 +801,73 @@ fn status_bar_explains_the_current_tool() {
     click(&mut h, 100.0, 100.0);
     h.get_by_label_contains("Type a number for an exact length");
 }
+
+#[test]
+fn clicking_from_one_field_to_another_applies_the_first() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    click(&mut h, 100.0, 100.0);
+    h.get_by_role_and_label(Role::TextInput, "X").click();
+    h.run();
+    cmd(&mut h, Key::A);
+    h.get_by_role_and_label(Role::TextInput, "X")
+        .type_text("12");
+    h.run();
+    h.get_by_role_and_label(Role::TextInput, "Y").click();
+    h.run();
+    h.run();
+    assert_eq!(
+        piece_of(&h, id).vertices[0].pos,
+        Point2::new(120.0, 100.0),
+        "the text typed into X was applied"
+    );
+    assert_eq!(field_text(&h, "X"), "12.0");
+}
+
+#[test]
+fn a_refused_value_keeps_its_notice_after_clicking_away() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    click(&mut h, 250.0, 100.0);
+    h.get_by_role_and_label(Role::TextInput, "Length").click();
+    h.run();
+    cmd(&mut h, Key::A);
+    h.get_by_role_and_label(Role::TextInput, "Length")
+        .type_text("abc");
+    h.run();
+    click(&mut h, 700.0, 550.0); // empty canvas
+    assert!(
+        h.state().canvas_rect.contains(at(&h, 700.0, 550.0)),
+        "the click landed on the canvas"
+    );
+    assert_eq!(piece_of(&h, id), untouched_rectangle(id));
+    assert!(h.state().notice.is_some());
+}
+
+#[test]
+fn a_blank_name_is_refused() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    click(&mut h, 250.0, 300.0);
+    type_into(&mut h, "Name", "   ");
+    assert_eq!(piece_of(&h, id).name, "Front");
+    assert!(h.state().notice.is_some());
+}
+
+#[test]
+fn escape_in_a_field_keeps_the_selection() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    click(&mut h, 250.0, 100.0);
+    h.get_by_role_and_label(Role::TextInput, "Length").click();
+    h.run();
+    cmd(&mut h, Key::A);
+    h.get_by_role_and_label(Role::TextInput, "Length")
+        .type_text("45");
+    h.run();
+    key(&mut h, Key::Escape);
+    h.run();
+    assert_eq!(h.state().selection, Selection::Edge(id, 0));
+    assert_eq!(piece_of(&h, id), untouched_rectangle(id));
+    assert_eq!(field_text(&h, "Length"), "30.0");
+}

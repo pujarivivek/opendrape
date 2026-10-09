@@ -119,7 +119,9 @@ impl PatternEditor {
             Tool::Edit | Tool::AddPoint => w,
         });
         self.canvas.cursor = cursor;
-        if response.clicked() || response.drag_started() {
+        // A press on the canvas dismisses the last notice, unless a property field owned the
+        // keys this frame: that press is only the click-away that applied (or refused) the text.
+        if keys_free && response.contains_pointer() && ui.input(|i| i.pointer.any_pressed()) {
             self.notice = None;
         }
         let press = ui

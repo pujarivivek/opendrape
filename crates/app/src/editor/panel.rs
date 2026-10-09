@@ -6,22 +6,34 @@ use crate::tr;
 use egui::{Id, Key};
 use opendrape_core::{Edge, PieceId, Point2, Project, Units, VertexKind};
 use opendrape_geom::{self as geom, Anchor};
+use std::collections::HashMap;
 
 /// Furthest from the origin a point may be typed (100 m), so a slip can't lose a piece.
 const MAX_COORDINATE_MM: f64 = 100_000.0;
 
 #[derive(Default)]
 pub(super) struct PanelState {
-    /// The field being typed in and its text, applied on Enter or clicking elsewhere.
-    editing: Option<(Id, String)>,
+    /// The text typed into each field that has it, applied on Enter or clicking elsewhere.
+    /// Kept per field, so clicking from one field straight into another loses nothing.
+    editing: HashMap<Id, String>,
+    /// The fields drawn this frame; entries of any other field are dropped.
+    shown: Vec<Id>,
     /// Which end of an edge stays put when its length is typed.
     anchor: Anchor,
+}
+
+impl PanelState {
+    /// A field is being typed in (or was, last frame), so it owns the keyboard.
+    pub(super) fn is_editing(&self) -> bool {
+        !self.editing.is_empty()
+    }
 }
 
 impl PatternEditor {
     pub(super) fn properties(&mut self, ui: &mut egui::Ui) {
         ui.heading(tr!("panel-title"));
         ui.separator();
+        self.panel.shown.clear();
         match self.selection {
             Selection::None => {
                 ui.label(tr!("panel-hint"));
@@ -30,6 +42,8 @@ impl PatternEditor {
             Selection::Edge(id, i) => self.edge_properties(ui, id, i),
             Selection::Vertex(id, i) => self.vertex_properties(ui, id, i),
         }
+        let shown = &self.panel.shown;
+        self.panel.editing.retain(|id, _| shown.contains(id));
     }
 
     fn piece_properties(&mut self, ui: &mut egui::Ui, id: PieceId) {
@@ -43,7 +57,9 @@ impl PatternEditor {
             .show(ui, |ui| {
                 if let Some(name) = self.field(ui, tr!("panel-name"), &piece.name, "") {
                     let name = name.trim().to_owned();
-                    if !name.is_empty() {
+                    if name.is_empty() {
+                        self.notice = Some(tr!("notice-name-empty"));
+                    } else {
                         self.doc.edit(|p| {
                             if let Some(pc) = p.piece_mut(id) {
                                 pc.name = name;
@@ -175,6 +191,7 @@ impl PatternEditor {
     ) -> Option<String> {
         // The selection is part of the id, so typed text can never land on another edge.
         let id = Id::new(("pattern_property", &label, self.selection));
+        self.panel.shown.push(id);
         let typed = text_field(ui, &mut self.panel.editing, id, &label, value);
         ui.label(unit);
         ui.end_row();
@@ -232,16 +249,15 @@ impl PatternEditor {
 /// elsewhere returns it (when it differs from `value`); Escape throws it away.
 fn text_field(
     ui: &mut egui::Ui,
-    editing: &mut Option<(Id, String)>,
+    editing: &mut HashMap<Id, String>,
     id: Id,
     label: &str,
     value: &str,
 ) -> Option<String> {
-    let mine = matches!(editing, Some((e, _)) if *e == id);
-    let mut text = match editing {
-        Some((e, t)) if *e == id => t.clone(),
-        _ => value.to_owned(),
-    };
+    let mut text = editing
+        .get(&id)
+        .cloned()
+        .unwrap_or_else(|| value.to_owned());
     let l = ui.label(label);
     let r = ui
         .add(
@@ -251,14 +267,15 @@ fn text_field(
         )
         .labelled_by(l.id);
     if r.lost_focus() {
+        // egui reports the loss for two frames; only the first has an entry to apply.
         let escaped = ui.input(|i| i.key_pressed(Key::Escape));
-        if mine {
-            *editing = None;
-        }
-        return (mine && !escaped && text != value).then_some(text);
+        let had_entry = editing.remove(&id).is_some();
+        return (had_entry && !escaped && text != value).then_some(text);
     }
     if r.has_focus() {
-        *editing = Some((id, text));
+        editing.insert(id, text);
+    } else {
+        editing.remove(&id);
     }
     None
 }

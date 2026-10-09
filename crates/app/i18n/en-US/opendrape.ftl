@@ -54,6 +54,7 @@ piece-default-name = Piece
 notice-need-three-points = A piece needs at least 3 points.
 notice-bad-number = Please type a valid number. Lengths must be at least 0.1 mm and at most 10 m.
 notice-too-close = Too close to an existing point.
+notice-name-empty = A piece needs a name.
 notice-min-points = A piece needs at least 3 points, so this point can't be deleted.
 
 panel-title = Properties
