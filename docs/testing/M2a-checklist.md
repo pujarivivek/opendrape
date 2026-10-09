@@ -10,10 +10,11 @@ the body yet: sewing them on comes in M3.
       right. Drag the divider between them: both sides resize.
 - [ ] Press **H** (or click **Pen (H)**). Click four corners, then click the first
       point again: the piece fills in and is called "Piece 1".
-- [ ] With the pen, click a point. In the number box, type **50** in **Length** and
-      press **Return** (Enter): the next point is exactly 50 cm away, towards your
-      mouse. To set the direction too, type a number in **Length**, press **Tab**,
-      type **90** in **Angle**, and press **Return**: that edge goes straight up.
+- [ ] With the pen, click a point, then type **50**: a small box with **Length** and
+      **Angle** opens with your number in it. Press **Return** (Enter): the next
+      point is exactly 50 cm away, towards your mouse. To set the direction too, type
+      a number in **Length**, press **Tab**, type **90** in **Angle**, and press
+      **Return**: that edge goes straight up.
 - [ ] While drawing, press and drag instead of clicking: that point becomes a
       smooth curve.
 - [ ] **Cmd+Z** while drawing removes only the last point. **Esc** cancels the
