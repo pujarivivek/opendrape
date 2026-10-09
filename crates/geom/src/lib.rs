@@ -3,9 +3,12 @@
 
 use kurbo::{
     BezPath, CubicBez, Line, ParamCurve, ParamCurveArclen, ParamCurveNearest, PathEl, PathSeg,
-    Point, Shape,
+    Point, Shape as _,
 };
 use opendrape_core::{Edge, Piece, Point2, Vertex};
+
+mod shapes;
+pub use shapes::{Shape, ShapeKind, shape_of, shapes, unfolded};
 
 /// Accuracy (mm) of curve lengths and nearest-point searches.
 const ACCURACY: f64 = 1e-4;
