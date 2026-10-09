@@ -1,0 +1,17 @@
+[package]
+name = "opendrape-mesh"
+description = "OpenDrape: pattern pieces into fabric meshes, seams into stitches, and 3D placement"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+opendrape-core.workspace = true
+opendrape-geom.workspace = true
+spade.workspace = true
+
+[lints]
+workspace = true

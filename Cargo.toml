@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/app", "crates/render", "crates/body", "crates/sim", "crates/testkit", "crates/core", "crates/geom", "crates/io", "xtask"]
+members = ["crates/app", "crates/render", "crates/body", "crates/sim", "crates/testkit", "crates/core", "crates/geom", "crates/io", "crates/mesh", "xtask"]
 
 [workspace.package]
 version = "0.1.0"
@@ -18,6 +18,7 @@ opendrape-testkit = { path = "crates/testkit" }
 opendrape-core = { path = "crates/core" }
 opendrape-geom = { path = "crates/geom" }
 opendrape-io = { path = "crates/io" }
+opendrape-mesh = { path = "crates/mesh" }
 parry3d = "=0.31.1"
 rayon = "1.12"
 crossbeam-channel = "0.5"
@@ -42,6 +43,7 @@ tempfile = "3"
 kurbo = "0.13.1"
 earcut = "0.4.11"
 i_overlay = "9.0.1"
+spade = "=2.15.1"
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [workspace.lints.clippy]
@@ -58,6 +60,10 @@ opt-level = 2
 # i_overlay's generics are instantiated inside opendrape-geom (the cut line), so the "*"
 # override above doesn't reach them: unoptimised, one heavy piece's cut line takes seconds.
 [profile.dev.package.opendrape-geom]
+opt-level = 2
+
+# The fabric mesh is rebuilt whenever the pattern changes while the 3D view shows the pieces.
+[profile.dev.package.opendrape-mesh]
 opt-level = 2
 
 # Physics and its tests are unusably slow unoptimised.

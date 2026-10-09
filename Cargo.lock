@@ -2561,6 +2561,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "opendrape-mesh"
+version = "0.1.0"
+dependencies = [
+ "opendrape-core",
+ "opendrape-geom",
+ "spade",
+]
+
+[[package]]
 name = "opendrape-render"
 version = "0.1.0"
 dependencies = [
