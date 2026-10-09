@@ -1,10 +1,12 @@
-use crate::{Half, MAX_SEAMS, Piece, PieceId, Point2, Seam, SeamId, SeamSide, Side, Units};
+use crate::{
+    Half, MAX_SEAMS, Piece, PieceId, Placement, Point2, Seam, SeamId, SeamSide, Side, Units,
+};
 use serde::{Deserialize, Serialize};
 
 /// Version of the project format written by this build. Bump it when the format changes, and
 /// add a migration step in `opendrape-io`. Version 2 added seam allowances, notches, internal
-/// lines, folds and twins (2026-10-09).
-pub const SCHEMA_VERSION: u32 = 2;
+/// lines, folds and twins; version 3 added seams and 3D placements (2026-10-09).
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Most pieces a project may hold.
 pub const MAX_PIECES: usize = 500;
@@ -56,6 +58,7 @@ pub enum ModelError {
     BadNotch(PieceId),
     BadLine(PieceId),
     BadFold(PieceId),
+    BadPlacement(PieceId),
     BadSeam(SeamId),
     TooManySeams,
     TooManyPieces,
@@ -80,6 +83,7 @@ impl std::fmt::Display for ModelError {
             Self::BadNotch(id) => write!(f, "piece {} has an invalid notch", id.0),
             Self::BadLine(id) => write!(f, "piece {} has an invalid internal line", id.0),
             Self::BadFold(id) => write!(f, "piece {} has an invalid fold line", id.0),
+            Self::BadPlacement(id) => write!(f, "the 3D placement of piece {} is invalid", id.0),
             Self::BadSeam(id) => write!(f, "seam {} is invalid", id.0),
             Self::TooManySeams => write!(f, "the project has too many seams"),
             Self::TooManyPieces => write!(f, "the project has too many pieces"),
@@ -157,7 +161,12 @@ impl Project {
         if piece.twin.is_some() || piece.fold.is_some() {
             return None;
         }
-        piece.twin = Some(crate::Twin { id, name, offset });
+        piece.twin = Some(crate::Twin {
+            id,
+            name,
+            offset,
+            placement: None,
+        });
         self.next_piece_id = self.next_piece_id.saturating_add(1);
         Some(id)
     }
@@ -191,6 +200,29 @@ impl Project {
             }
         }
     }
+    /// The placement stored for a piece or twin (None when it has none of its own, or there
+    /// is no such shape).
+    pub fn placement_of(&self, id: PieceId) -> Option<Placement> {
+        match self.owner(id)? {
+            (p, Side::Master) => p.placement,
+            (p, Side::Twin) => p.twin.as_ref()?.placement,
+        }
+    }
+
+    /// Gives a piece or twin its own placement, or (None) takes it away. False when there is
+    /// no such shape.
+    pub fn set_placement(&mut self, id: PieceId, placement: Option<Placement>) -> bool {
+        match self.owner_mut(id) {
+            Some((p, Side::Master)) => p.placement = placement,
+            Some((p, Side::Twin)) => match &mut p.twin {
+                Some(t) => t.placement = placement,
+                None => return false,
+            },
+            None => return false,
+        }
+        true
+    }
+
     /// The stored seam with this id.
     pub fn seam(&self, id: SeamId) -> Option<&Seam> {
         self.seams.iter().find(|s| s.id == id)
@@ -663,7 +695,6 @@ mod tests {
         let mut folded = pr.clone();
         folded.pieces[0].fold = Some(1);
         assert_eq!(folded.check(), Err(ModelError::BadFold(a)));
-        assert_eq!(SCHEMA_VERSION, 2);
     }
 
     /// A folded front half (id 1: edges 0 bottom, 1 right, 2 top, 3 the fold on the left), a
@@ -1058,5 +1089,28 @@ mod tests {
             "without the pair, the side seam has no mirror image"
         );
         assert_eq!(pr.check(), Ok(()));
+    }
+
+    #[test]
+    fn placements_belong_to_pieces_and_twins() {
+        let mut pr = sewing_room();
+        let p = Placement::at([0.0, 1.0, 0.4]);
+        assert!(pr.set_placement(PieceId(2), Some(p)));
+        assert!(pr.set_placement(PieceId(3), Some(Placement::at([0.0, 1.0, -0.4]))));
+        assert_eq!(pr.placement_of(PieceId(2)), Some(p));
+        assert_eq!(
+            pr.pieces[1].twin.as_ref().unwrap().placement,
+            Some(Placement::at([0.0, 1.0, -0.4]))
+        );
+        assert_eq!(pr.placement_of(PieceId(1)), None);
+        assert!(!pr.set_placement(PieceId(99), Some(p)));
+        assert_eq!(pr.check(), Ok(()));
+        // Breaking the pair keeps the twin where it was placed.
+        pr.break_twin(PieceId(2));
+        assert_eq!(
+            pr.piece(PieceId(3)).unwrap().placement,
+            Some(Placement::at([0.0, 1.0, -0.4]))
+        );
+        assert_eq!(SCHEMA_VERSION, 3);
     }
 }

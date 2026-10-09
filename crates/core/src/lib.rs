@@ -3,6 +3,7 @@
 //! save, compare and test.
 
 mod piece;
+mod placement;
 mod project;
 mod seam;
 mod units;
@@ -12,6 +13,7 @@ pub use piece::{
     MAX_ALLOWANCE_MM, MAX_COORDINATE_MM, MAX_NAME_CHARS, MAX_VERTICES_PER_PIECE, Notch, NotchStyle,
     Piece, PieceId, Point2, Side, Twin, Vertex, VertexKind,
 };
+pub use placement::{MAX_CURVE_M, MAX_PLACEMENT_M, MIN_CURVE_M, Placement};
 pub use project::{
     MAX_PIECE_ID, MAX_PIECES, MAX_TOTAL_VERTICES, ModelError, Project, SCHEMA_VERSION,
 };

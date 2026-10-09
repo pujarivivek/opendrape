@@ -1,10 +1,11 @@
-//! Everything M2b added to a project (seam allowances, hems, notches, internal lines, folds and
-//! mirrored pairs) must survive saving and opening exactly. The project is built field by field
-//! here, with no default left where a value could be lost without anyone noticing.
+//! Everything M2b and M4a added to a project (seam allowances, hems, notches, internal lines,
+//! folds, mirrored pairs, seams and 3D placements) must survive saving and opening exactly. The
+//! project is built field by field here, with no default left where a value could be lost
+//! without anyone noticing.
 
 use opendrape_core::{
-    Edge, EdgeProps, InternalLine, LineKind, Notch, NotchStyle, Piece, PieceId, Point2, Project,
-    Units, Vertex, VertexKind,
+    Edge, EdgeProps, Half, InternalLine, LineKind, Notch, NotchStyle, Piece, PieceId, Placement,
+    Point2, Project, SeamSide, Units, Vertex, VertexKind,
 };
 
 fn at(x: f64, y: f64) -> Point2 {
@@ -105,14 +106,39 @@ fn detailed_project() -> Project {
     sleeve.edge_props[1].hem = true;
     sleeve.notches = vec![notch(0, 80.0, 2, NotchStyle::V)];
     sleeve.lines = vec![InternalLine::open(&[at(1550.0, 100.0), at(1650.0, 300.0)])];
-    project.add_piece(sleeve);
+    sleeve.placement = Some(Placement {
+        position: [0.31, 1.12, -0.05],
+        rotation: [0.0, 0.707_106_781_186_547_5, 0.0, 0.707_106_781_186_547_5],
+        curve: Some(0.075),
+    });
+    let sleeve_id = project.add_piece(sleeve);
+
+    // The bodice's right edge to the sleeve's pale half, run backwards; and the bodice's left
+    // and bottom edges (wrapping past the last edge) to the sleeve's drawn bottom edge.
+    project.add_seam(
+        SeamSide::new(bodice_id, Half::Drawn, 1, 1, true),
+        SeamSide::new(sleeve_id, Half::Pale, 1, 1, false),
+    );
+    project.add_seam(
+        SeamSide::new(bodice_id, Half::Drawn, 3, 2, true),
+        SeamSide::new(sleeve_id, Half::Drawn, 0, 1, true),
+    );
+    project.set_placement(bodice_id, Some(Placement::at([0.0, 1.25, 0.4])));
+    project.set_placement(
+        twin,
+        Some(Placement {
+            position: [-0.12, 1.25, 0.15],
+            rotation: [0.0, 0.0, 0.258_819_045_102_520_74, 0.965_925_826_289_068_3],
+            curve: None,
+        }),
+    );
 
     assert_eq!(project.check(), Ok(()), "the sample is a valid project");
     project
 }
 
 #[test]
-fn every_m2b_field_survives_a_save_and_open() {
+fn every_m2b_and_m4a_field_survives_a_save_and_open() {
     let project = detailed_project();
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("detailed.odp");
@@ -163,4 +189,20 @@ fn the_sample_really_uses_every_new_feature() {
     );
     assert_ne!(bodice.twin.as_ref().unwrap().offset.y, 0.0);
     assert_eq!(project.pieces[1].fold, Some(3));
+    // M4a: seams on both halves, running both ways, one wrapping past the last edge, and
+    // placements on a piece, a twin and a curved piece.
+    let sides: Vec<SeamSide> = project.seams.iter().flat_map(|s| [s.a, s.b]).collect();
+    assert!(sides.iter().any(|s| s.half == Half::Pale) && sides.iter().any(|s| !s.forward));
+    assert!(sides.iter().any(|s| s.first_edge + s.edges > 4), "wraps");
+    assert!(bodice.placement.is_some() && bodice.twin.as_ref().unwrap().placement.is_some());
+    assert!(
+        project.pieces[1]
+            .placement
+            .is_some_and(|p| p.curve.is_some())
+    );
+    assert_eq!(
+        project.all_seams().len(),
+        4,
+        "both seams have mirror images"
+    );
 }

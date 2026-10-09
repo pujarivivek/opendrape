@@ -257,6 +257,7 @@ fn unfold(piece: &Piece, f: usize) -> (Piece, ShapeKind) {
         lines,
         fold: None,
         twin: None,
+        placement: piece.placement,
     };
     (
         full,

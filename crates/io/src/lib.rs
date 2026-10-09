@@ -106,25 +106,27 @@ fn read_from<R: Read + Seek>(r: R) -> Result<Project, OdpError> {
     if found == 1 {
         upgrade_from_v1(&mut project);
     }
+    // Version 2 (M2b) had no seams or 3D placements; serde's defaults give an older file none.
+    // Whatever version it was, it is the current one now.
+    project.schema_version = SCHEMA_VERSION;
     project.check().map_err(OdpError::Invalid)?;
     Ok(project)
 }
 
 /// Version 1 (M2a) had no seam allowances, notches, internal lines, folds or twins. Serde's
 /// field defaults already give a v1 file every new field except one set of edge properties per
-/// edge, which needs the edge count; add those, and mark the project as current.
+/// edge, which needs the edge count; add those.
 fn upgrade_from_v1(project: &mut Project) {
     for piece in &mut project.pieces {
         piece.edge_props = vec![opendrape_core::EdgeProps::default(); piece.edges.len()];
     }
-    project.schema_version = SCHEMA_VERSION;
 }
 
 /// Reads only `schema_version` (other fields are skipped without building anything), so a file
 /// from a newer format is reported as such even when its contents have changed shape. Returns
 /// the version found.
 ///
-/// Versions 1 and 2 parse directly into `Project` (version 1's missing fields take their
+/// Versions 1 to 3 parse directly into `Project` (the fields older versions lack take their
 /// defaults; see [`upgrade_from_v1`]). A future version that renames or reshapes fields will
 /// need a step that parses older documents as a `serde_json::Value` and rewrites them first.
 fn check_version(text: &str) -> Result<u64, OdpError> {

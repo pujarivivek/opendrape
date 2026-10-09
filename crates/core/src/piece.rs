@@ -1,4 +1,4 @@
-use crate::ModelError;
+use crate::{ModelError, Placement};
 use serde::{Deserialize, Serialize};
 use std::ops::{Add, Mul, Sub};
 
@@ -274,6 +274,10 @@ pub struct Twin {
     pub id: PieceId,
     pub name: String,
     pub offset: Point2,
+    /// The twin's own place in 3D. None: it mirrors its piece's placement across x = 0 (or,
+    /// while the piece has none either, starts from its own place on the pattern table).
+    #[serde(default)]
+    pub placement: Option<Placement>,
 }
 
 /// Which member of a pair an id names.
@@ -324,6 +328,9 @@ pub struct Piece {
     /// The mirror-image twin, for a left/right pair.
     #[serde(default)]
     pub twin: Option<Twin>,
+    /// Where the piece sits in 3D. None: at its starting place, in front of the form.
+    #[serde(default)]
+    pub placement: Option<Placement>,
 }
 
 fn default_grain() -> f64 {
@@ -349,6 +356,7 @@ impl Piece {
             lines: Vec::new(),
             fold: None,
             twin: None,
+            placement: None,
         }
     }
     /// Counter-clockwise rectangle with its lower-left corner at `min`.
@@ -430,7 +438,7 @@ impl Piece {
     }
     /// The piece reflected left to right (x → `offset.x` − x) and moved up by `offset.y`.
     /// Vertex order and edge directions stay, so edge indices and notch distances still apply;
-    /// the outline's winding is reversed. The result has no fold and no twin.
+    /// the outline's winding is reversed. The result has no fold, twin or placement.
     pub fn reflected(&self, offset: Point2) -> Piece {
         let f = |p: Point2| Point2::new(offset.x - p.x, p.y + offset.y);
         Piece {
@@ -452,14 +460,16 @@ impl Piece {
             lines: self.lines.iter().map(|l| l.mapped(f)).collect(),
             fold: None,
             twin: None,
+            placement: None,
         }
     }
-    /// The twin as an ordinary piece (with the twin's id and name), if there is one.
+    /// The twin as an ordinary piece (with the twin's id, name and placement), if there is one.
     pub fn twin_shape(&self) -> Option<Piece> {
         let t = self.twin.as_ref()?;
         let mut shape = self.reflected(t.offset);
         shape.id = t.id;
         shape.name = t.name.clone();
+        shape.placement = t.placement;
         Some(shape)
     }
     /// Splits edge `i` at `vertex` into `first` (up to the new vertex) and `second`; `first_len`
@@ -602,7 +612,8 @@ impl Piece {
     ///   well-formed internal lines;
     /// - a fold only on a straight, notch-free edge of an unpaired piece that lies entirely on
     ///   one side of it;
-    /// - a twin that is itself a valid piece.
+    /// - a valid placement, if it has one;
+    /// - a twin that is itself a valid piece (with its own placement).
     pub fn check(&self) -> Result<(), ModelError> {
         if self.point_count() > MAX_VERTICES_PER_PIECE {
             return Err(ModelError::TooManyPoints(self.id));
@@ -656,6 +667,9 @@ impl Piece {
         }
         if !self.fold_is_valid() {
             return Err(ModelError::BadFold(self.id));
+        }
+        if !self.placement.is_none_or(|p| p.is_valid()) {
+            return Err(ModelError::BadPlacement(self.id));
         }
         if let Some(twin) = self.twin_shape() {
             twin.check()?;
@@ -988,6 +1002,7 @@ mod tests {
             id: PieceId(9),
             name: "B".into(),
             offset: p(300.0, 0.0),
+            placement: None,
         });
         assert_eq!(paired.check(), Err(ModelError::BadFold(PieceId(1))));
     }
@@ -1091,6 +1106,7 @@ mod tests {
             id: PieceId(2),
             name: "Front (mirror)".into(),
             offset: p(300.0, 10.0),
+            placement: None,
         });
         let t = s.twin_shape().unwrap();
         assert_eq!((t.id, t.name.as_str()), (PieceId(2), "Front (mirror)"));
@@ -1116,6 +1132,7 @@ mod tests {
             id: PieceId(2),
             name: "B".into(),
             offset: p(300.0, 0.0),
+            placement: None,
         });
         let before = s.twin_shape().unwrap();
         s.translate(p(15.0, -7.0));
@@ -1132,6 +1149,50 @@ mod tests {
         let piece: Piece = serde_json::from_str(json).unwrap();
         assert_eq!(piece.allowance, DEFAULT_ALLOWANCE_MM);
         assert!(piece.edge_props.is_empty() && piece.notches.is_empty() && piece.lines.is_empty());
-        assert_eq!((piece.fold, piece.twin), (None, None));
+        assert_eq!(
+            (piece.fold, piece.twin, piece.placement),
+            (None, None, None)
+        );
+    }
+
+    #[test]
+    fn placements_are_checked_and_follow_the_twin() {
+        let mut s = square();
+        let placed = Placement {
+            position: [0.1, 1.0, 0.3],
+            rotation: [0.0, 0.6, 0.0, 0.8],
+            curve: Some(0.2),
+        };
+        s.placement = Some(placed);
+        assert_eq!(s.check(), Ok(()));
+        s.placement = Some(Placement {
+            curve: Some(0.01),
+            ..placed
+        });
+        assert_eq!(s.check(), Err(ModelError::BadPlacement(PieceId(1))));
+        s.placement = Some(placed);
+        let mut own = placed;
+        own.position[0] = -0.1;
+        s.twin = Some(Twin {
+            id: PieceId(2),
+            name: "B".into(),
+            offset: p(300.0, 0.0),
+            placement: Some(own),
+        });
+        assert_eq!(
+            s.twin_shape().unwrap().placement,
+            Some(own),
+            "the twin shape has the twin's"
+        );
+        assert_eq!(s.reflected(p(0.0, 0.0)).placement, None);
+        s.twin.as_mut().unwrap().placement = Some(Placement {
+            rotation: [0.0; 4],
+            ..own
+        });
+        assert_eq!(
+            s.check(),
+            Err(ModelError::BadPlacement(PieceId(2))),
+            "named by the twin's id"
+        );
     }
 }

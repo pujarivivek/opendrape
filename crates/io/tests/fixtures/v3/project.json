@@ -1,0 +1,100 @@
+{
+  "schema_version": 3,
+  "units": "inch",
+  "pieces": [
+    {
+      "id": 1,
+      "name": "Skirt front",
+      "vertices": [
+        { "pos": { "x": 0.0, "y": 0.0 }, "kind": "corner" },
+        { "pos": { "x": 300.0, "y": 0.0 }, "kind": "corner" },
+        { "pos": { "x": 177.5, "y": 550.0 }, "kind": "corner" },
+        { "pos": { "x": 0.0, "y": 550.0 }, "kind": "corner" }
+      ],
+      "edges": [{ "type": "line" }, { "type": "line" }, { "type": "line" }, { "type": "line" }],
+      "grain_deg": 90.0,
+      "allowance": 10.0,
+      "edge_props": [
+        { "allowance": null, "hem": true },
+        { "allowance": null, "hem": false },
+        { "allowance": null, "hem": false },
+        { "allowance": null, "hem": false }
+      ],
+      "notches": [],
+      "lines": [],
+      "fold": 3,
+      "twin": null,
+      "placement": { "position": [0.0, 0.755, 0.214], "rotation": [0.0, 0.0, 0.0, 1.0], "curve": 0.214 }
+    },
+    {
+      "id": 2,
+      "name": "Back left",
+      "vertices": [
+        { "pos": { "x": 400.0, "y": 0.0 }, "kind": "corner" },
+        { "pos": { "x": 700.0, "y": 0.0 }, "kind": "corner" },
+        { "pos": { "x": 700.0, "y": 550.0 }, "kind": "corner" },
+        { "pos": { "x": 522.5, "y": 550.0 }, "kind": "corner" }
+      ],
+      "edges": [{ "type": "line" }, { "type": "line" }, { "type": "line" }, { "type": "line" }],
+      "grain_deg": 90.0,
+      "allowance": 10.0,
+      "edge_props": [
+        { "allowance": null, "hem": true },
+        { "allowance": null, "hem": false },
+        { "allowance": null, "hem": false },
+        { "allowance": null, "hem": false }
+      ],
+      "notches": [],
+      "lines": [],
+      "fold": null,
+      "twin": {
+        "id": 3,
+        "name": "Back right",
+        "offset": { "x": 1500.0, "y": 0.0 },
+        "placement": { "position": [-0.1, 0.755, -0.2], "rotation": [0.0, 1.0, 0.0, 0.0], "curve": null }
+      },
+      "placement": null
+    },
+    {
+      "id": 4,
+      "name": "Pocket",
+      "vertices": [
+        { "pos": { "x": 0.0, "y": 700.0 }, "kind": "corner" },
+        { "pos": { "x": 150.0, "y": 700.0 }, "kind": "corner" },
+        { "pos": { "x": 150.0, "y": 850.0 }, "kind": "corner" },
+        { "pos": { "x": 0.0, "y": 850.0 }, "kind": "corner" }
+      ],
+      "edges": [{ "type": "line" }, { "type": "line" }, { "type": "line" }, { "type": "line" }],
+      "grain_deg": 90.0,
+      "allowance": 10.0,
+      "edge_props": [
+        { "allowance": null, "hem": false },
+        { "allowance": null, "hem": false },
+        { "allowance": null, "hem": false },
+        { "allowance": null, "hem": false }
+      ],
+      "notches": [],
+      "lines": [],
+      "fold": null,
+      "twin": null
+    }
+  ],
+  "seams": [
+    {
+      "id": 1,
+      "a": { "shape": 1, "half": "drawn", "first_edge": 1, "edges": 1, "forward": true },
+      "b": { "shape": 2, "half": "drawn", "first_edge": 3, "edges": 1, "forward": false }
+    },
+    {
+      "id": 2,
+      "a": { "shape": 2, "half": "drawn", "first_edge": 1, "edges": 1, "forward": true },
+      "b": { "shape": 3, "half": "drawn", "first_edge": 1, "edges": 1, "forward": true }
+    },
+    {
+      "id": 5,
+      "a": { "shape": 4, "half": "drawn", "first_edge": 3, "edges": 2, "forward": true },
+      "b": { "shape": 1, "half": "pale", "first_edge": 2, "edges": 1, "forward": false }
+    }
+  ],
+  "next_piece_id": 5
+}
