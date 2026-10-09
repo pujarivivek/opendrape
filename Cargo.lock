@@ -2484,6 +2484,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "opendrape-geom"
+version = "0.1.0"
+dependencies = [
+ "kurbo",
+ "opendrape-core",
+]
+
+[[package]]
 name = "opendrape-render"
 version = "0.1.0"
 dependencies = [
