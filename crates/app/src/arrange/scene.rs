@@ -1,8 +1,11 @@
 //! The pieces as the 3D view shows them while arranging: each shape's fabric (made coarser
 //! than for draping: it is only looked at and clicked) at its placement. The fabric is made
-//! again only when the pattern changes; moving a piece only places it again.
+//! again only when the pattern changes; moving a piece only places it again. It is made on the
+//! thread that draws the window, so a build that panics is caught here: the view keeps what it
+//! had, and says so.
 
 use super::gizmo::ray_triangle;
+use crate::sim_runner::guarded;
 use glam::DVec3;
 use opendrape_core::{PieceId, Placement, Point2, Project};
 use opendrape_geom as geom;
@@ -56,14 +59,48 @@ pub struct SceneCache {
     /// The project and shoulder height the scene was placed for.
     placed: Option<(Project, f64)>,
     scene: Rc<ArrangedScene>,
+    /// The fabric for the current pattern could not be made (making it panicked): the pieces
+    /// shown are those of the last pattern that could be, or none.
+    view_failed: bool,
     /// How many times the fabric has been made (tests count them).
     pub meshed: usize,
+}
+
+/// The fabric shown while arranging: `pattern` made at [`VIEW_EDGE_MM`].
+fn view_mesh(pattern: &Project) -> GarmentMesh {
+    opendrape_mesh::build(
+        pattern,
+        &MeshParams {
+            edge_mm: VIEW_EDGE_MM,
+            ..MeshParams::default()
+        },
+    )
 }
 
 impl SceneCache {
     /// The pieces of `project` at their placements, for a form whose shoulders are at
     /// `shoulder_y`. Reused while nothing changed; only re-placed when only placements did.
     pub fn scene(&mut self, project: &Project, shoulder_y: f64) -> Rc<ArrangedScene> {
+        self.scene_with(project, shoulder_y, view_mesh)
+    }
+
+    /// The fabric for the current pattern could not be made: see [`Self::scene_with`].
+    pub fn view_failed(&self) -> bool {
+        self.view_failed
+    }
+
+    /// [`Self::scene`], with the fabric made by `build` (the one thing a test needs to change).
+    ///
+    /// If `build` panics, the view keeps the fabric of the last pattern it could make (none, if
+    /// there was no such pattern), placed for `project`, and [`Self::view_failed`] is set until
+    /// a later pattern is made. The failed pattern is not tried again every frame: only a change
+    /// to the pattern tries again.
+    pub(crate) fn scene_with(
+        &mut self,
+        project: &Project,
+        shoulder_y: f64,
+        build: impl FnOnce(&Project) -> GarmentMesh,
+    ) -> Rc<ArrangedScene> {
         if self
             .placed
             .as_ref()
@@ -73,15 +110,15 @@ impl SceneCache {
         }
         let pattern = without_placements(project);
         if self.pattern.as_ref() != Some(&pattern) {
-            self.mesh = Rc::new(opendrape_mesh::build(
-                &pattern,
-                &MeshParams {
-                    edge_mm: VIEW_EDGE_MM,
-                    ..MeshParams::default()
-                },
-            ));
+            match guarded(|| build(&pattern)) {
+                Some(mesh) => {
+                    self.mesh = Rc::new(mesh);
+                    self.view_failed = false;
+                    self.meshed += 1;
+                }
+                None => self.view_failed = true,
+            }
             self.pattern = Some(pattern);
-            self.meshed += 1;
         }
         let shapes = geom::shapes(project);
         let layout = place::layout(&shapes);
@@ -173,6 +210,48 @@ mod tests {
         pr.pieces[0].name = "Front left".into();
         cache.scene(&pr, 1.3);
         assert_eq!(cache.meshed, 2, "a pattern change makes the fabric again");
+    }
+
+    #[test]
+    fn a_build_that_panics_keeps_the_last_good_view_and_says_so() {
+        let mut cache = SceneCache::default();
+        let mut pr = two_pieces();
+        assert_eq!(cache.scene(&pr, 1.3).panels.len(), 2);
+        assert!(!cache.view_failed());
+        // The pattern changes, and making the fabric for it panics.
+        pr.pieces[0].name = "Front left".into();
+        let kept = cache.scene_with(&pr, 1.3, |_| panic!("the mesher fell over"));
+        assert!(cache.view_failed());
+        assert_eq!(kept.panels.len(), 2, "the pieces of the last pattern made");
+        assert_eq!(cache.meshed, 1, "nothing new was made");
+        // Moving a piece still works on that fabric, and the failed pattern is not tried again.
+        pr.set_placement(PieceId(1), Some(Placement::at([0.0, 1.0, 0.5])));
+        let mut tried = 0;
+        let moved = cache.scene_with(&pr, 1.3, |_| {
+            tried += 1;
+            GarmentMesh::default()
+        });
+        assert_eq!(tried, 0, "the same pattern is not made again every frame");
+        assert!(cache.view_failed());
+        assert_eq!(
+            moved.panel(PieceId(1)).unwrap().placement,
+            Placement::at([0.0, 1.0, 0.5])
+        );
+        // The next change to the pattern is tried, and when it can be made the note goes.
+        pr.pieces[0].name = "Front right".into();
+        assert_eq!(cache.scene(&pr, 1.3).panels.len(), 2);
+        assert!(!cache.view_failed());
+        assert_eq!(cache.meshed, 2);
+    }
+
+    #[test]
+    fn a_build_that_panics_with_nothing_made_before_gives_an_empty_view() {
+        let mut cache = SceneCache::default();
+        let pr = two_pieces();
+        let scene = cache.scene_with(&pr, 1.3, |_| panic!("the mesher fell over"));
+        assert!(cache.view_failed());
+        assert!(scene.panels.is_empty());
+        assert_eq!(*scene, ArrangedScene::default());
     }
 
     #[test]

@@ -228,8 +228,10 @@ impl Drape {
 }
 
 /// `work()`, or None if it panicked: a pattern that sends the mesher or the solver somewhere it
-/// should never go must end the drape with a message, not the simulation thread without a word.
-fn guarded<T>(work: impl FnOnce() -> T) -> Option<T> {
+/// should never go must end the drape with a message, not the simulation thread without a word;
+/// and the 3D view's fabric (`arrange::scene`), made on the thread that draws the window, must
+/// not end the program.
+pub(crate) fn guarded<T>(work: impl FnOnce() -> T) -> Option<T> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).ok()
 }
 

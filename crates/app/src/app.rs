@@ -340,8 +340,11 @@ impl OpenDrapeApp {
 
     /// The hint while draping, and what the student should know about the drape.
     fn notes(&self, ui: &mut egui::Ui) {
-        let Some(runner) = &self.runner else { return };
         let warn = ui.visuals().warn_fg_color;
+        if self.arranged.view_failed() {
+            ui.colored_label(warn, tr!("note-view-failed"));
+        }
+        let Some(runner) = &self.runner else { return };
         if runner.went_wrong() {
             ui.colored_label(warn, tr!("note-went-wrong"));
         }
@@ -364,13 +367,22 @@ impl OpenDrapeApp {
     /// drape, and the speed overlay.
     fn view_3d(&mut self, ui: &mut egui::Ui, frame: &eframe::Frame) {
         self.reset_if_edited();
+        // Kept up to date while draping too: the project doesn't change then, so it costs
+        // nothing, and Reset shows the pieces at once. Made before the notes are shown, so that
+        // a view that couldn't be made says so on the frame the pattern changed.
+        let scene = (self.viewport.is_some() && frame.wgpu_render_state().is_some()).then(|| {
+            self.arranged
+                .scene(self.editor.doc.project(), self.stage.shoulder_y())
+        });
         self.toolbar(ui);
         self.notes(ui);
         ui.separator();
         // From the moment Play is pressed, not from the first frame of the drape: the drape is
         // made from the pieces as they are then.
         let draping = self.is_draping();
-        let (Some(viewport), Some(rs)) = (self.viewport.as_mut(), frame.wgpu_render_state()) else {
+        let (Some(viewport), Some(rs), Some(scene)) =
+            (self.viewport.as_mut(), frame.wgpu_render_state(), scene)
+        else {
             ui.centered_and_justified(|ui| ui.label(tr!("viewport-no-gpu")));
             return;
         };
@@ -380,11 +392,6 @@ impl OpenDrapeApp {
             .as_ref()
             .is_some_and(SimRunner::is_playing)
             .then_some(self.fps);
-        // Kept up to date while draping too: the project doesn't change then, so it costs
-        // nothing, and Reset shows the pieces at once.
-        let scene = self
-            .arranged
-            .scene(self.editor.doc.project(), self.stage.shoulder_y());
         let rect = ui.available_rect_before_wrap();
         // Arranging until the drape's first frame arrives.
         let show = match &sim {
@@ -1039,6 +1046,82 @@ mod tests {
             }))
             .starts_with("Seam 3: the sides' lengths differ by ")
         );
+    }
+
+    /// The app in a headless window, drawing the 3D view off-screen.
+    fn headless_app() -> egui_kittest::Harness<'static, OpenDrapeApp> {
+        use crate::gpu::{GpuState, Reason, StateStore};
+        let dir = tempfile::tempdir().unwrap();
+        let startup = Startup {
+            decision: Decision {
+                choice: GpuChoice::Auto,
+                reason: Reason::Saved,
+            },
+            previous: GpuState::default(),
+            store: StateStore::new(Some(dir.path())),
+            smoke_test: false,
+            file_dialogs: FileDialogs::always_cancel(),
+            recovery: Recovery::new(None),
+        };
+        egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1000.0, 700.0))
+            .wgpu()
+            .build_eframe(move |cc| OpenDrapeApp::new(cc, startup, SharedState::default()))
+    }
+
+    #[test]
+    fn a_3d_view_that_cannot_be_made_says_so_and_the_app_carries_on() {
+        use egui_kittest::kittest::Queryable;
+        use opendrape_core::{Piece, Point2};
+        let rectangle = |name: &str, x: f64| {
+            Piece::rectangle(PieceId(0), name, Point2::new(x, 0.0), 300.0, 500.0)
+        };
+        let mut h = headless_app();
+        h.run();
+        h.state_mut()
+            .editor
+            .doc
+            .edit(|p| p.add_piece(rectangle("Front", 0.0)));
+        h.run();
+        let note = "The 3D view couldn't show this pattern. Your work is safe; save it and send it to the OpenDrape team.";
+        assert_eq!(h.state_mut().arranged_scene().panels.len(), 1);
+        assert!(h.query_by_label(note).is_none(), "no note while it works");
+
+        // The pattern changes, and the mesher panics on it (as the cache is asked on the
+        // frame that follows). The window keeps drawing and says what happened.
+        let shoulder = h.state().stage.shoulder_y();
+        h.state_mut()
+            .editor
+            .doc
+            .edit(|p| p.add_piece(rectangle("Back", 500.0)));
+        let project = h.state().editor.doc.project().clone();
+        h.state_mut()
+            .arranged
+            .scene_with(&project, shoulder, |_| panic!("the mesher fell over"));
+        let drawn = h.state().viewport_frames();
+        h.run();
+        h.get_by_label(note);
+        assert!(
+            h.state().viewport_frames() > drawn,
+            "the 3D view still draws"
+        );
+        assert_eq!(
+            h.state_mut().arranged_scene().panels.len(),
+            1,
+            "the last pieces that could be shown"
+        );
+        // The pattern window and its file still work: the project is whole.
+        assert_eq!(h.state().editor.doc.project().pieces.len(), 2);
+        assert!(h.state().editor.doc.project().check().is_ok());
+
+        // The next change to the pattern is made again, and the note goes.
+        h.state_mut()
+            .editor
+            .doc
+            .edit(|p| p.add_piece(rectangle("Sleeve", 1000.0)));
+        h.run();
+        assert!(h.query_by_label(note).is_none(), "the note goes");
+        assert_eq!(h.state_mut().arranged_scene().panels.len(), 3);
     }
 
     #[test]

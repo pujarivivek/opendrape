@@ -182,6 +182,7 @@ note-lengths-differ = Seam { $number }: the sides' lengths differ by { $differen
 note-starts-inside = { $name } starts inside the form; move it out first.
 note-more = …and { $count } more
 note-went-wrong = The drape went wrong and was reset. Check for seams that pull pieces through the form.
+note-view-failed = The 3D view couldn't show this pattern. Your work is safe; save it and send it to the OpenDrape team.
 
 view-front = Front
 view-back = Back
