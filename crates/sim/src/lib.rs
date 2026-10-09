@@ -1,0 +1,10 @@
+//! XPBD cloth simulation on the CPU in f64: fabric stretch and bending, seams that pull shut
+//! and then weld, and collision against a static body.
+
+mod cloth;
+mod collide;
+mod solver;
+
+pub use cloth::{Cloth, ClothBuilder, Panel, PanelId};
+pub use collide::{Collider, Plane};
+pub use solver::{FRAME_DT, Params, Solver};
