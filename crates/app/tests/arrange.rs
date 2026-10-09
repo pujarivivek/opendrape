@@ -305,3 +305,50 @@ fn the_handle_under_the_pointer_is_noted_for_drawing() {
     );
     assert_eq!(arranger.hovered, None, "no gizmo without a selected piece");
 }
+
+#[test]
+fn dragging_a_ring_further_round_than_half_a_turn_keeps_turning() {
+    let (mut doc, _, sel) = one_piece();
+    let mut cache = SceneCache::default();
+    let mut arranger = Arranger::default();
+    let g = gizmo(&doc, &mut cache, &sel);
+    let cam = camera();
+    let (u, v) = AXES[1].any_orthonormal_pair();
+    let r = g.size * RING_PT / ARROW_PT;
+    let on_ring = |a: f64| g.centre + (u * a.cos() + v * a.sin()) * r;
+    let a0 = (0..36)
+        .map(|k| f64::from(k) * 10f64.to_radians())
+        .find(|a| g.hit(&cam, cam.project(on_ring(*a)).unwrap()) == Some(Handle::Turn(1)))
+        .expect("a point that grabs the y ring");
+    let scene = cache.scene(doc.project(), SHOULDER);
+    assert!(arranger.press(
+        &cam,
+        &scene,
+        &sel,
+        &mut doc,
+        cam.project(on_ring(a0)).unwrap()
+    ));
+    // Round the ring in twelve moves of about 19°: 229° in all. Measured from where the drag
+    // began, 229° reads as -131°, and the piece would turn back.
+    let turn = 229f64.to_radians();
+    for step in 1..=12 {
+        let a = a0 + turn * f64::from(step) / 12.0;
+        arranger.drag_to(&cam, &mut doc, cam.project(on_ring(a)).unwrap(), false);
+    }
+    assert!(
+        arranger
+            .readout(Units::Cm)
+            .is_some_and(|text| text.contains("229")),
+        "{:?}",
+        arranger.readout(Units::Cm)
+    );
+    arranger.release(&mut doc);
+    let q = DQuat::from_array(doc.project().pieces[0].placement.unwrap().rotation);
+    let want = DQuat::from_axis_angle(u.cross(v), turn);
+    assert!(
+        q.dot(want).abs() > 1.0 - 1e-9,
+        "turned to {q:?}, wanted {want:?}"
+    );
+    assert!(doc.undo(), "one step");
+    assert_eq!(doc.project().pieces[0].placement, None);
+}

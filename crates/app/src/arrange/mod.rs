@@ -35,6 +35,10 @@ struct GizmoDrag {
     /// The piece's placement when the drag began.
     original: Placement,
     start: DVec2,
+    /// A turn is followed move by move: where the pointer was at the last move...
+    last: DVec2,
+    /// ...and the angle (radians) turned so far, which can go past half a turn.
+    turned: f64,
     moved: Option<Moved>,
 }
 
@@ -114,6 +118,8 @@ impl Arranger {
             shape,
             original: panel.placement,
             start: pos,
+            last: pos,
+            turned: 0.0,
             moved: None,
         });
         true
@@ -152,9 +158,15 @@ impl Arranger {
                 )
             }
             Handle::Turn(k) => {
-                let Some(mut a) = ring_angle(cam, centre, AXES[k], d.start, pos) else {
+                // `ring_angle` measures at most half a turn either way, so a longer drag is
+                // added up from the small angles between successive pointer positions. A
+                // position the ring can't be read at changes nothing.
+                let Some(step) = ring_angle(cam, centre, AXES[k], d.last, pos) else {
                     return;
                 };
+                d.turned += step;
+                d.last = pos;
+                let mut a = d.turned;
                 if shift {
                     a = snap_angle(a, SNAP_DEG);
                 }

@@ -3,6 +3,7 @@
 //! means in metres or radians.
 
 use glam::{DMat4, DVec2, DVec3, DVec4};
+use opendrape_core::MAX_PLACEMENT_M;
 use opendrape_render::OrbitCamera;
 
 /// The 3D view as it appears on screen: world points (m) ↔ screen points, for a camera drawn
@@ -67,16 +68,18 @@ impl ScreenCamera {
     }
 }
 
-/// Where the lines p + s·u and q + t·v (unit directions) come closest: the t on the second.
-/// None when they are nearly parallel.
-fn closest_on_second(p: DVec3, u: DVec3, q: DVec3, v: DVec3) -> Option<f64> {
+/// Where the lines p + s·u and q + t·v (unit directions) come closest: (s, t). None when they
+/// are nearly parallel.
+fn closest_points(p: DVec3, u: DVec3, q: DVec3, v: DVec3) -> Option<(f64, f64)> {
     let w = p - q;
     let b = u.dot(v);
     let denom = 1.0 - b * b;
     if denom < 1e-6 {
         return None;
     }
-    Some((v.dot(w) - b * u.dot(w)) / denom)
+    let (d, e) = (u.dot(w), v.dot(w));
+    let t = (e - b * d) / denom;
+    Some((b * t - d, t))
 }
 
 /// The on-screen unit direction of `axis` at `centre`, and how many screen points one metre
@@ -89,14 +92,29 @@ fn screen_axis(cam: &ScreenCamera, centre: DVec3, axis: DVec3) -> Option<(DVec2,
     (len > 1e-6).then(|| (d / len, len / 0.01))
 }
 
-/// Below this many screen points per metre an axis points (almost) straight at the viewer and
-/// can't be dragged along: a centimetre would be under a fifth of a point.
-const MIN_POINTS_PER_METRE: f64 = 20.0;
+/// An axis points (nearly) at the viewer when an arrow along it, [`ARROW_PT`] long if it were
+/// side-on, shows shorter than this many screen points. Such an arrow is neither drawn nor
+/// grabbed, and an axis like that cannot be dragged along: the pointer would move the piece
+/// metres for every point.
+pub const END_ON_PT: f64 = 0.15 * ARROW_PT;
+
+/// Whether `axis` through `centre` points (nearly) at the viewer: see [`END_ON_PT`]. The one rule
+/// for showing an arrow ([`Gizmo::arrow_shown`]) and for dragging along it ([`axis_drag`]).
+fn is_end_on(cam: &ScreenCamera, centre: DVec3, axis: DVec3) -> bool {
+    let tip = centre + axis * (ARROW_PT * cam.metres_per_point(centre));
+    match (cam.project(centre), cam.project(tip)) {
+        (Some(a), Some(b)) => a.distance(b) < END_ON_PT,
+        _ => true,
+    }
+}
 
 /// Metres moved along unit `axis` (through `centre`) when the pointer goes `from` → `to`. The
 /// pointer's movement along the axis's on-screen direction is taken back onto the 3D axis
 /// exactly (the pointer's ray against the axis line), so the piece stays under the pointer
-/// however the axis is foreshortened. None when the axis points at the viewer.
+/// however the axis is foreshortened. None when the axis points at the viewer, and when either
+/// ray meets the axis behind the camera (the pointer is past the axis's vanishing point). Near
+/// the vanishing point the exact answer runs off to infinity, so the move is held to
+/// [`MAX_PLACEMENT_M`], the farthest a piece may be placed.
 pub fn axis_drag(
     cam: &ScreenCamera,
     centre: DVec3,
@@ -104,17 +122,21 @@ pub fn axis_drag(
     from: DVec2,
     to: DVec2,
 ) -> Option<f64> {
-    let (dir, per_metre) = screen_axis(cam, centre, axis)?;
-    if per_metre < MIN_POINTS_PER_METRE {
+    if is_end_on(cam, centre, axis) {
         return None;
     }
+    let (dir, _) = screen_axis(cam, centre, axis)?;
     let origin = cam.project(centre)?;
     let along = |s: DVec2| {
         let on_axis = origin + dir * (s - origin).dot(dir);
         let (o, r) = cam.ray(on_axis);
-        closest_on_second(o, r, centre, axis)
+        let (ahead, t) = closest_points(o, r, centre, axis)?;
+        (ahead > 0.0).then_some(t)
     };
-    Some(along(to)? - along(from)?)
+    let moved = along(to)? - along(from)?;
+    moved
+        .is_finite()
+        .then(|| moved.clamp(-MAX_PLACEMENT_M, MAX_PLACEMENT_M))
 }
 
 /// The move (m) in the plane facing the viewer through `centre` when the pointer goes
@@ -132,7 +154,10 @@ pub fn plane_drag(cam: &ScreenCamera, centre: DVec3, from: DVec2, to: DVec2) -> 
 /// Below this |cos| between the view direction and a ring's axis, the ring is seen edge-on.
 pub const EDGE_ON: f64 = 0.15;
 
-/// Radians turned about unit `axis` through `centre` when the pointer goes `from` → `to`.
+/// Radians turned about unit `axis` through `centre` when the pointer goes `from` → `to`, in
+/// (−π, π]. A drag that goes round further than half a turn has to be added up from the angles
+/// of its successive moves, each from the last pointer position to the next (as
+/// `Arranger::drag_to` does), not measured from where it began.
 /// Seen at an angle, the pointer's rays meet the ring's plane and the angle between the two
 /// hits is exact. Seen nearly edge-on (decided from the view direction at the centre, so the
 /// method never changes during a drag), the angle the pointer turns round the centre on screen
@@ -246,12 +271,10 @@ impl Gizmo {
     pub fn arrow_tip(&self, axis: usize) -> DVec3 {
         self.centre + AXES[axis] * self.size
     }
-    /// An arrow is shown (and can be grabbed) unless it points nearly at the viewer.
+    /// An arrow is shown (and can be grabbed) unless it points nearly at the viewer (the same
+    /// rule that stops [`axis_drag`]).
     pub fn arrow_shown(&self, cam: &ScreenCamera, axis: usize) -> bool {
-        match (cam.project(self.centre), cam.project(self.arrow_tip(axis))) {
-            (Some(a), Some(b)) => a.distance(b) >= 0.15 * ARROW_PT,
-            _ => false,
-        }
+        !is_end_on(cam, self.centre, AXES[axis])
     }
     /// The ring about `axis`, as [`RING_STEPS`] points.
     pub fn ring(&self, axis: usize) -> Vec<DVec3> {
@@ -363,7 +386,7 @@ mod tests {
             }
         }
         assert!(
-            checked > 1200 && skipped < 40,
+            checked > 1200 && skipped < 60,
             "{checked} checked, {skipped} skipped"
         );
     }
@@ -386,6 +409,113 @@ mod tests {
         );
         let gizmo = Gizmo::new(&cam, centre);
         assert!(!gizmo.arrow_shown(&cam, 2) && gizmo.arrow_shown(&cam, 0));
+    }
+
+    /// A camera whose line of sight is 10° off the x axis, and the view it draws into.
+    fn nearly_along_x() -> (ScreenCamera, DVec3) {
+        let c = OrbitCamera {
+            target: Vec3::new(0.0, 1.0, 0.0),
+            yaw: 80f32.to_radians(),
+            pitch: 0.0,
+            distance: 2.6,
+            fov_y: 35f32.to_radians(),
+        };
+        let cam = ScreenCamera::new(&c, DVec2::new(10.0, 40.0), DVec2::new(600.0, 520.0));
+        (cam, DVec3::new(0.0, 1.0, 0.0))
+    }
+
+    #[test]
+    fn dragging_towards_an_axis_vanishing_point_stays_finite_bounded_and_monotone() {
+        let (cam, centre) = nearly_along_x();
+        assert!(Gizmo::new(&cam, centre).arrow_shown(&cam, 0), "grabbable");
+        let origin = cam.project(centre).unwrap();
+        // The x axis points at the eye here: far along -x it runs away to its vanishing point.
+        let vanishing = cam.project(centre - DVec3::X * 1e6).unwrap();
+        let towards = (vanishing - origin).length();
+        assert!((100.0..300.0).contains(&towards), "{towards} points away");
+        for sign in [1.0, -1.0] {
+            // The pointer goes from the centre along the axis's screen direction, through the
+            // vanishing point and out the other side.
+            let mut results = Vec::new();
+            for step in 0..=240 {
+                let lambda = f64::from(step) / 200.0 * sign;
+                let to = origin + (vanishing - origin) * lambda;
+                results.push((lambda, axis_drag(&cam, centre, DVec3::X, origin, to)));
+            }
+            let moves: Vec<f64> = results.iter().filter_map(|(_, m)| *m).collect();
+            for m in &moves {
+                assert!(m.is_finite() && m.abs() <= MAX_PLACEMENT_M, "{m}");
+            }
+            // Monotone: the move only ever grows in the direction it started.
+            let direction = moves[moves.len() / 2].signum();
+            for pair in moves.windows(2) {
+                assert!(
+                    (pair[1] - pair[0]) * direction >= -1e-9,
+                    "{pair:?} (pointer side {sign})"
+                );
+            }
+            // Once the ray meets the axis behind the camera there is no move at all: no jump
+            // to the other sign.
+            let first_none = results.iter().position(|(_, m)| m.is_none());
+            if let Some(i) = first_none {
+                assert!(results[i..].iter().all(|(_, m)| m.is_none()), "{results:?}");
+            }
+            if sign > 0.0 {
+                // Towards the vanishing point the move runs up to the 10 m limit, and the
+                // pointer past it moves nothing.
+                let (lambda, _) = results[first_none.expect("past the vanishing point")];
+                assert!((0.95..=1.2).contains(&lambda), "{lambda}");
+                assert!((moves.last().unwrap().abs() - MAX_PLACEMENT_M).abs() < 1e-9);
+                assert!(
+                    results[..first_none.unwrap()]
+                        .iter()
+                        .all(|(_, m)| m.is_some())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_arrow_is_grabbable_exactly_when_it_can_be_dragged() {
+        // One rule for both, however far the camera is: before, an arrow could be shown (12
+        // points long) that the drag refused (under 20 points per metre) from 8 m out.
+        let centre = DVec3::new(0.0, 1.0, 0.0);
+        let (mut shown, mut hidden) = (0, 0);
+        for distance in [1.0_f32, 2.6, 6.0, 8.0, 12.0, 20.0] {
+            for yaw in 0..24 {
+                for pitch in [-1.3_f32, -0.6, 0.0, 0.4, 1.2] {
+                    let c = OrbitCamera {
+                        target: Vec3::new(0.0, 1.0, 0.0),
+                        yaw: yaw as f32 * 0.2618,
+                        pitch,
+                        distance,
+                        fov_y: 35f32.to_radians(),
+                    };
+                    let cam =
+                        ScreenCamera::new(&c, DVec2::new(10.0, 40.0), DVec2::new(600.0, 520.0));
+                    let gizmo = Gizmo::new(&cam, centre);
+                    let origin = cam.project(centre).unwrap();
+                    for (axis, direction) in AXES.iter().enumerate() {
+                        let tip = cam.project(gizmo.arrow_tip(axis)).unwrap();
+                        let along = (tip - origin).normalize_or(DVec2::X);
+                        let can_drag =
+                            axis_drag(&cam, centre, *direction, origin, origin + along * 5.0)
+                                .is_some();
+                        assert_eq!(
+                            gizmo.arrow_shown(&cam, axis),
+                            can_drag,
+                            "axis {axis}, {distance} m, yaw {yaw}, pitch {pitch}"
+                        );
+                        if can_drag {
+                            shown += 1;
+                        } else {
+                            hidden += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(shown > 300 && hidden > 10, "{shown} shown, {hidden} hidden");
     }
 
     #[test]
@@ -439,6 +569,70 @@ mod tests {
         let y = ring_angle(&cam, centre, DVec3::Y, right, up).unwrap();
         assert!((y.abs() - std::f64::consts::FRAC_PI_2).abs() < 1e-6, "{y}");
         assert!((snap_angle(0.3, 15.0) - 15f64.to_radians()).abs() < 1e-12);
+    }
+
+    /// A view of (0, 1, 0) from the direction `eye` (unit), and the point looked at.
+    fn looking_from(eye: DVec3) -> (ScreenCamera, DVec3) {
+        let c = OrbitCamera {
+            target: Vec3::new(0.0, 1.0, 0.0),
+            yaw: eye.x.atan2(eye.z) as f32,
+            pitch: eye.y.asin() as f32,
+            distance: 2.6,
+            fov_y: 35f32.to_radians(),
+        };
+        let cam = ScreenCamera::new(&c, DVec2::new(0.0, 30.0), DVec2::new(700.0, 600.0));
+        (cam, DVec3::new(0.0, 1.0, 0.0))
+    }
+
+    #[test]
+    fn an_edge_on_ring_turns_the_way_the_exact_method_does_just_outside_the_limit() {
+        // Anticlockwise on screen, a quarter turn about the centre, 50 points out. Seen from
+        // the axis's positive side (the axis towards the viewer) that is a positive turn about
+        // it, and from the other side a negative one: for every axis, from above and below,
+        // 0.14 (read from the pointer's angle on screen) and 0.16 (read exactly from the ring's
+        // plane) from edge-on must agree on the sign, and the edge-on one is a true quarter.
+        let mut cases = 0;
+        for (k, axis) in AXES.iter().enumerate() {
+            for towards in [1.0, -1.0] {
+                let mut signs = Vec::new();
+                for cos in [0.14, 0.16] {
+                    let side = [DVec3::Z, DVec3::Z, DVec3::X][k];
+                    let eye =
+                        (*axis * towards * cos + side * (1.0_f64 - cos * cos).sqrt()).normalize();
+                    let (cam, centre) = looking_from(eye);
+                    let c = cam.project(centre).unwrap();
+                    let turned = ring_angle(
+                        &cam,
+                        centre,
+                        *axis,
+                        c + DVec2::new(50.0, 0.0),
+                        c + DVec2::new(0.0, -50.0),
+                    )
+                    .unwrap_or_else(|| panic!("axis {k}, {towards}, {cos}"));
+                    assert!(turned.abs() < std::f64::consts::PI, "{turned}");
+                    assert_eq!(
+                        turned.signum(),
+                        towards,
+                        "axis {k} {} the viewer, {cos} from edge-on: {turned}",
+                        if towards > 0.0 {
+                            "towards"
+                        } else {
+                            "away from"
+                        }
+                    );
+                    if cos < EDGE_ON {
+                        assert!(
+                            (turned.abs() - std::f64::consts::FRAC_PI_2).abs() < 1e-6,
+                            "{turned}"
+                        );
+                    }
+                    signs.push(turned.signum());
+                    cases += 1;
+                }
+                assert_eq!(signs[0], signs[1]);
+            }
+        }
+        assert_eq!(cases, 12);
     }
 
     #[test]

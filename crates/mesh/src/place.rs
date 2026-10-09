@@ -13,6 +13,12 @@ pub const START_DISTANCE_M: f64 = 0.40;
 pub const PLACE_GAP_M: f64 = 0.03;
 /// Place at… curves a piece this much (m) when no ray finds the form near it.
 pub const FALLBACK_RADIUS_M: f64 = 0.2;
+/// Place at… measures the form at 25 angles across the span a piece covers...
+const ANGLE_STEPS: usize = 24;
+/// ...and at heights this far apart (m) over the piece's height.
+const ROW_SPACING_M: f64 = 0.02;
+/// How many times it measures again at the radius it found.
+const RADIUS_TRIES: usize = 3;
 
 /// The middle of a shape's bounding box on the pattern table (mm): the point a placement puts
 /// at its position.
@@ -144,14 +150,16 @@ pub fn place_at(
         }
     });
     let theta = at.angle();
-    let rows = ((tall / 0.02).ceil() as usize).max(1);
-    let mut radius = FALLBACK_RADIUS_M;
-    for _ in 0..3 {
-        let middle = theta - facing / radius;
-        let half_span = width / 2.0 / radius;
+    let rows = ((tall / ROW_SPACING_M).ceil() as usize).max(1);
+    // The radius the piece needs when it is wrapped at radius `r`: it covers a span of angles
+    // that depends on `r`, and the form is `surface` away across that span and the piece's
+    // heights. Wider pieces and tighter curves cover more of the form.
+    let need = |r: f64| {
+        let middle = theta - facing / r;
+        let half_span = width / 2.0 / r;
         let mut farthest: Option<f64> = None;
-        for i in 0..=24 {
-            let angle = middle - half_span + 2.0 * half_span * i as f64 / 24.0;
+        for i in 0..=ANGLE_STEPS {
+            let angle = middle - half_span + 2.0 * half_span * i as f64 / ANGLE_STEPS as f64;
             for j in 0..=rows {
                 let y = height - tall / 2.0 + tall * j as f64 / rows as f64;
                 if let Some(d) = surface(angle, y).filter(|d| d.is_finite()) {
@@ -159,10 +167,21 @@ pub fn place_at(
                 }
             }
         }
-        radius = farthest
+        farthest
             .map_or(FALLBACK_RADIUS_M, |d| d + PLACE_GAP_M)
-            .clamp(MIN_CURVE_M, MAX_CURVE_M);
+            .clamp(MIN_CURVE_M, MAX_CURVE_M)
+    };
+    // A larger radius covers a narrower span, so `need` never grows with `r`, and trying again
+    // can settle into a two-cycle (a piece that just reaches an arm at the low radius and just
+    // misses it at the high one). The larger of the last two tries is always enough for the span
+    // it covers: if it is the earlier one, `need` of it is the later; if it is the later one,
+    // `need` of it is at most what the earlier one needed, which is the later.
+    let (mut previous, mut radius) = (FALLBACK_RADIUS_M, FALLBACK_RADIUS_M);
+    for _ in 0..RADIUS_TRIES {
+        previous = radius;
+        radius = need(radius);
     }
+    let radius = radius.max(previous);
     let phi = theta - facing / radius;
     Placement {
         position: [radius * phi.sin(), height, radius * phi.cos()],
@@ -430,6 +449,140 @@ mod tests {
         let placed = place_at(&pr, &shapes[0], PlaceAt::Front, &layout, 1.3, &cylinder);
         let on_fold = apply(&placed, centre_of(&shapes[0]), p(100.0, 200.0));
         assert!(on_fold.x.abs() < 1e-12 && on_fold.z > 0.0, "{on_fold}");
+    }
+
+    /// A lone piece, `width` × 600 mm, unplaced (so its height is the starting one, 1.0 m at
+    /// shoulders of 1.3 m).
+    fn lone(width_mm: f64) -> (Project, PieceId) {
+        let mut pr = Project::new();
+        let id = pr.add_piece(Piece::rectangle(
+            PieceId(0),
+            "Lone",
+            p(0.0, 0.0),
+            width_mm,
+            600.0,
+        ));
+        (pr, id)
+    }
+
+    /// Whether the placed piece (`width` m wide, `tall` m tall, at `height` m) is clear of the
+    /// form everywhere it reaches: across the angles its curve covers (found from the
+    /// placement itself) and over its whole height, the form is no farther than the curve's
+    /// radius less the gap.
+    fn clears(
+        surface: &dyn Fn(f64, f64) -> Option<f64>,
+        placed: &Placement,
+        width: f64,
+        tall: f64,
+    ) -> Result<(), String> {
+        let r = placed.curve.unwrap();
+        let phi = placed.position[0].atan2(placed.position[2]);
+        let height = placed.position[1];
+        for k in 0..=2000 {
+            let angle = phi + (-width / 2.0 + width * f64::from(k) / 2000.0) / r;
+            for j in 0..=60 {
+                let y = height - tall / 2.0 + tall * f64::from(j) / 60.0;
+                if let Some(d) = surface(angle, y)
+                    && d + PLACE_GAP_M > r + 1e-9
+                {
+                    return Err(format!(
+                        "radius {r:.3} m, but the form is {d:.3} m away at {angle:.3} rad, {y:.2} m up"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn place_at_never_ends_inside_a_step_in_the_form() {
+        // An arm beyond 1.4 rad from the front: 0.15 m from the centre line before it, 0.28
+        // after. Trying again at the radius it found can swing between the two, and a piece
+        // 520-550 mm wide used to stop on the low one, with its edges through the arm.
+        let arm = |a: f64, _y: f64| Some(if a.abs() < 1.4 { 0.15 } else { 0.28 });
+        // A form that gets farther from the centre line the further round you look.
+        let ramp = |a: f64, _y: f64| Some(0.02 + 0.05 * a.abs());
+        let (mut arm_radii, mut ramp_radii) = (Vec::new(), Vec::new());
+        for width in (300..=700).step_by(10) {
+            let (pr, id) = lone(f64::from(width));
+            let shapes = geom::shapes(&pr);
+            let layout = layout(&shapes);
+            for (name, surface, radii) in [
+                (
+                    "arm",
+                    &arm as &dyn Fn(f64, f64) -> Option<f64>,
+                    &mut arm_radii,
+                ),
+                ("ramp", &ramp, &mut ramp_radii),
+            ] {
+                let placed = place_at(&pr, &shapes[0], PlaceAt::Front, &layout, 1.3, surface);
+                radii.push(placed.curve.unwrap());
+                if let Err(why) = clears(surface, &placed, f64::from(width) / 1000.0, 0.6) {
+                    panic!("{name}, {width} mm wide ({id:?}): {why}");
+                }
+            }
+        }
+        // Both ways of settling are exercised: the arm window needs the high radius.
+        assert!(arm_radii.iter().any(|r| (r - 0.31).abs() < 1e-9));
+        assert!(arm_radii.iter().any(|r| (r - 0.18).abs() < 1e-9));
+        assert!(ramp_radii.windows(2).all(|w| w[1] >= w[0] - 1e-9));
+    }
+
+    #[test]
+    fn place_at_measures_the_whole_span_and_height_of_the_piece() {
+        // A bump in the form 25 cm from the centre line (10 cm elsewhere), over a narrow band
+        // of angles right of the middle and the upper part of the piece's height only. A ray
+        // down the middle, one at the piece's own height, or one over half the angles misses it.
+        let bump = |a: f64, y: f64| {
+            Some(if (0.35..0.55).contains(&a) && (1.15..1.25).contains(&y) {
+                0.25
+            } else {
+                0.10
+            })
+        };
+        let (pr, _) = lone(500.0);
+        let shapes = geom::shapes(&pr);
+        let layout = layout(&shapes);
+        let placed = place_at(&pr, &shapes[0], PlaceAt::Front, &layout, 1.3, &bump);
+        assert_eq!(placed.curve, Some(0.25 + PLACE_GAP_M));
+        assert_eq!(clears(&bump, &placed, 0.5, 0.6), Ok(()));
+        // The same far form on the other side (angles are positive towards +x).
+        let mirror = |a: f64, y: f64| bump(-a, y);
+        let placed = place_at(&pr, &shapes[0], PlaceAt::Front, &layout, 1.3, &mirror);
+        assert_eq!(placed.curve, Some(0.25 + PLACE_GAP_M));
+        // And below the piece's reach: nothing.
+        let low = |a: f64, y: f64| bump(a, y + 0.9);
+        let placed = place_at(&pr, &shapes[0], PlaceAt::Front, &layout, 1.3, &low);
+        assert_eq!(placed.curve, Some(0.10 + PLACE_GAP_M));
+    }
+
+    #[test]
+    fn a_member_of_a_pair_is_measured_across_the_side_it_curves_round() {
+        // The back's right edge (towards its twin) goes on the back centre line, so the piece
+        // curves round towards the form's left: angles from π less its width / radius up to π.
+        // A bump there, and only there, sets its radius.
+        let bump = |a: f64, _y: f64| {
+            let round = std::f64::consts::PI;
+            Some(if (round - 1.0..round - 0.8).contains(&a) {
+                0.25
+            } else {
+                0.10
+            })
+        };
+        let pr = pattern();
+        let shapes = geom::shapes(&pr);
+        let layout = layout(&shapes);
+        let back = place_at(&pr, &shapes[1], PlaceAt::Back, &layout, 1.3, &bump);
+        assert_eq!(clears(&bump, &back, 0.3, 0.55), Ok(()));
+        assert!(
+            back.curve.unwrap() >= 0.25 + PLACE_GAP_M,
+            "{:?}",
+            back.curve
+        );
+        // Placed at the front, the same piece curves round towards the form's right instead
+        // (its facing side goes to angle 0 and it covers 0..-w/r): the bump is not in reach.
+        let front = place_at(&pr, &shapes[1], PlaceAt::Front, &layout, 1.3, &bump);
+        assert_eq!(front.curve, Some(0.10 + PLACE_GAP_M));
     }
 
     #[test]
