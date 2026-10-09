@@ -1597,6 +1597,11 @@ fn escape_gives_a_gizmo_drag_up_and_the_piece_goes_back_with_no_undo_step() {
     h.step();
     let_go(&mut h, from + DVec2::new(0.0, -60.0));
     assert_eq!(*h.state().editor().doc.project(), before);
+    assert_eq!(
+        h.state().editor().selection,
+        Selection::Piece(PieceId(1)),
+        "letting go after Escape is not a click on the background"
+    );
     // The only step in the history is the piece being drawn.
     h.state_mut().editor_mut().undo();
     assert_eq!(pieces(&h), 0);
