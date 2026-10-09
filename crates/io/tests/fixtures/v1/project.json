@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "units": "inch",
+  "pieces": [
+    {
+      "id": 1,
+      "name": "Front panel",
+      "vertices": [
+        { "pos": { "x": 0.0, "y": 0.0 }, "kind": "corner" },
+        { "pos": { "x": 500.0, "y": 0.0 }, "kind": "corner" },
+        { "pos": { "x": 500.0, "y": 800.0 }, "kind": "smooth" },
+        { "pos": { "x": 0.0, "y": 800.0 }, "kind": "corner" }
+      ],
+      "edges": [
+        { "type": "line" },
+        {
+          "type": "curve",
+          "c1": { "x": 560.0, "y": 250.0 },
+          "c2": { "x": 560.0, "y": 550.0 }
+        },
+        { "type": "line" },
+        { "type": "line" }
+      ],
+      "grain_deg": 90.0
+    },
+    {
+      "id": 2,
+      "name": "Pocket",
+      "vertices": [
+        { "pos": { "x": 100.0, "y": 100.0 }, "kind": "corner" },
+        { "pos": { "x": 300.0, "y": 100.0 }, "kind": "corner" },
+        { "pos": { "x": 200.0, "y": 250.0 }, "kind": "corner" }
+      ],
+      "edges": [
+        { "type": "line" },
+        { "type": "line" },
+        { "type": "line" }
+      ],
+      "grain_deg": 45.5
+    }
+  ],
+  "next_piece_id": 7
+}
