@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 opendrape-core.workspace = true
 opendrape-geom.workspace = true
+glam.workspace = true
 spade.workspace = true
 
 [lints]

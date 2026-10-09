@@ -4,6 +4,7 @@
 //! stitched points. Pure: no GPU, no windows.
 
 mod boundary;
+pub mod place;
 mod triangulate;
 
 pub use triangulate::{ANGLE_LIMIT_DEG, TriangulateError, Triangulated, triangulate};
@@ -203,7 +204,6 @@ fn panel(
         .map(|l| resampled_loop(&geom::line_points(l, 0.1), h))
         .collect();
     let mesh = triangulate(&corners, &holes, h, max_points)?;
-    let (lo, hi) = bounds(&geom::outline_points(&shape.piece, 0.5));
     Ok((
         PanelMesh {
             shape: shape.id,
@@ -214,7 +214,7 @@ fn panel(
                 .collect(),
             triangles: mesh.triangles,
             edges: outline.edges,
-            centre: lo.lerp(hi, 0.5),
+            centre: place::centre_of(shape),
         },
         outline.sides,
     ))

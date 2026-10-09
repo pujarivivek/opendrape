@@ -12,6 +12,7 @@ publish.workspace = true
 opendrape-core.workspace = true
 opendrape-geom.workspace = true
 opendrape-io.workspace = true
+opendrape-mesh.workspace = true
 opendrape-render.workspace = true
 opendrape-sim.workspace = true
 opendrape-testkit.workspace = true

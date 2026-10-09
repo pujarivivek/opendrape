@@ -1,6 +1,7 @@
 //! OpenDrape desktop application.
 
 mod app;
+pub mod arrange;
 pub mod cli;
 pub mod diagnostics;
 pub mod editor;

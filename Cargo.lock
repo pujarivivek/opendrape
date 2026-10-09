@@ -2511,6 +2511,7 @@ dependencies = [
  "opendrape-core",
  "opendrape-geom",
  "opendrape-io",
+ "opendrape-mesh",
  "opendrape-render",
  "opendrape-sim",
  "opendrape-testkit",
@@ -2564,6 +2565,7 @@ dependencies = [
 name = "opendrape-mesh"
 version = "0.1.0"
 dependencies = [
+ "glam",
  "opendrape-core",
  "opendrape-geom",
  "spade",
