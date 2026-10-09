@@ -85,6 +85,9 @@ pub(super) struct Drag {
     grab: Point2,
     /// The dragged shape's kind: a twin's movements are mirrored back onto the stored piece.
     kind: geom::ShapeKind,
+    /// A refused move of this drag has been reported already: one notice per drag, not one per
+    /// frame.
+    refusal_noted: bool,
 }
 
 impl Drag {
@@ -93,7 +96,7 @@ impl Drag {
         let o = &self.original;
         let mut p = o.clone();
         let twin = matches!(self.kind, geom::ShapeKind::Twin { .. });
-        let ds = if twin { Point2::new(-d.x, d.y) } else { d };
+        let ds = self.kind.to_stored_delta(d);
         match self.hit {
             Hit::Vertex(_, i) => p.move_vertex(i, o.vertices[i].pos + ds),
             Hit::Handle(_, i, end) => {
@@ -455,6 +458,7 @@ impl PatternEditor {
                     hit,
                     grab,
                     kind: shape.kind,
+                    refusal_noted: false,
                 });
             }
         }
@@ -468,6 +472,14 @@ impl PatternEditor {
                     *piece = moved;
                 }
             });
+            // The move was refused (a point dragged over a fold line, or too large a piece):
+            // say so, as a typed change would, but only the first time in this drag.
+            if self.doc.last_change_refused()
+                && let Some(drag) = &mut self.canvas.drag
+                && !std::mem::replace(&mut drag.refusal_noted, true)
+            {
+                self.note_if_refused();
+            }
         }
         if response.drag_stopped() && self.canvas.drag.take().is_some() {
             self.doc.end_gesture();

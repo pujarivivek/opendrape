@@ -128,3 +128,11 @@ pub fn type_into(h: &mut H, label: &str, text: &str) {
 pub fn untouched_rectangle(id: PieceId) -> Piece {
     Piece::rectangle(id, "Front", Point2::new(100.0, 100.0), 300.0, 400.0)
 }
+
+/// The notice shown is the one saying a change was refused.
+pub fn refused_notice(h: &H) -> bool {
+    h.state()
+        .notice
+        .as_deref()
+        .is_some_and(|n| n.contains("can't be made"))
+}

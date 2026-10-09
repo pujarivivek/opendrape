@@ -789,13 +789,6 @@ fn fill_with_pieces(h: &mut H) {
     assert!(!h.state().doc.last_change_refused());
 }
 
-fn refused_notice(h: &H) -> bool {
-    h.state()
-        .notice
-        .as_deref()
-        .is_some_and(|n| n.contains("can't be made"))
-}
-
 #[test]
 fn adding_a_point_to_a_full_piece_is_refused_with_a_notice() {
     let mut h = harness();

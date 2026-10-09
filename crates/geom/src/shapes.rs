@@ -79,9 +79,17 @@ impl Shape {
     }
     /// A movement on this shape as a movement of the stored piece.
     pub fn to_stored_delta(&self, d: Point2) -> Point2 {
-        match self.kind {
-            ShapeKind::Twin { .. } => Point2::new(-d.x, d.y),
-            _ => d,
+        self.kind.to_stored_delta(d)
+    }
+}
+
+impl ShapeKind {
+    /// A movement on a shape of this kind as a movement of its stored piece: a twin is the
+    /// stored piece mirrored left to right, so it moves the other way along x.
+    pub fn to_stored_delta(&self, d: Point2) -> Point2 {
+        match self {
+            Self::Twin { .. } => Point2::new(-d.x, d.y),
+            Self::Plain | Self::Folded { .. } => d,
         }
     }
 }
@@ -332,6 +340,8 @@ mod tests {
         let q = p(123.0, 45.0);
         close(twin.to_stored(twin.from_stored(q)), q);
         close(twin.to_stored_delta(p(5.0, 7.0)), p(-5.0, 7.0));
+        close(twin.kind.to_stored_delta(p(5.0, 7.0)), p(-5.0, 7.0));
+        close(all[0].kind.to_stored_delta(p(5.0, 7.0)), p(5.0, 7.0));
         assert_eq!((twin.stored_vertex(3), twin.shape_edge(2)), (Some(3), 2));
     }
 }

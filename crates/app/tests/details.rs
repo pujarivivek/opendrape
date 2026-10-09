@@ -3,7 +3,7 @@
 
 mod common;
 use common::*;
-use egui::Key;
+use egui::{Key, Modifiers, vec2};
 use egui_kittest::kittest::Queryable;
 use opendrape::editor::Selection;
 use opendrape_core::{Piece, PieceId, Point2};
@@ -123,6 +123,83 @@ fn add_point_works_on_a_twin_edge() {
     click(&mut h, 600.0, 101.0); // the twin's bottom edge, halfway
     assert_eq!(piece_of(&h, id).len(), 5);
     close(piece_of(&h, id).vertices[1].pos, Point2::new(250.0, 100.0));
+
+    // Off centre, so that a mirrored curve parameter (1 - t) would land somewhere else: the
+    // twin's edge runs from (750,100) to (450,100), so a quarter of the way along is x = 675,
+    // and the stored edge from (100,100) to (400,100) is split a quarter along, at x = 175.
+    let mut h = harness();
+    let (id, _) = with_pair(&mut h);
+    key(&mut h, Key::X);
+    click(&mut h, 675.0, 101.0);
+    assert_eq!(piece_of(&h, id).len(), 5);
+    close(piece_of(&h, id).vertices[1].pos, Point2::new(175.0, 100.0));
+}
+
+#[test]
+fn the_pale_half_of_a_fold_picks_and_moves_the_whole_piece() {
+    // A pale corner, then a pale edge: neither is editable, so both pick the piece.
+    for (x, y) in [(150.0, 100.0), (150.0, 250.0)] {
+        let mut h = harness();
+        let id = with_half(&mut h);
+        click(&mut h, x, y);
+        assert_eq!(
+            h.state().selection,
+            Selection::Piece(id),
+            "click at {x},{y}"
+        );
+        let before = piece_of(&h, id);
+        drag(&mut h, (x, y), (x + 10.0, y));
+        let after = piece_of(&h, id);
+        assert_eq!(after.vertices.len(), before.vertices.len());
+        for (a, b) in after.vertices.iter().zip(&before.vertices) {
+            close(a.pos, b.pos + Point2::new(10.0, 0.0));
+        }
+        assert_eq!(h.state().selection, Selection::Piece(id), "drag at {x},{y}");
+    }
+}
+
+#[test]
+fn a_twin_placed_higher_still_edits_the_piece_through_the_mirror() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    let twin = h
+        .state_mut()
+        .doc
+        .edit(|p| p.add_twin(id, "Front (mirror)".into(), Point2::new(850.0, 40.0)))
+        .unwrap();
+    h.run();
+    close(twin_vertex(&h, id, 1), Point2::new(450.0, 140.0)); // (400,100) mirrored and raised
+    drag(&mut h, (450.0, 140.0), (470.0, 165.0)); // right 20, up 25
+    close(piece_of(&h, id).vertices[1].pos, Point2::new(380.0, 125.0)); // left 20, up 25
+    assert_eq!(h.state().selection, Selection::Vertex(twin, 1));
+}
+
+#[test]
+fn a_refused_drag_says_so_once() {
+    let mut h = harness();
+    let id = with_half(&mut h);
+    let before = piece_of(&h, id);
+    // Pulling the drawn half's outer corner over the fold line would put the piece on both
+    // sides of it, which a cut-on-fold piece can't be.
+    let (from, over) = (at(&h, 450.0, 100.0), at(&h, 250.0, 100.0));
+    h.hover_at(from);
+    button(&h, from, true, Modifiers::NONE);
+    h.step();
+    h.hover_at(over);
+    h.step();
+    assert!(
+        h.state().doc.last_change_refused(),
+        "the drag crossed the fold"
+    );
+    assert!(refused_notice(&h), "the refusal is reported");
+    assert_eq!(piece_of(&h, id), before, "and the piece stays as it was");
+    h.state_mut().notice = None;
+    h.hover_at(over + vec2(1.0, 0.0));
+    h.step();
+    assert!(!refused_notice(&h), "the same drag doesn't report it again");
+    button(&h, over, false, Modifiers::NONE);
+    h.run();
+    assert_eq!(piece_of(&h, id), before);
 }
 
 #[test]

@@ -135,12 +135,26 @@ pub fn nearest_line(piece: &Piece, p: Point2) -> Option<(usize, usize, f64, f64)
         .min_by(|a, b| a.3.total_cmp(&b.3))
 }
 
+/// Edge `i`'s label anchor, given which way the outline winds.
+fn label_anchor(piece: &Piece, i: usize, ccw: bool) -> (Point2, Point2) {
+    let half = edge_length(piece, i) / 2.0;
+    let (p, d) = along(piece, i, half);
+    (p, outward(ccw, d))
+}
+
 /// Where edge `i`'s length label goes: the point halfway along the edge, and the unit normal
 /// there pointing out of the piece.
 pub fn edge_label_anchor(piece: &Piece, i: usize) -> (Point2, Point2) {
-    let half = edge_length(piece, i) / 2.0;
-    let (p, d) = along(piece, i, half);
-    (p, outward(is_counter_clockwise(piece), d))
+    label_anchor(piece, i, is_counter_clockwise(piece))
+}
+
+/// [`edge_label_anchor`] for every edge in order, working out which way the outline winds
+/// once instead of once per edge (that takes a pass over the whole outline).
+pub fn edge_label_anchors(piece: &Piece) -> Vec<(Point2, Point2)> {
+    let ccw = is_counter_clockwise(piece);
+    (0..piece.len())
+        .map(|i| label_anchor(piece, i, ccw))
+        .collect()
 }
 
 #[cfg(test)]
@@ -245,5 +259,21 @@ mod tests {
         assert!(!is_counter_clockwise(&twin));
         let (_, out) = edge_label_anchor(&twin, 0);
         close(out, p(0.0, -1.0));
+    }
+
+    #[test]
+    fn all_the_anchors_at_once_are_the_ones_given_one_at_a_time() {
+        let mut ccw = square();
+        ccw.set_curved(1, true);
+        ccw.set_handle(1, opendrape_core::HandleEnd::Start, p(140.0, 20.0));
+        let cw = ccw.reflected(p(300.0, 0.0));
+        assert!(is_counter_clockwise(&ccw) && !is_counter_clockwise(&cw));
+        for piece in [ccw, cw] {
+            let all = edge_label_anchors(&piece);
+            assert_eq!(all.len(), piece.len());
+            for (i, anchor) in all.into_iter().enumerate() {
+                assert_eq!(anchor, edge_label_anchor(&piece, i), "edge {i}");
+            }
+        }
     }
 }

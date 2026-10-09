@@ -143,29 +143,28 @@ impl PatternEditor {
                 Stroke::new(1.0, c.cut),
             ));
         }
-        let folded = match d.shape.kind {
-            geom::ShapeKind::Folded { drawn, fold, .. } => Some((drawn, fold)),
+        let fold = match d.shape.kind {
+            geom::ShapeKind::Folded { fold, .. } => Some(fold),
             _ => None,
         };
-        let fill = if folded.is_some() {
-            c.pale_fill
-        } else {
-            c.fill
-        };
-        painter.add(self.mesh(rect, &d.outline, &d.fill, fill));
-        match folded {
-            Some((drawn, fold)) => {
+        match fold {
+            Some(fold) => {
+                // The whole piece is pale; the half that is really stored is drawn over it
+                // in the normal fill and outline.
+                painter.add(self.mesh(rect, &d.outline, &d.fill, c.pale_fill));
+                painter.add(self.mesh(rect, &d.half, &d.half_fill, c.fill));
                 painter.add(Shape::closed_line(
                     self.screen_points(rect, d.outline.clone()),
                     Stroke::new(1.0, c.pale),
                 ));
-                for j in 0..drawn - 1 {
-                    let pts = self.screen_points(rect, geom::edge_points(piece, j, v.mm(0.25)));
-                    painter.add(Shape::line(pts, Stroke::new(width, ink)));
-                }
+                painter.add(Shape::line(
+                    self.screen_points(rect, d.half.clone()),
+                    Stroke::new(width, ink),
+                ));
                 self.paint_fold(painter, rect, fold, c);
             }
             None => {
+                painter.add(self.mesh(rect, &d.outline, &d.fill, c.fill));
                 painter.add(Shape::closed_line(
                     self.screen_points(rect, d.outline.clone()),
                     Stroke::new(width, ink),
@@ -267,26 +266,23 @@ impl PatternEditor {
     }
 
     /// Each editable edge's length, just outside the piece (and outside the allowance band when
-    /// it is shown), so no line runs through the text.
+    /// it is shown), so no line runs through the text. Where each label goes was worked out
+    /// with the shape; this only places and writes it.
     fn paint_lengths(&self, painter: &Painter, rect: Rect, d: &Drawn, c: &Palette) {
         let piece = &d.shape.piece;
         let units = self.doc.project().units;
-        for j in 0..piece.len() {
-            if d.shape.stored_edge(j).is_none() {
-                continue;
-            }
-            let (at, out) = geom::edge_label_anchor(piece, j);
+        for label in &d.labels {
             let band = if self.show_allowance {
-                piece.edge_allowance(j) * self.view.zoom
+                piece.edge_allowance(label.edge) * self.view.zoom
             } else {
                 0.0
             };
             let gap = (band + 10.0) as f32;
-            let pos = self.view.to_screen(rect, at) + vec2(out.x as f32, -(out.y as f32)) * gap;
+            let out = vec2(label.out.x as f32, -(label.out.y as f32));
             painter.text(
-                pos,
+                self.view.to_screen(rect, label.at) + out * gap,
                 Align2::CENTER_CENTER,
-                units.format(geom::edge_length(piece, j)),
+                units.format(label.length),
                 FontId::proportional(11.0),
                 c.label,
             );
