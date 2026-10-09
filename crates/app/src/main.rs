@@ -60,6 +60,7 @@ fn main() -> ExitCode {
         previous,
         store: store.clone(),
         smoke_test: cli.smoke_test,
+        autoplay: true,
     };
     let app_shared = shared.clone();
     stage("opening the window");

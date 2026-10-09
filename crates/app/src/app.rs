@@ -1,7 +1,10 @@
 use crate::diagnostics::Diagnostics;
 use crate::gpu::{Decision, GpuChoice, GpuState, Os, StateStore, confirmed_state};
+use crate::sim_runner::{SimFrame, SimRunner};
 use crate::tr;
 use crate::viewport::Viewport;
+use opendrape_testkit::garments::Garment;
+use std::sync::Arc;
 use std::{cell::Cell, rc::Rc};
 
 /// What main() decided before the window opened.
@@ -11,6 +14,8 @@ pub struct Startup {
     pub previous: GpuState,
     pub store: StateStore,
     pub smoke_test: bool,
+    /// Start simulating immediately (tests start paused, so `Harness::run` can settle).
+    pub autoplay: bool,
 }
 
 /// Results main() reads after the window closes.
@@ -34,6 +39,9 @@ pub struct OpenDrapeApp {
     shared: SharedState,
     show_about: bool,
     copied: bool,
+    runner: Option<SimRunner>,
+    garment: Garment,
+    fps: f32,
 }
 
 impl OpenDrapeApp {
@@ -44,6 +52,12 @@ impl OpenDrapeApp {
             "window open, graphics: {:?}",
             info.as_ref().map(|i| (&i.name, i.device_type, i.backend))
         ));
+        let runner = render_state.map(|_| {
+            let ctx = cc.egui_ctx.clone();
+            SimRunner::start(Garment::Skirt, startup.autoplay, move || {
+                ctx.request_repaint()
+            })
+        });
         Self {
             viewport: render_state.map(Viewport::new),
             diagnostics: Diagnostics::collect(info.as_ref(), startup.decision),
@@ -51,7 +65,55 @@ impl OpenDrapeApp {
             shared,
             show_about: false,
             copied: false,
+            runner,
+            garment: Garment::Skirt,
+            fps: 0.0,
         }
+    }
+
+    /// The latest simulation frame, if the 3D view is running.
+    pub fn sim_frame(&self) -> Option<Arc<SimFrame>> {
+        self.runner.as_ref().map(SimRunner::latest)
+    }
+
+    pub fn stats_text(fps: f32, step_ms: f64, points: usize) -> String {
+        tr!(
+            "overlay-stats",
+            fps = format!("{fps:.0}"),
+            ms = format!("{step_ms:.1}"),
+            points = points.to_string()
+        )
+    }
+
+    fn toolbar(&mut self, ui: &mut egui::Ui) {
+        let Some(runner) = &self.runner else { return };
+        ui.horizontal(|ui| {
+            for g in Garment::ALL {
+                if ui
+                    .selectable_label(self.garment == g, garment_label(g))
+                    .clicked()
+                    && self.garment != g
+                {
+                    self.garment = g;
+                    runner.reset(g);
+                }
+            }
+            ui.separator();
+            let playing = runner.is_playing();
+            if ui
+                .button(if playing {
+                    tr!("toolbar-pause")
+                } else {
+                    tr!("toolbar-play")
+                })
+                .clicked()
+            {
+                runner.set_playing(!playing);
+            }
+            if ui.button(tr!("toolbar-reset")).clicked() {
+                runner.reset(self.garment);
+            }
+        });
     }
 
     pub fn viewport_frames(&self) -> u64 {
@@ -148,6 +210,13 @@ impl OpenDrapeApp {
     }
 }
 
+fn garment_label(g: Garment) -> String {
+    match g {
+        Garment::Skirt => tr!("garment-skirt"),
+        Garment::BodiceProxy => tr!("garment-bodice-proxy"),
+    }
+}
+
 fn choice_label(choice: GpuChoice) -> String {
     match choice {
         GpuChoice::Auto => tr!("graphics-auto"),
@@ -163,9 +232,30 @@ impl eframe::App for OpenDrapeApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         egui::Panel::top("menu_bar").show(ui, |ui| self.menu_bar(ui));
         self.about_window(ui.ctx());
+        egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
+        let dt = ui.input(|i| i.unstable_dt).max(1e-3);
+        self.fps = if self.fps == 0.0 {
+            1.0 / dt
+        } else {
+            0.9 * self.fps + 0.1 / dt
+        };
+        let sim = self.sim_frame();
+        let fps = self.fps;
         egui::CentralPanel::default().show(ui, |ui| {
             match (self.viewport.as_mut(), frame.wgpu_render_state()) {
-                (Some(viewport), Some(rs)) => viewport.ui(ui, rs),
+                (Some(viewport), Some(rs)) => {
+                    let rect = ui.max_rect();
+                    viewport.ui(ui, rs, sim.as_deref());
+                    if let Some(f) = &sim {
+                        ui.painter().text(
+                            rect.left_top() + egui::vec2(10.0, 8.0),
+                            egui::Align2::LEFT_TOP,
+                            Self::stats_text(fps, f.step_ms, f.positions.len()),
+                            egui::FontId::proportional(13.0),
+                            egui::Color32::from_gray(60),
+                        );
+                    }
+                }
                 _ => {
                     ui.centered_and_justified(|ui| ui.label(tr!("viewport-no-gpu")));
                 }

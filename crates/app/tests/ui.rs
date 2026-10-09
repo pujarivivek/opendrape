@@ -14,6 +14,7 @@ fn harness(config_dir: &Path, shared: SharedState) -> Harness<'static, OpenDrape
         previous: GpuState::default(),
         store: StateStore::new(Some(config_dir)),
         smoke_test: false,
+        autoplay: false,
     };
     Harness::builder()
         .with_size(egui::vec2(1000.0, 700.0))
@@ -98,6 +99,7 @@ fn tiny_window_does_not_crash() {
         previous: GpuState::default(),
         store: StateStore::new(Some(dir.path())),
         smoke_test: false,
+        autoplay: false,
     };
     let mut h = Harness::builder()
         .with_size(egui::vec2(120.0, 40.0)) // the menu bar leaves almost no room for the 3D panel
@@ -122,6 +124,7 @@ fn crash_marker_is_cleared_only_after_frames_were_presented() {
         previous: GpuState::default(),
         store: StateStore::new(Some(dir.path())),
         smoke_test: false,
+        autoplay: false,
     };
     let app_shared = shared.clone();
     // The harness draws one frame plus at most `max_steps` more while it is being built.
@@ -139,4 +142,74 @@ fn crash_marker_is_cleared_only_after_frames_were_presented() {
     h.run_steps(5);
     assert!(shared.first_frame_drawn.get());
     assert_eq!(store.load().pending, None);
+}
+
+use std::time::{Duration, Instant};
+
+fn wait_until(
+    h: &mut Harness<'static, OpenDrapeApp>,
+    what: &str,
+    mut cond: impl FnMut(&OpenDrapeApp) -> bool,
+) {
+    let start = Instant::now();
+    while !cond(h.state()) {
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "timed out waiting for {what}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+        h.step();
+    }
+}
+
+// While the simulation plays it keeps requesting repaints, so these tests step explicitly
+// (`run_steps`, `wait_until`) instead of `run()`, which waits for the UI to settle.
+
+#[test]
+fn the_skirt_drapes_and_can_be_paused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default()); // starts paused (autoplay: false)
+    h.run();
+    h.get_by_label("A-line skirt");
+    h.get_by_label("Play").click();
+    h.run_steps(2);
+    wait_until(&mut h, "the simulation to advance", |a| {
+        a.sim_frame().is_some_and(|f| f.time > 0.05)
+    });
+    h.get_by_label("Pause").click();
+    h.run_steps(3);
+    h.get_by_label("Play");
+}
+
+#[test]
+fn reset_and_garment_switch_reload_the_scene() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    h.get_by_label("Play").click();
+    h.run_steps(2);
+    wait_until(&mut h, "time > 0.1", |a| {
+        a.sim_frame().is_some_and(|f| f.time > 0.1)
+    });
+    h.get_by_label("Pause").click();
+    h.run_steps(2);
+    h.get_by_label("Reset").click();
+    h.run_steps(2);
+    wait_until(&mut h, "time back to 0", |a| {
+        a.sim_frame().is_some_and(|f| f.time == 0.0)
+    });
+    h.get_by_label("Fitted tube (collision test)").click();
+    h.run_steps(2);
+    wait_until(&mut h, "the tube", |a| {
+        a.sim_frame()
+            .is_some_and(|f| f.positions.len() == opendrape_testkit::garments::BODICE_PARTICLES)
+    });
+}
+
+#[test]
+fn stats_text_is_readable() {
+    assert_eq!(
+        OpenDrapeApp::stats_text(59.6, 11.73, 4794),
+        "60 fps · simulation 11.7 ms per step · 4794 points"
+    );
 }

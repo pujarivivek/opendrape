@@ -10,6 +10,11 @@ publish.workspace = true
 
 [dependencies]
 opendrape-render.workspace = true
+opendrape-sim.workspace = true
+opendrape-testkit.workspace = true
+glam.workspace = true
+arc-swap.workspace = true
+crossbeam-channel.workspace = true
 eframe.workspace = true
 egui.workspace = true
 egui-wgpu.workspace = true
@@ -28,6 +33,7 @@ rfd.workspace = true
 winresource = "0.1"
 
 [dev-dependencies]
+opendrape-testkit.workspace = true
 egui_kittest.workspace = true
 tempfile.workspace = true
 

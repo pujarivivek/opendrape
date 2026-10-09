@@ -24,3 +24,10 @@ startup-failed = OpenDrape could not start its 3D graphics on this computer. Upd
     Details: { $error }
 
 graphics-starting-over = Last time, OpenDrape could not start its 3D graphics in any mode. It will now try again from the start. If this keeps happening, please update your graphics driver.
+
+toolbar-play = Play
+toolbar-pause = Pause
+toolbar-reset = Reset
+garment-skirt = A-line skirt
+garment-bodice-proxy = Fitted tube (collision test)
+overlay-stats = { $fps } fps · simulation { $ms } ms per step · { $points } points
