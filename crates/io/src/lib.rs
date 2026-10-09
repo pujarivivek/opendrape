@@ -3,6 +3,7 @@
 //! student's work.
 
 use opendrape_core::{ModelError, Project, SCHEMA_VERSION};
+use serde::Deserialize;
 use std::io::{Cursor, Read, Seek, Write};
 use std::path::Path;
 use zip::write::SimpleFileOptions;
@@ -10,7 +11,8 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 pub const EXTENSION: &str = "odp";
 const ENTRY: &str = "project.json";
-const MAX_JSON_BYTES: u64 = 64 * 1024 * 1024;
+/// Largest `project.json` we read. Bigger entries are refused before they are parsed.
+const MAX_JSON_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug)]
 pub enum OdpError {
@@ -31,7 +33,7 @@ impl std::fmt::Display for OdpError {
             Self::NewerVersion { found, supported } => {
                 write!(
                     f,
-                    "made by a newer OpenDrape (format {found}; this version reads up to {supported})"
+                    "made by a newer OpenDrape (format {found}; this version reads up to {supported}); update OpenDrape to open it"
                 )
             }
             Self::Invalid(e) => write!(f, "invalid project data ({e})"),
@@ -48,10 +50,19 @@ impl From<std::io::Error> for OdpError {
     }
 }
 
+/// Writing: a real I/O failure stays `Io`; anything else means the archive could not be built.
 fn zip_err(e: zip::result::ZipError) -> OdpError {
     match e {
         zip::result::ZipError::Io(e) => OdpError::Io(e),
         other => OdpError::Corrupt(other.to_string()),
+    }
+}
+
+/// Reading: a real I/O failure stays `Io`; anything else means this is not a project archive.
+fn read_zip_err(e: zip::result::ZipError) -> OdpError {
+    match e {
+        zip::result::ZipError::Io(e) => OdpError::Io(e),
+        _ => OdpError::NotAProject,
     }
 }
 
@@ -61,40 +72,55 @@ fn write_to<W: Write + Seek>(project: &Project, w: W) -> Result<(), OdpError> {
         .compression_method(CompressionMethod::Deflated)
         .unix_permissions(0o644);
     zip.start_file(ENTRY, options).map_err(zip_err)?;
-    serde_json::to_writer_pretty(&mut zip, project)
-        .map_err(|e| OdpError::Corrupt(e.to_string()))?;
+    serde_json::to_writer_pretty(&mut zip, project).map_err(|e| {
+        if e.is_io() {
+            OdpError::Io(std::io::Error::from(e))
+        } else {
+            OdpError::Corrupt(e.to_string())
+        }
+    })?;
     zip.finish().map_err(zip_err)?;
     Ok(())
 }
 
 fn read_from<R: Read + Seek>(r: R) -> Result<Project, OdpError> {
-    let mut zip = ZipArchive::new(r).map_err(|_| OdpError::NotAProject)?;
-    let mut entry = zip.by_name(ENTRY).map_err(|_| OdpError::NotAProject)?;
+    let mut zip = ZipArchive::new(r).map_err(read_zip_err)?;
+    let mut entry = zip.by_name(ENTRY).map_err(read_zip_err)?;
     if entry.size() > MAX_JSON_BYTES {
         return Err(OdpError::TooLarge);
     }
-    let mut text = String::new();
+    // Read one byte past the cap, so an entry whose header lies about its size is still caught.
+    let mut bytes = Vec::with_capacity(entry.size() as usize);
     entry
         .by_ref()
-        .take(MAX_JSON_BYTES)
-        .read_to_string(&mut text)
+        .take(MAX_JSON_BYTES + 1)
+        .read_to_end(&mut bytes)
         .map_err(|e| OdpError::Corrupt(e.to_string()))?;
-    let value: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| OdpError::Corrupt(e.to_string()))?;
-    let value = migrate(value)?;
+    if bytes.len() as u64 > MAX_JSON_BYTES {
+        return Err(OdpError::TooLarge);
+    }
+    let text = std::str::from_utf8(&bytes).map_err(|e| OdpError::Corrupt(e.to_string()))?;
+    check_version(text)?;
     let project: Project =
-        serde_json::from_value(value).map_err(|e| OdpError::Corrupt(e.to_string()))?;
+        serde_json::from_str(text).map_err(|e| OdpError::Corrupt(e.to_string()))?;
     project.check().map_err(OdpError::Invalid)?;
     Ok(project)
 }
 
-/// Upgrades older project JSON to [`SCHEMA_VERSION`] one version at a time. Version 1 is the
-/// first format, so there are no steps yet: add `found = 1 => { …; found = 2 }` arms here.
-fn migrate(value: serde_json::Value) -> Result<serde_json::Value, OdpError> {
-    let found = value
-        .get("schema_version")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or(OdpError::NotAProject)?;
+/// Reads only `schema_version` (other fields are skipped without building anything), so a file
+/// from a newer format is reported as such even when its contents have changed shape.
+///
+/// Version 1 is the first format, so nothing is upgraded yet. When version 2 arrives, older
+/// documents will need a step here that parses them as a `serde_json::Value`, rewrites them to
+/// the new shape, and deserializes `Project` from that. Current files skip the `Value` entirely.
+fn check_version(text: &str) -> Result<(), OdpError> {
+    #[derive(Deserialize)]
+    struct Version {
+        schema_version: Option<u64>,
+    }
+    let version: Version =
+        serde_json::from_str(text).map_err(|e| OdpError::Corrupt(e.to_string()))?;
+    let found = version.schema_version.ok_or(OdpError::NotAProject)?;
     if found > u64::from(SCHEMA_VERSION) {
         return Err(OdpError::NewerVersion {
             found,
@@ -104,7 +130,7 @@ fn migrate(value: serde_json::Value) -> Result<serde_json::Value, OdpError> {
     if found == 0 {
         return Err(OdpError::Corrupt("format version 0".into()));
     }
-    Ok(value)
+    Ok(())
 }
 
 pub fn to_bytes(project: &Project) -> Result<Vec<u8>, OdpError> {
@@ -124,6 +150,9 @@ pub fn save(project: &Project, path: &Path) -> Result<(), OdpError> {
         let mut w = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
         write_to(project, &mut w)?;
         w.flush()?;
+        // Force the bytes to disk before the rename. Otherwise a power cut can leave the new name
+        // pointing at an empty or partial file, in place of the last good save.
+        w.get_ref().sync_all()?;
         drop(w);
         std::fs::rename(&tmp, path)?;
         Ok(())
@@ -226,5 +255,99 @@ mod tests {
             load(&dir.path().join("missing.odp")),
             Err(OdpError::Io(_))
         ));
+    }
+
+    #[test]
+    fn refuses_an_oversized_entry() {
+        let json = format!(
+            r#"{{"schema_version":1,"pad":"{}"}}"#,
+            "a".repeat(MAX_JSON_BYTES as usize)
+        );
+        assert!(matches!(
+            from_bytes(&zip_with("project.json", &json)),
+            Err(OdpError::TooLarge)
+        ));
+    }
+
+    #[test]
+    fn refuses_an_entry_that_lies_about_its_size() {
+        // A stored entry whose real data is over the cap, with its declared size patched to 100
+        // bytes in the local header (offset 22) and the central directory (24 bytes in).
+        let json = format!(
+            r#"{{"schema_version":1,"pad":"{}"}}"#,
+            "a".repeat(MAX_JSON_BYTES as usize)
+        );
+        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+        let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        zip.start_file("project.json", stored).unwrap();
+        zip.write_all(json.as_bytes()).unwrap();
+        let mut bytes = zip.finish().unwrap().into_inner();
+        let central = bytes.windows(4).rposition(|w| w == b"PK\x01\x02").unwrap();
+        bytes[22..26].copy_from_slice(&100u32.to_le_bytes());
+        bytes[central + 24..central + 28].copy_from_slice(&100u32.to_le_bytes());
+        assert!(matches!(from_bytes(&bytes), Err(OdpError::TooLarge)));
+    }
+
+    /// A disk that fills up after about 1 KiB.
+    struct FullDisk(Cursor<Vec<u8>>);
+
+    impl Write for FullDisk {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if self.0.get_ref().len() >= 1024 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::StorageFull,
+                    "disk full",
+                ));
+            }
+            self.0.write(buf)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.0.flush()
+        }
+    }
+
+    impl Seek for FullDisk {
+        fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+            self.0.seek(pos)
+        }
+    }
+
+    #[test]
+    fn reports_a_full_disk_as_an_io_error() {
+        let mut big = Project::new();
+        for i in 0..5_000 {
+            big.add_piece(Piece::rectangle(
+                PieceId(0),
+                format!("Piece {i}"),
+                Point2::new(i as f64, 0.0),
+                10.0,
+                20.0,
+            ));
+        }
+        assert!(matches!(
+            write_to(&big, FullDisk(Cursor::new(Vec::new()))),
+            Err(OdpError::Io(_))
+        ));
+    }
+
+    /// A disk that fails on every access.
+    struct BrokenDisk;
+
+    impl Read for BrokenDisk {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("disk failed"))
+        }
+    }
+
+    impl Seek for BrokenDisk {
+        fn seek(&mut self, _pos: std::io::SeekFrom) -> std::io::Result<u64> {
+            Err(std::io::Error::other("disk failed"))
+        }
+    }
+
+    #[test]
+    fn reports_a_failed_read_as_an_io_error() {
+        assert!(matches!(read_from(BrokenDisk), Err(OdpError::Io(_))));
     }
 }

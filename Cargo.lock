@@ -2496,6 +2496,7 @@ name = "opendrape-io"
 version = "0.1.0"
 dependencies = [
  "opendrape-core",
+ "serde",
  "serde_json",
  "tempfile",
  "zip",

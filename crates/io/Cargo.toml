@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 opendrape-core.workspace = true
+serde.workspace = true
 serde_json = { workspace = true, features = ["float_roundtrip"] }
 zip.workspace = true
 
