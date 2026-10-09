@@ -319,34 +319,40 @@ mod tests {
 
     #[test]
     fn huge_shapes_are_cached_and_capped() {
-        // A within-limits but deliberately heavy piece: 2,000 wildly curved edges.
-        let corners: Vec<Point2> = (0..2000)
-            .map(|k| {
-                let a = k as f64 / 2000.0 * std::f64::consts::TAU;
-                Point2::new(5000.0 * a.cos(), 5000.0 * a.sin())
-            })
-            .collect();
-        let mut piece = Piece::polygon(PieceId(0), "Heavy", &corners);
-        for i in 0..piece.len() {
-            let (a, b) = piece.edge_ends(i);
-            piece.edges[i] = Edge::Curve {
-                c1: a + Point2::new(900.0, -900.0),
-                c2: b + Point2::new(-900.0, 900.0),
-            };
+        // A within-limits but deliberately heavy piece: up to 2,000 wildly curved edges. 1,990
+        // used to crash (a NaN point from the curve flattening reached the cut line), where
+        // 2,000 happened not to.
+        for count in [2000, 1990] {
+            let corners: Vec<Point2> = (0..count)
+                .map(|k| {
+                    let a = k as f64 / count as f64 * std::f64::consts::TAU;
+                    Point2::new(5000.0 * a.cos(), 5000.0 * a.sin())
+                })
+                .collect();
+            let mut piece = Piece::polygon(PieceId(0), "Heavy", &corners);
+            for i in 0..piece.len() {
+                let (a, b) = piece.edge_ends(i);
+                piece.edges[i] = Edge::Curve {
+                    c1: a + Point2::new(900.0, -900.0),
+                    c2: b + Point2::new(-900.0, 900.0),
+                };
+            }
+            let project = project_with(piece);
+            let mut cache = ShapeCache::default();
+            let first = cache.shapes(&project, 50.0);
+            assert!(
+                first[0].outline.len() <= MAX_DRAWN_POINTS
+                    && first[0].cut.len() <= MAX_DRAWN_POINTS,
+                "{count} points"
+            );
+            let started = std::time::Instant::now();
+            let again = cache.shapes(&project, 50.0);
+            assert!(Rc::ptr_eq(&first[0], &again[0]), "not recomputed");
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(1),
+                "{:?}",
+                started.elapsed()
+            );
         }
-        let project = project_with(piece);
-        let mut cache = ShapeCache::default();
-        let first = cache.shapes(&project, 50.0);
-        assert!(
-            first[0].outline.len() <= MAX_DRAWN_POINTS && first[0].cut.len() <= MAX_DRAWN_POINTS
-        );
-        let started = std::time::Instant::now();
-        let again = cache.shapes(&project, 50.0);
-        assert!(Rc::ptr_eq(&first[0], &again[0]), "not recomputed");
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(1),
-            "{:?}",
-            started.elapsed()
-        );
     }
 }

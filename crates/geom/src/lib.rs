@@ -153,9 +153,15 @@ fn control_length(points: &[Point]) -> f64 {
 }
 
 /// Flattens one curve element that starts at `from`, appending every point after `from`.
+///
+/// kurbo emits a NaN point part-way along some S-shaped cubics (for example a curve that was
+/// straight and then had one end moved). Such a point is dropped: the curve's own end point,
+/// always the last one, is exact, so the polyline keeps both of its ends.
 fn flatten_one(from: Point, el: PathEl, tolerance: f64, out: &mut Vec<Point2>) {
     kurbo::flatten([PathEl::MoveTo(from), el], tolerance, |flat| {
-        if let PathEl::LineTo(p) = flat {
+        if let PathEl::LineTo(p) = flat
+            && p.is_finite()
+        {
             out.push(cp(p));
         }
     });
@@ -348,6 +354,52 @@ mod tests {
         assert!(edge.len() > 3, "a curve flattens to several points");
         close(edge[0], p(0.0, 0.0));
         close(*edge.last().unwrap(), p(100.0, 0.0));
+    }
+
+    /// A 300 x 200 piece whose bottom edge was made curved (handles at its thirds) and whose
+    /// start corner was then moved to `to`: the curve is S-shaped, and for some positions
+    /// kurbo's flattening of it holds a NaN point.
+    fn bent_bottom(to: Point2) -> Piece {
+        let mut s = Piece::rectangle(PieceId(1), "S", p(0.0, 0.0), 300.0, 200.0);
+        s.set_curved(0, true);
+        s.move_vertex(0, to);
+        s
+    }
+
+    #[test]
+    fn an_s_shaped_curve_flattens_to_finite_points_only() {
+        // Found by searching every whole-millimetre position of the start corner within
+        // 150 mm of the origin: these four make kurbo emit a NaN point at tolerance 0.1.
+        for to in [
+            p(-149.0, -22.0),
+            p(-149.0, 22.0),
+            p(-128.0, -71.0),
+            p(-128.0, 71.0),
+        ] {
+            let s = bent_bottom(to);
+            assert_eq!(s.check(), Ok(()));
+            for tolerance in [0.1, 0.25, 1.0] {
+                let edge = edge_points(&s, 0, tolerance);
+                assert!(
+                    edge.iter().all(|q| q.is_finite()),
+                    "{to:?} at {tolerance}: {edge:?}"
+                );
+                assert_eq!(edge.first(), Some(&to), "{to:?} keeps its start");
+                assert_eq!(edge.last(), Some(&p(300.0, 0.0)), "{to:?} keeps its end");
+                assert!(outline_points(&s, tolerance).iter().all(|q| q.is_finite()));
+            }
+        }
+    }
+
+    #[test]
+    fn no_whole_millimetre_bend_of_a_curve_flattens_to_a_nan() {
+        for x in -150..=150 {
+            for y in -150..=150 {
+                let s = bent_bottom(p(f64::from(x), f64::from(y)));
+                let edge = edge_points(&s, 0, 0.1);
+                assert!(edge.iter().all(|q| q.is_finite()), "({x}, {y})");
+            }
+        }
     }
 
     #[test]

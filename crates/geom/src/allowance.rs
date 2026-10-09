@@ -38,6 +38,7 @@ pub fn cut_line(piece: &Piece) -> Vec<Point2> {
     let sew: Vec<Point2> = edges
         .iter()
         .flat_map(|(pts, _, _)| pts[..pts.len() - 1].iter().copied())
+        .filter(|q| q.is_finite())
         .collect();
     let ccw = is_counter_clockwise(piece);
     // Every ring handed to i_overlay, and returned, runs counter-clockwise.
@@ -139,6 +140,9 @@ pub fn cut_line(piece: &Piece) -> Vec<Point2> {
     }
     // The raw path crosses itself where curves are tighter than the allowance; its union with
     // the stitching polygon, by the non-zero rule, has the true cut line as its outer contour.
+    // A non-finite point would make i_overlay panic. None should get this far, but a crash is
+    // far worse than a slightly wrong cut line.
+    raw.retain(|q| q.is_finite());
     let raw = as_array(&raw);
     let parts = vec![as_array(&sew), raw.clone()];
     to_points(outer_or(parts.simplify_shape(FillRule::NonZero), raw))
@@ -416,6 +420,28 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn a_curve_that_kurbo_flattens_through_a_nan_still_has_a_finite_cut_line() {
+        // Curving an edge puts its handles at the thirds; moving one end then makes it
+        // S-shaped, and for these positions of the start corner kurbo's flattening of it holds
+        // a NaN point, which used to make i_overlay panic ("Invalid adapter bounds").
+        for to in [
+            p(-149.0, -22.0),
+            p(-149.0, 22.0),
+            p(-128.0, -71.0),
+            p(-128.0, 71.0),
+        ] {
+            let mut piece = Piece::rectangle(PieceId(1), "S", p(0.0, 0.0), 300.0, 200.0);
+            piece.set_curved(0, true);
+            piece.move_vertex(0, to);
+            let cut = cut_line(&piece);
+            assert!(cut.len() >= 4, "{to:?}: {cut:?}");
+            assert!(cut.iter().all(|q| q.is_finite()), "{to:?}: {cut:?}");
+            assert!(signed_area(&cut) > 0.0, "{to:?}");
+            assert_within(&piece, &cut, MITER_LIMIT * 10.0);
         }
     }
 
