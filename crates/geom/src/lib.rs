@@ -7,11 +7,18 @@ use kurbo::{
 };
 use opendrape_core::{Edge, Piece, Point2, Vertex};
 
+mod allowance;
+mod marks;
 mod shapes;
+pub use allowance::cut_line;
+pub use marks::{
+    NOTCH_DEPTH_MM, NOTCH_SPACING_MM, distance_along, edge_label_anchor, is_counter_clockwise,
+    line_length, line_points, nearest_line, notch_marks, point_at_distance,
+};
 pub use shapes::{Shape, ShapeKind, shape_of, shapes, unfolded};
 
 /// Accuracy (mm) of curve lengths and nearest-point searches.
-const ACCURACY: f64 = 1e-4;
+pub(crate) const ACCURACY: f64 = 1e-4;
 /// Longest edge a student can type (10 m), so a mistyped number can't create absurd pieces.
 pub const MAX_EDGE_MM: f64 = 10_000.0;
 /// Shortest edge a student can type (0.1 mm), so a typed length can never collapse an edge to a
@@ -25,7 +32,7 @@ pub enum Anchor {
     End,
 }
 
-fn kp(p: Point2) -> Point {
+pub(crate) fn kp(p: Point2) -> Point {
     Point::new(p.x, p.y)
 }
 
@@ -33,7 +40,7 @@ fn cp(p: Point) -> Point2 {
     Point2::new(p.x, p.y)
 }
 
-fn edge_seg(piece: &Piece, i: usize) -> PathSeg {
+pub(crate) fn edge_seg(piece: &Piece, i: usize) -> PathSeg {
     let (a, b) = piece.edge_ends(i);
     match piece.edges[i] {
         Edge::Line => PathSeg::Line(Line::new(kp(a), kp(b))),
@@ -103,7 +110,7 @@ const EDGE_TOLERANCE_DIVISOR: f64 = 4096.0;
 ///
 /// The second floor is far below anything a student draws (a 1 m edge is still accurate to
 /// 0.25 mm), so real patterns come out as accurate as `tolerance` asks.
-fn flatten(path: &BezPath, tolerance: f64) -> Vec<Point2> {
+pub(crate) fn flatten(path: &BezPath, tolerance: f64) -> Vec<Point2> {
     let extent = path.elements().iter().fold(1.0_f64, |m, el| match *el {
         PathEl::MoveTo(p) | PathEl::LineTo(p) => m.max(largest_abs(p)),
         PathEl::QuadTo(p1, p2) => m.max(largest_abs(p1)).max(largest_abs(p2)),

@@ -41,6 +41,7 @@ rust-embed = "8"
 tempfile = "3"
 kurbo = "0.13.1"
 earcut = "0.4.11"
+i_overlay = "9.0.1"
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [workspace.lints.clippy]
