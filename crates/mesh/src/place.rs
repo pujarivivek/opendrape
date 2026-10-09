@@ -44,12 +44,7 @@ pub fn apply(p: &Placement, centre: Point2, flat: Point2) -> DVec3 {
 /// The placement that shows a piece's mirror image across x = 0, for its twin: the twin's flat
 /// shape is the piece's mirror image, so mirroring the placement too keeps the pair mirrored.
 pub fn mirrored(p: &Placement) -> Placement {
-    let [x, y, z, w] = p.rotation;
-    Placement {
-        position: [-p.position[0], p.position[1], p.position[2]],
-        rotation: [x, -y, -z, w],
-        curve: p.curve,
-    }
+    p.mirrored()
 }
 
 /// The whole pattern's bounding box on the table (mm).
@@ -334,6 +329,42 @@ mod tests {
         pr.set_placement(PieceId(3), Some(own));
         let shapes = geom::shapes(&pr);
         assert_eq!(effective(&pr, &shapes[2], &layout, 1.3), own);
+    }
+
+    #[test]
+    fn breaking_a_pair_or_deleting_its_piece_does_not_move_the_twin() {
+        let twin_id = PieceId(3);
+        let at = |pr: &Project| {
+            let shapes = geom::shapes(pr);
+            let layout = layout(&shapes);
+            let shape = shapes.iter().find(|s| s.id == twin_id).unwrap();
+            // Where the twin's flat points are in 3D.
+            let placement = effective(pr, shape, &layout, 1.3);
+            geom::outline_points(&shape.piece, 0.5)
+                .into_iter()
+                .map(|q| apply(&placement, centre_of(shape), q))
+                .collect::<Vec<_>>()
+        };
+        let mut pr = pattern();
+        pr.set_placement(
+            PieceId(2),
+            Some(Placement {
+                position: [0.1, 0.8, -0.2],
+                rotation: DQuat::from_rotation_y(2.8).to_array(),
+                curve: Some(0.2),
+            }),
+        );
+        let before = at(&pr);
+        let mut broken = pr.clone();
+        broken.break_twin(PieceId(2));
+        let mut deleted = pr.clone();
+        deleted.remove_piece(PieceId(2));
+        for (what, after) in [("broken off", at(&broken)), ("piece deleted", at(&deleted))] {
+            assert_eq!(after.len(), before.len());
+            for (a, b) in before.iter().zip(&after) {
+                assert!((*a - *b).length() < 1e-9, "{what}: {a} moved to {b}");
+            }
+        }
     }
 
     /// A form stand-in: a cylinder of radius 0.15 m round the centre line, 0.5 to 1.5 m up.

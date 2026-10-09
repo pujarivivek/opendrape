@@ -1,5 +1,6 @@
 use crate::{
-    Half, MAX_SEAMS, Piece, PieceId, Placement, Point2, Seam, SeamId, SeamSide, Side, Units,
+    Half, MAX_SEAM_ID, MAX_SEAMS, Piece, PieceId, Placement, Point2, Seam, SeamId, SeamSide, Side,
+    Units,
 };
 use serde::{Deserialize, Serialize};
 
@@ -171,16 +172,22 @@ impl Project {
         Some(id)
     }
     /// Turns `master`'s twin into an ordinary piece with the twin's current shape, id and name.
+    /// A twin without a placement of its own was showing its piece's placement mirrored: it
+    /// keeps that as its own, so it stays where it was.
     pub fn break_twin(&mut self, master: PieceId) -> Option<PieceId> {
         let piece = self.piece_mut(master)?;
-        let twin = piece.twin_shape()?;
+        let mut twin = piece.twin_shape()?;
+        twin.placement = twin
+            .placement
+            .or_else(|| piece.placement.map(|p| p.mirrored()));
         piece.twin = None;
         let id = twin.id;
         self.pieces.push(twin);
         Some(id)
     }
     /// Removes the piece or twin with this id and returns its shape, with every seam sewn to it.
-    /// Removing a piece that has a twin keeps the twin (and its seams), as an ordinary piece.
+    /// Removing a piece that has a twin keeps the twin (and its seams), as an ordinary piece
+    /// that stays where it was (see [`Self::break_twin`]).
     pub fn remove_piece(&mut self, id: PieceId) -> Option<Piece> {
         self.owner(id)?;
         self.seams.retain(|s| !s.touches(id));
@@ -234,8 +241,19 @@ impl Project {
 
     /// Sews `a` to `b` (a's start meets b's start) under a fresh id, and returns the id. Ids are
     /// one more than the highest in use, so an id freed by deleting the last seam may come back.
+    /// A project whose highest id is already at the end of the range (`check` refuses any above
+    /// [`MAX_SEAM_ID`]) takes the lowest id not in use instead, so adding never overflows or
+    /// repeats an id.
     pub fn add_seam(&mut self, a: SeamSide, b: SeamSide) -> SeamId {
-        let id = SeamId(self.seams.iter().map(|s| s.id.0).max().unwrap_or(0) + 1);
+        let highest = self.seams.iter().map(|s| s.id.0).max().unwrap_or(0);
+        let id = match highest.checked_add(1) {
+            Some(next) if next <= MAX_SEAM_ID => SeamId(next),
+            _ => {
+                let used: std::collections::BTreeSet<u32> =
+                    self.seams.iter().map(|s| s.id.0).collect();
+                SeamId((1..).find(|n| !used.contains(n)).unwrap_or(1))
+            }
+        };
         self.seams.push(Seam { id, a, b });
         id
     }
@@ -467,7 +485,8 @@ impl Project {
         self.check_seams()
     }
 
-    /// At most [`MAX_SEAMS`] seams with unique ids; every side on an existing shape and its
+    /// At most [`MAX_SEAMS`] seams with unique ids of at most [`MAX_SEAM_ID`]; every side on an
+    /// existing shape and its
     /// edges (1 up to the outline's count, never the fold edge, the pale half only of a folded
     /// piece); and no edge sewn twice, mirror images included.
     fn check_seams(&self) -> Result<(), ModelError> {
@@ -476,7 +495,11 @@ impl Project {
         }
         let mut ids = std::collections::BTreeSet::new();
         for s in &self.seams {
-            if !ids.insert(s.id) || !self.side_fits(&s.a) || !self.side_fits(&s.b) {
+            if s.id.0 > MAX_SEAM_ID
+                || !ids.insert(s.id)
+                || !self.side_fits(&s.a)
+                || !self.side_fits(&s.b)
+            {
                 return Err(ModelError::BadSeam(s.id));
             }
         }
@@ -1112,5 +1135,245 @@ mod tests {
             Some(Placement::at([0.0, 1.0, -0.4]))
         );
         assert_eq!(SCHEMA_VERSION, 3);
+    }
+
+    #[test]
+    fn seam_ids_are_bounded_and_adding_a_seam_never_overflows() {
+        let base = sewing_room();
+        let with_id = |id: u32| {
+            let mut pr = base.clone();
+            pr.add_seam(
+                side(4, Half::Drawn, 0, 1, true),
+                side(4, Half::Drawn, 2, 1, true),
+            );
+            pr.seams[0].id = SeamId(id);
+            pr
+        };
+        assert_eq!(with_id(MAX_SEAM_ID).check(), Ok(()), "the highest allowed");
+        for id in [MAX_SEAM_ID + 1, u32::MAX - 1, u32::MAX] {
+            assert_eq!(
+                with_id(id).check(),
+                Err(ModelError::BadSeam(SeamId(id))),
+                "id {id}"
+            );
+        }
+        // Adding to a project at the end of the id range (as a corrupt file could leave it)
+        // neither panics (debug) nor wraps round to a used id (release): it takes a free one.
+        for id in [MAX_SEAM_ID, u32::MAX] {
+            let mut pr = with_id(id);
+            let next = pr.add_seam(
+                side(4, Half::Drawn, 1, 1, true),
+                side(4, Half::Drawn, 3, 1, true),
+            );
+            assert_eq!(next, SeamId(1), "the lowest id not in use");
+            let ids: Vec<u32> = pr.seams.iter().map(|s| s.id.0).collect();
+            assert_eq!(ids, vec![id, 1]);
+            if id == MAX_SEAM_ID {
+                assert_eq!(pr.check(), Ok(()), "and sewing still works there");
+            }
+        }
+        // Exactly the most seams is fine: 2,000 edges of one 2,000-gon sewn to another's.
+        let ring = |name: &str| {
+            let corners: Vec<Point2> = (0..MAX_SEAMS)
+                .map(|k| {
+                    let a = k as f64 / MAX_SEAMS as f64 * std::f64::consts::TAU;
+                    Point2::new(1000.0 * a.cos(), 1000.0 * a.sin())
+                })
+                .collect();
+            Piece::polygon(PieceId(0), name, &corners)
+        };
+        let mut full = Project::new();
+        let (a, b) = (full.add_piece(ring("A")), full.add_piece(ring("B")));
+        for k in 0..MAX_SEAMS {
+            full.add_seam(
+                SeamSide::new(a, Half::Drawn, k, 1, true),
+                SeamSide::new(b, Half::Drawn, k, 1, true),
+            );
+        }
+        assert_eq!(full.seams.len(), MAX_SEAMS);
+        assert_eq!(full.check(), Ok(()));
+    }
+
+    #[test]
+    fn a_pale_side_on_a_twin_is_refused() {
+        let mut pr = sewing_room();
+        pr.add_seam(
+            side(3, Half::Pale, 0, 1, true),
+            side(4, Half::Drawn, 0, 1, true),
+        );
+        assert_eq!(pr.check(), Err(ModelError::BadSeam(SeamId(1))));
+    }
+
+    #[test]
+    fn breaking_a_pair_or_deleting_its_piece_leaves_the_twin_where_it_was() {
+        let placed = Placement {
+            position: [0.1, 0.8, -0.2],
+            rotation: [0.0, 0.6, 0.0, 0.8],
+            curve: Some(0.2),
+        };
+        // The twin has none of its own: it was showing its piece's, mirrored.
+        let mut broken = sewing_room();
+        broken.set_placement(PieceId(2), Some(placed));
+        assert_eq!(broken.placement_of(PieceId(3)), None);
+        assert_eq!(broken.break_twin(PieceId(2)), Some(PieceId(3)));
+        assert_eq!(broken.placement_of(PieceId(3)), Some(placed.mirrored()));
+        assert_eq!(
+            broken.placement_of(PieceId(2)),
+            Some(placed),
+            "the piece stays"
+        );
+        assert_eq!(broken.check(), Ok(()));
+        let mut deleted = sewing_room();
+        deleted.set_placement(PieceId(2), Some(placed));
+        assert!(deleted.remove_piece(PieceId(2)).is_some());
+        assert_eq!(deleted.placement_of(PieceId(3)), Some(placed.mirrored()));
+        assert_eq!(deleted.check(), Ok(()));
+        // Its own placement wins; with neither, there is still none.
+        let own = Placement::at([0.0, 0.5, 1.0]);
+        let mut owned = sewing_room();
+        owned.set_placement(PieceId(2), Some(placed));
+        owned.set_placement(PieceId(3), Some(own));
+        owned.break_twin(PieceId(2));
+        assert_eq!(owned.placement_of(PieceId(3)), Some(own));
+        let mut neither = sewing_room();
+        neither.break_twin(PieceId(2));
+        assert_eq!(neither.placement_of(PieceId(3)), None);
+    }
+
+    #[test]
+    fn splitting_an_edge_grows_sides_on_the_b_side_the_twin_and_the_pale_half() {
+        let mut pr = sewing_room();
+        // The pocket (4) is side a throughout; the edited pieces are side b.
+        // b on the back, wrapping over edges 3 and 0.
+        let wrap = pr.add_seam(
+            side(4, Half::Drawn, 1, 1, true),
+            side(2, Half::Drawn, 3, 2, true),
+        );
+        // b on the twin, covering edge 0: splitting the back's edge 0 splits the twin's too.
+        let twin = pr.add_seam(
+            side(4, Half::Drawn, 2, 1, true),
+            side(3, Half::Drawn, 0, 1, false),
+        );
+        // b on the pale half of the front, covering edge 1.
+        let pale = pr.add_seam(
+            side(4, Half::Drawn, 3, 1, true),
+            side(1, Half::Pale, 1, 1, true),
+        );
+        assert_eq!(pr.check(), Ok(()));
+        for (id, at) in [(PieceId(2), 0), (PieceId(1), 1)] {
+            pr.piece_mut(id).unwrap().split_edge_at(
+                at,
+                crate::Vertex::corner(Point2::new(
+                    if id == PieceId(2) { 350.0 } else { 100.0 },
+                    if id == PieceId(2) { 0.0 } else { 50.0 },
+                )),
+                crate::Edge::Line,
+                crate::Edge::Line,
+                50.0,
+            );
+            pr.seams_after_split(id, at);
+        }
+        assert_eq!(
+            pr.seam(wrap).unwrap().b,
+            side(2, Half::Drawn, 4, 3, true),
+            "edges 4, 0 and 1 now"
+        );
+        assert_eq!(
+            pr.seam(twin).unwrap().b,
+            side(3, Half::Drawn, 0, 2, false),
+            "the twin's side grows too"
+        );
+        assert_eq!(
+            pr.seam(pale).unwrap().b,
+            side(1, Half::Pale, 1, 2, true),
+            "so does one on the pale half"
+        );
+        assert_eq!(pr.check(), Ok(()));
+    }
+
+    #[test]
+    fn removing_points_shrinks_sides_on_the_b_side_too() {
+        let corners: Vec<Point2> = (0..6)
+            .map(|k| {
+                let a = k as f64 / 6.0 * std::f64::consts::TAU;
+                Point2::new(100.0 * a.cos(), 100.0 * a.sin())
+            })
+            .collect();
+        let mut pr = Project::new();
+        let hex = pr.add_piece(Piece::polygon(PieceId(0), "Hex", &corners));
+        pr.add_piece(Piece::polygon(PieceId(0), "Other", &corners));
+        // The same seams as `removing_points_shrinks_sides_and_drops_empty_seams`, with the
+        // edited hexagon (id 1) as side b.
+        let s1 = pr.add_seam(
+            side(2, Half::Drawn, 0, 1, true),
+            side(1, Half::Drawn, 0, 3, true),
+        );
+        let s2 = pr.add_seam(
+            side(2, Half::Drawn, 3, 1, true),
+            side(1, Half::Drawn, 3, 1, true),
+        );
+        let s3 = pr.add_seam(
+            side(2, Half::Drawn, 4, 1, true),
+            side(1, Half::Drawn, 4, 1, false),
+        );
+        let remove = |pr: &mut Project, i: usize| {
+            let n = pr.piece(hex).unwrap().len();
+            assert!(pr.piece_mut(hex).unwrap().remove_vertex(i, 1.0));
+            pr.seams_after_removal(hex, i, n);
+        };
+        remove(&mut pr, 1);
+        assert_eq!(pr.seam(s1).unwrap().b, side(1, Half::Drawn, 0, 2, true));
+        assert_eq!(pr.seam(s2).unwrap().b, side(1, Half::Drawn, 2, 1, true));
+        assert_eq!(pr.seam(s3).unwrap().b, side(1, Half::Drawn, 3, 1, false));
+        remove(&mut pr, 2);
+        assert_eq!(pr.seam(s1).unwrap().b, side(1, Half::Drawn, 0, 1, true));
+        assert!(pr.seam(s2).is_none(), "left with no edges, it goes");
+        assert_eq!(pr.seam(s3).unwrap().b, side(1, Half::Drawn, 2, 1, false));
+        assert_eq!(pr.check(), Ok(()));
+    }
+
+    #[test]
+    fn unfolding_renumbers_sides_on_the_b_side_too() {
+        let mut pr = sewing_room();
+        // The pocket (4) is side a; the front (1, folded on edge 3) is side b: its drawn edge 1
+        // (with the back as a), and its pale edge 0 and pale edges 1-2 (the pocket).
+        let drawn = pr.add_seam(
+            side(2, Half::Drawn, 3, 1, false),
+            side(1, Half::Drawn, 1, 1, true),
+        );
+        let pale = pr.add_seam(
+            side(4, Half::Drawn, 0, 2, true),
+            side(1, Half::Pale, 0, 1, true),
+        );
+        assert_eq!(pr.check(), Ok(()));
+        let full = Piece::polygon(
+            PieceId(1),
+            "Front",
+            &[
+                Point2::new(0.0, 0.0),
+                Point2::new(100.0, 0.0),
+                Point2::new(100.0, 200.0),
+                Point2::new(0.0, 200.0),
+                Point2::new(-100.0, 200.0),
+                Point2::new(-100.0, 0.0),
+            ],
+        );
+        assert!(pr.unfold_piece(PieceId(1), full));
+        assert_eq!(pr.seam(drawn).unwrap().b, side(1, Half::Drawn, 1, 1, true));
+        assert_eq!(
+            pr.seam(pale).unwrap().b,
+            side(1, Half::Drawn, 5, 1, false),
+            "the pale image of edge 0 is the whole piece's edge 5, run backwards"
+        );
+        // The drawn seam's mirror image (back's twin against the pale edge 1) is stored now.
+        let stored = *pr.seams.last().unwrap();
+        assert_eq!(
+            (stored.a, stored.b),
+            (
+                side(3, Half::Drawn, 3, 1, false),
+                side(1, Half::Drawn, 4, 1, false)
+            )
+        );
+        assert_eq!(pr.check(), Ok(()));
     }
 }

@@ -17,5 +17,5 @@ pub use placement::{MAX_CURVE_M, MAX_PLACEMENT_M, MIN_CURVE_M, Placement};
 pub use project::{
     MAX_PIECE_ID, MAX_PIECES, MAX_TOTAL_VERTICES, ModelError, Project, SCHEMA_VERSION,
 };
-pub use seam::{Half, MAX_SEAMS, Seam, SeamId, SeamSide};
+pub use seam::{Half, MAX_SEAM_ID, MAX_SEAMS, Seam, SeamId, SeamSide};
 pub use units::Units;

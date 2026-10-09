@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 /// Most seams a project may hold (their mirror images are not counted).
 pub const MAX_SEAMS: usize = 2_000;
 
+/// Highest seam id a project may hold. Far above anything a student sews (ids are one more than
+/// the highest in use); it only stops a corrupt file from putting an id at the end of its range.
+pub const MAX_SEAM_ID: u32 = 1_000_000;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SeamId(pub u32);

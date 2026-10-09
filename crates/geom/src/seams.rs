@@ -95,7 +95,8 @@ pub fn side_points(shape: &Shape, side: &SeamSide, tolerance: f64) -> Option<Vec
 mod tests {
     use super::*;
     use crate::shapes::shapes;
-    use opendrape_core::{Piece, PieceId, Project};
+    use crate::unfolded;
+    use opendrape_core::{Half, Piece, PieceId, Project, SeamSide};
 
     fn p(x: f64, y: f64) -> Point2 {
         Point2::new(x, y)
@@ -183,5 +184,148 @@ mod tests {
         // A twin side wraps like any other.
         let twin = SeamSide::new(PieceId(3), Half::Drawn, 3, 2, false);
         assert_eq!(side_edges(&all[2], &twin), Some(vec![(0, true), (3, true)]));
+    }
+
+    /// A convex piece with six uneven edges, folded on edge `fold` (so a fold on any edge is
+    /// valid), with a plain copy of it (id 2) to sew sides to.
+    fn folded_hexagon(fold: usize) -> Project {
+        let corners = [
+            p(0.0, 0.0),
+            p(120.0, -10.0),
+            p(190.0, 60.0),
+            p(160.0, 150.0),
+            p(70.0, 190.0),
+            p(-20.0, 100.0),
+        ];
+        let mut pr = Project::new();
+        let mut cut = Piece::polygon(PieceId(0), "Cut", &corners);
+        cut.fold = Some(fold);
+        pr.add_piece(cut);
+        pr.add_piece(Piece::polygon(PieceId(0), "Plain", &corners));
+        assert_eq!(pr.check(), Ok(()), "fold on edge {fold}");
+        pr
+    }
+
+    fn reflected_across(q: Point2, a: Point2, b: Point2) -> Point2 {
+        let d = b - a;
+        let t = ((q.x - a.x) * d.x + (q.y - a.y) * d.y) / (d.x * d.x + d.y * d.y);
+        (a + d * t) * 2.0 - q
+    }
+
+    /// Every side the folded half can have, on every fold edge: its start and end points are
+    /// the stored vertices it names (or their mirror images across the fold, on the pale half),
+    /// run the way the side runs. Binds `side_edges` and `sew_edge` to the geometry, so a
+    /// mapping that only works when the fold is the last edge cannot pass.
+    #[test]
+    fn sides_sit_on_the_stored_edges_whichever_edge_is_the_fold() {
+        let n = 6;
+        let mut checked = 0;
+        for fold in 0..n {
+            let pr = folded_hexagon(fold);
+            let stored = &pr.pieces[0];
+            let all = shapes(&pr);
+            let shape = &all[0];
+            let (near, far) = stored.edge_ends(fold);
+            let vertex = |i: usize, half: Half| {
+                let v = stored.vertices[i % n].pos;
+                match half {
+                    Half::Drawn => v,
+                    Half::Pale => reflected_across(v, near, far),
+                }
+            };
+            for half in [Half::Drawn, Half::Pale] {
+                for first in 0..n {
+                    for edges in 1..=n {
+                        for forward in [true, false] {
+                            let side = SeamSide::new(PieceId(1), half, first, edges, forward);
+                            let got = side_points(shape, &side, 0.1);
+                            if side.covers(n, fold) {
+                                assert_eq!(got, None, "{side:?} crosses the fold edge {fold}");
+                                continue;
+                            }
+                            let pts = got.unwrap_or_else(|| panic!("{side:?}, fold {fold}"));
+                            let (lo, hi) = (vertex(first, half), vertex(first + edges, half));
+                            let (start, end) = if forward { (lo, hi) } else { (hi, lo) };
+                            close(pts[0], start);
+                            close(pts[pts.len() - 1], end);
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+            // One outline edge at a time: sew_edge names the stored edge, and the side built
+            // from it covers exactly that outline edge, against its direction on the pale half.
+            for j in 0..shape.piece.len() {
+                let (half, i, against) = shape.sew_edge(j);
+                let side = SeamSide::new(PieceId(1), half, i, 1, true);
+                assert_eq!(
+                    side_edges(shape, &side),
+                    Some(vec![(j, against)]),
+                    "outline edge {j}, fold {fold}"
+                );
+            }
+        }
+        assert!(checked > 300, "{checked} sides checked");
+    }
+
+    /// Unfolding renumbers every side and stores the mirror images; each side must end up on
+    /// the same points as before, whichever edge was the fold.
+    #[test]
+    fn unfolding_leaves_every_side_where_it_was_whichever_edge_is_the_fold() {
+        let n = 6;
+        let ends = |pr: &Project| {
+            let all = shapes(pr);
+            let mut out: Vec<Vec<i64>> = pr
+                .all_seams()
+                .iter()
+                .map(|(seam, _)| {
+                    let mut key = Vec::new();
+                    for side in [seam.a, seam.b] {
+                        let shape = all.iter().find(|s| s.id == side.shape).unwrap();
+                        for q in side_points(shape, &side, 0.1).unwrap() {
+                            key.push((q.x * 1e6).round() as i64);
+                            key.push((q.y * 1e6).round() as i64);
+                        }
+                        key.push(i64::MIN);
+                    }
+                    key
+                })
+                .collect();
+            out.sort();
+            out
+        };
+        let mut checked = 0;
+        for fold in 0..n {
+            for half in [Half::Drawn, Half::Pale] {
+                for first in 0..n {
+                    for edges in 1..n {
+                        for forward in [true, false] {
+                            // The other side: a plain piece's edge, or (below) the folded
+                            // piece's own, so both sides are renumbered.
+                            let a = SeamSide::new(PieceId(1), half, first, edges, forward);
+                            let others = [
+                                SeamSide::new(PieceId(2), Half::Drawn, 1, 1, forward),
+                                SeamSide::new(PieceId(1), half.other(), (first + 3) % n, 1, true),
+                                SeamSide::new(PieceId(1), half, (first + n - 1) % n, 1, false),
+                            ];
+                            for b in others {
+                                let mut pr = folded_hexagon(fold);
+                                pr.add_seam(a, b);
+                                if pr.check().is_err() {
+                                    continue;
+                                }
+                                let before = ends(&pr);
+                                let full = unfolded(&pr.pieces[0]);
+                                assert!(pr.unfold_piece(PieceId(1), full));
+                                assert_eq!(pr.check(), Ok(()), "{a:?} / {b:?}, fold {fold}");
+                                assert_eq!(ends(&pr), before, "{a:?} / {b:?}, fold {fold}");
+                                checked += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 500, "{checked} seams checked");
     }
 }

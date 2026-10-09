@@ -37,6 +37,19 @@ impl Placement {
         }
     }
 
+    /// The placement that shows this one's mirror image across x = 0: position x becomes -x and
+    /// the rotation (x, y, z, w) becomes (x, -y, -z, w); the curve is kept. A twin's flat shape
+    /// is its piece's mirror image, so this keeps the pair mirrored. A valid placement stays
+    /// valid.
+    pub fn mirrored(&self) -> Self {
+        let [x, y, z, w] = self.rotation;
+        Self {
+            position: [-self.position[0], self.position[1], self.position[2]],
+            rotation: [x, -y, -z, w],
+            curve: self.curve,
+        }
+    }
+
     /// Every number finite; the rotation of unit length (within 1e-6); the curve, if any,
     /// between [`MIN_CURVE_M`] and [`MAX_CURVE_M`]; the position within [`MAX_PLACEMENT_M`] of
     /// the origin.
@@ -120,5 +133,20 @@ mod tests {
         let json = r#"{"position":[0.0,1.2,0.4],"rotation":[0.0,0.0,0.0,1.0]}"#;
         let p: Placement = serde_json::from_str(json).unwrap();
         assert_eq!(p, Placement::at([0.0, 1.2, 0.4]));
+    }
+
+    #[test]
+    fn a_mirrored_placement_is_valid_and_mirrors_back() {
+        let p = Placement {
+            position: [0.13, 0.8, -0.17],
+            rotation: [0.1, 0.2, 0.3, (1.0f64 - 0.14).sqrt()],
+            curve: Some(0.21),
+        };
+        let m = p.mirrored();
+        assert_eq!(m.position, [-0.13, 0.8, -0.17]);
+        assert_eq!(m.rotation, [0.1, -0.2, -0.3, p.rotation[3]]);
+        assert_eq!(m.curve, Some(0.21));
+        assert!(m.is_valid());
+        assert_eq!(m.mirrored(), p);
     }
 }
