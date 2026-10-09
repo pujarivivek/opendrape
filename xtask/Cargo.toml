@@ -8,6 +8,8 @@ publish.workspace = true
 
 [dependencies]
 image.workspace = true
+opendrape-body.workspace = true
+glam.workspace = true
 
 [lints]
 workspace = true

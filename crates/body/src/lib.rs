@@ -13,3 +13,11 @@ pub struct BodyMesh {
     pub positions: Vec<glam::Vec3>,
     pub triangles: Vec<[u32; 3]>,
 }
+
+impl BodyMesh {
+    /// Average young adult female in A-pose, from CC0 MakeHuman data (see ASSETS.md).
+    pub fn female_average() -> Self {
+        read_odb(include_bytes!("../../../assets/body/female_average.odb"))
+            .expect("bundled body asset is valid")
+    }
+}

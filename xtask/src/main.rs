@@ -1,10 +1,14 @@
-//! Developer tasks: `cargo xtask icons` regenerates the app icons in `assets/`.
+//! Developer tasks: `cargo xtask icons` regenerates the app icons in `assets/`;
+//! `cargo xtask body` builds the bundled body from CC0 MakeHuman data.
+
+mod makehuman;
 
 fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("icons") => icons(),
+        Some("body") => body(),
         _ => {
-            eprintln!("usage: cargo xtask icons");
+            eprintln!("usage: cargo xtask <icons|body>");
             std::process::exit(2);
         }
     }
@@ -75,4 +79,35 @@ fn inside(poly: &[(f32, f32)], x: f32, y: f32) -> bool {
         }
     }
     c
+}
+
+/// `cargo xtask body <makehuman_dir> <out.odb>`: average female body from CC0 MakeHuman data.
+fn body() {
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    let [dir, out] = args.as_slice() else {
+        eprintln!(
+            "usage: cargo xtask body <makehuman_dir> <out.odb>   (run scripts/fetch-makehuman.sh first)"
+        );
+        std::process::exit(2);
+    };
+    let dir = std::path::Path::new(dir);
+    let read = |name: &str| {
+        std::fs::read_to_string(dir.join(name)).unwrap_or_else(|e| panic!("{name}: {e}"))
+    };
+    let mut obj = makehuman::parse_obj(&read("base.obj"));
+    for (name, weight) in makehuman::FEMALE_AVERAGE {
+        let n = makehuman::apply_target(&mut obj.verts, &read(name), weight);
+        println!("applied {name} × {weight:.4} ({n} vertices)");
+    }
+    let body = makehuman::body_mesh(&obj, "body");
+    std::fs::write(out, opendrape_body::write_odb(&body)).expect("write .odb");
+    println!(
+        "wrote {out}: {} vertices, {} triangles, height {:.3} m, waist {:.3} m, hips {:.3} m, open edges {}",
+        body.positions.len(),
+        body.triangles.len(),
+        opendrape_body::height(&body),
+        opendrape_body::girth_at(&body, 1.028, 0.2),
+        opendrape_body::girth_at(&body, 0.767, 0.2),
+        opendrape_body::boundary_edge_count(&body),
+    );
 }

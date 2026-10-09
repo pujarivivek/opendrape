@@ -44,3 +44,15 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libvulkan1 mesa-vulkan-drivers libegl1 libgl1-mesa-dri
       - run: cargo nextest run --workspace --no-fail-fast
+
+  assets:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup show
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Rebuild the body from its CC0 sources and compare with the committed file
+        run: |
+          ./scripts/fetch-makehuman.sh
+          cargo xtask body target/makehuman target/female_average.odb
+          cmp target/female_average.odb assets/body/female_average.odb
