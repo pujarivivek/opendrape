@@ -1,5 +1,7 @@
 //! OpenDrape desktop application.
 
+pub mod gpu;
+
 pub struct OpenDrapeApp;
 
 impl OpenDrapeApp {
