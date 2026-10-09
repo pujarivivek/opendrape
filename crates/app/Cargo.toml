@@ -34,6 +34,11 @@ rust-embed.workspace = true
 rfd.workspace = true
 pollster.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# The version eframe already uses, with only the features eframe asks for; needed to switch off
+# macOS's default app menu (gpu/setup.rs).
+winit = { version = "=0.30.13", default-features = false }
+
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
 

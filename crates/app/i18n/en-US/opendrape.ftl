@@ -88,6 +88,7 @@ menu-new = New
 menu-open = Open…
 menu-save = Save
 menu-save-as = Save As…
+menu-quit = Quit OpenDrape
 menu-edit = Edit
 menu-undo = Undo
 menu-redo = Redo

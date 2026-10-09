@@ -43,6 +43,7 @@ const CONFIRM_AFTER_FRAMES: u64 = 3;
 const NEW: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::N);
 const OPEN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::O);
 const SAVE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
+const QUIT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Q);
 const SAVE_AS: KeyboardShortcut = KeyboardShortcut::new(
     Modifiers {
         shift: true,
@@ -57,6 +58,8 @@ enum FileAction {
     Open,
     Save,
     SaveAs,
+    /// Close the window.
+    Quit,
     /// Close the window and start OpenDrape again in this graphics mode.
     Restart(GpuChoice),
 }
@@ -324,6 +327,11 @@ impl OpenDrapeApp {
                         ui.close();
                     }
                 }
+                ui.separator();
+                if menu_item(ui, true, tr!("menu-quit"), &QUIT) {
+                    action = Some(FileAction::Quit);
+                    ui.close();
+                }
             });
             ui.menu_button(tr!("menu-edit"), |ui| {
                 if menu_item(ui, self.editor.can_undo(), tr!("menu-undo"), &editor::UNDO) {
@@ -356,7 +364,7 @@ impl OpenDrapeApp {
         action
     }
 
-    /// ⌘N, ⌘O, ⌘S, ⇧⌘S (Ctrl on Windows), unless a text field is being typed in.
+    /// ⌘N, ⌘O, ⌘S, ⇧⌘S, ⌘Q (Ctrl on Windows), unless a text field is being typed in.
     fn file_shortcut(&self, ctx: &egui::Context) -> Option<FileAction> {
         if ctx.text_edit_focused() {
             return None;
@@ -367,6 +375,7 @@ impl OpenDrapeApp {
             (SAVE, FileAction::Save),
             (NEW, FileAction::New),
             (OPEN, FileAction::Open),
+            (QUIT, FileAction::Quit),
         ]
         .into_iter()
         .find(|(shortcut, _)| ctx.input_mut(|i| i.consume_shortcut(shortcut)))
@@ -380,6 +389,7 @@ impl OpenDrapeApp {
         match action {
             FileAction::New => self.after_saving_changes(Then::NewProject, frame, ctx),
             FileAction::Open => self.after_saving_changes(Then::OpenFile, frame, ctx),
+            FileAction::Quit => self.after_saving_changes(Then::Quit(None), frame, ctx),
             FileAction::Restart(choice) => {
                 self.after_saving_changes(Then::Quit(Some(choice)), frame, ctx)
             }

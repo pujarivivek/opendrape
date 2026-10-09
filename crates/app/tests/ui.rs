@@ -590,3 +590,40 @@ fn switching_graphics_and_choosing_not_to_save_restarts() {
     );
     assert!(h.state().is_closing());
 }
+
+#[test]
+fn cmd_q_with_unsaved_changes_asks_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    add_piece(&mut h);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Q);
+    h.run();
+    h.get_by_label("Save your changes?");
+    assert!(!h.state().is_closing());
+    h.get_by_label("Cancel").click();
+    h.run();
+    assert!(!h.state().is_closing());
+    assert_eq!(pieces(&h), 1, "Cancel keeps the work");
+}
+
+#[test]
+fn cmd_q_on_a_clean_project_quits() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Q);
+    h.run();
+    assert!(h.state().is_closing());
+}
+
+#[test]
+fn file_menu_quit_asks_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    add_piece(&mut h);
+    file_menu(&mut h, "Quit OpenDrape");
+    h.get_by_label("Save your changes?");
+    assert!(!h.state().is_closing());
+}

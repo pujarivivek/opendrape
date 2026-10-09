@@ -33,6 +33,16 @@ pub fn native_options(choice: GpuChoice) -> eframe::NativeOptions {
     });
 
     let mut options = eframe::NativeOptions::default();
+    // macOS gives every app a default menu whose Quit item (Cmd+Q) ends the process without
+    // a close request, so unsaved work would be lost without a question. Without that menu,
+    // Cmd+Q reaches the app as an ordinary key press, and it asks first.
+    #[cfg(target_os = "macos")]
+    {
+        use winit::platform::macos::EventLoopBuilderExtMacOS;
+        options.event_loop_builder = Some(Box::new(|builder| {
+            builder.with_default_menu(false);
+        }));
+    }
     options.wgpu_options.wgpu_setup = egui_wgpu::WgpuSetup::CreateNew(setup);
     options.viewport = egui::ViewportBuilder::default()
         .with_title("OpenDrape")
@@ -94,5 +104,11 @@ mod tests {
             native_options(GpuChoice::Auto).viewport.maximized,
             Some(true)
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_default_menu_is_off_so_cmd_q_reaches_the_unsaved_changes_question() {
+        assert!(native_options(GpuChoice::Auto).event_loop_builder.is_some());
     }
 }
