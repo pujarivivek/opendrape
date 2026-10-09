@@ -2353,6 +2353,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "opendrape-body"
+version = "0.1.0"
+dependencies = [
+ "glam",
+]
+
+[[package]]
 name = "opendrape-render"
 version = "0.1.0"
 dependencies = [
