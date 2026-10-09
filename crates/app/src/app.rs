@@ -24,6 +24,9 @@ pub struct Shared {
 
 pub type SharedState = Rc<Shared>;
 
+/// Completed frames before a graphics mode counts as working (those frames have been presented by then).
+const CONFIRM_AFTER_FRAMES: u64 = 3;
+
 pub struct OpenDrapeApp {
     viewport: Option<Viewport>,
     diagnostics: Diagnostics,
@@ -60,9 +63,16 @@ impl OpenDrapeApp {
         self.shared.restart_with.set(Some(choice));
     }
 
-    /// The first 3D frame is proof this graphics mode works: clear the crash marker.
+    /// Frames presented to the screen are proof this graphics mode works: clear the crash
+    /// marker. egui presents a frame only after `ui()` returns, and some drivers crash on
+    /// their first present, so wait until [`CONFIRM_AFTER_FRAMES`] frames have completed.
+    /// (Counted with egui's frame number: `ui()` can run more than once per frame.)
     fn confirm_first_frame(&mut self, ctx: &egui::Context) {
         if self.shared.first_frame_drawn.get() || self.viewport_frames() == 0 {
+            return;
+        }
+        if ctx.cumulative_frame_nr() < CONFIRM_AFTER_FRAMES {
+            ctx.request_repaint();
             return;
         }
         self.shared.first_frame_drawn.set(true);

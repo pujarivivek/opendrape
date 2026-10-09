@@ -16,6 +16,9 @@ lipo -create -output "$UNIVERSAL/opendrape" \
   target/aarch64-apple-darwin/release/opendrape \
   target/x86_64-apple-darwin/release/opendrape
 
+# Third-party license notices travel inside the app and next to it in the DMG.
+mkdir -p target/licenses
+cargo about generate -m crates/app/Cargo.toml about.hbs -o target/licenses/THIRD_PARTY_LICENSES.html
 cargo packager --release -p opendrape --target universal-apple-darwin --formats app
 APP="$UNIVERSAL/OpenDrape.app"
 # Ad-hoc signature: without any signature, Apple Silicon reports a downloaded app as
@@ -26,6 +29,7 @@ codesign --force --deep --sign - "$APP"
 STAGE=$(mktemp -d)
 cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
+cp target/licenses/THIRD_PARTY_LICENSES.html "$STAGE/"
 mkdir -p dist
 DMG="dist/OpenDrape-$SUFFIX-macos-universal.dmg"
 hdiutil create -quiet -volname OpenDrape -srcfolder "$STAGE" -ov -format UDZO "$DMG"

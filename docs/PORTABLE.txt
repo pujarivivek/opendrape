@@ -1,7 +1,7 @@
 OpenDrape (portable)
 
 Double-click OpenDrape.exe to start. Nothing is installed; delete the folder to remove it.
-OpenDrape remembers its graphics setting in %APPDATA%\OpenDrape.
+OpenDrape remembers its graphics setting in %LOCALAPPDATA%\OpenDrape\OpenDrape\config.
 
 If Windows shows "Windows protected your PC", click "More info", then "Run anyway".
 If the 3D view does not appear, use Help > Graphics > Software (safe mode, slow).

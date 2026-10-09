@@ -10,9 +10,14 @@ pub struct HeadlessGpu {
 /// Any working adapter: a real GPU if there is one, otherwise a software one
 /// (WARP on Windows, lavapipe/llvmpipe on Linux). `None` if nothing works.
 pub fn headless_device() -> Option<HeadlessGpu> {
+    headless_device_with(wgpu::Backends::all())
+}
+
+/// Like [`headless_device`], restricted to `backends` (e.g. only OpenGL, to test that fallback).
+pub fn headless_device_with(backends: wgpu::Backends) -> Option<HeadlessGpu> {
     pollster::block_on(async {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
+            backends,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let mut adapter = None;

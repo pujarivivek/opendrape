@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OpenDrape third-party licenses</title>
+<style>
+body { font-family: sans-serif; max-width: 60em; margin: 2em auto; padding: 0 1em; line-height: 1.4; }
+pre { white-space: pre-wrap; background: #f4f4f4; padding: 1em; font-size: 0.85em; }
+</style>
+</head>
+<body>
+<h1>Third-party licenses</h1>
+<p>OpenDrape is free software under the GNU General Public License, version 3 or later.
+It is built with the open-source components listed below, each under its own license.</p>
+<h2>Licenses used</h2>
+<ul>
+{{#each overview}}<li><a href="#{{id}}">{{name}}</a> ({{count}} components)</li>
+{{/each}}
+</ul>
+{{#each licenses}}
+<h2 id="{{id}}">{{name}}</h2>
+<p>Used by:</p>
+<ul>
+{{#each used_by}}<li>{{crate.name}} {{crate.version}}</li>
+{{/each}}
+</ul>
+<pre>{{text}}</pre>
+{{/each}}
+</body>
+</html>

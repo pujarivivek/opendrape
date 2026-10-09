@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -19,8 +19,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: rustup show
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo install --locked cargo-packager@0.11.8
+      - run: cargo install --locked cargo-about@0.9.2 --features cli
       - id: name
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then echo "suffix=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
@@ -39,8 +40,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: rustup show
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo install --locked cargo-packager@0.11.8
+      - run: cargo install --locked cargo-about@0.9.2 --features cli
       - id: name
         shell: bash
         run: |
@@ -64,6 +66,8 @@ jobs:
   publish:
     needs: [macos, windows]
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write # only this job publishes the release
     env:
       GH_TOKEN: ${{ github.token }}
     steps:

@@ -53,7 +53,9 @@ fn describe(d: Decision) -> String {
         Reason::CommandLine => "set on the command line".to_owned(),
         Reason::Saved => "saved setting".to_owned(),
         Reason::RecoveredFromCrash(failed) => format!("switched after {failed:?} failed to start"),
-        Reason::NoMoreFallbacks => "last resort".to_owned(),
+        Reason::AllModesFailed(last) => {
+            format!("starting over after every mode failed, last {last:?}")
+        }
     };
     format!("{:?} ({why})", d.choice)
 }

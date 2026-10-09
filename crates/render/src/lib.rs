@@ -8,5 +8,5 @@ mod target;
 
 pub use camera::OrbitCamera;
 pub use cube::CubeRenderer;
-pub use headless::{HeadlessGpu, headless_device, read_back};
+pub use headless::{HeadlessGpu, headless_device, headless_device_with, read_back};
 pub use target::{CLEAR_COLOR, COLOR_FORMAT, DEPTH_FORMAT, RenderTarget, target_size};

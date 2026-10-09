@@ -8,6 +8,9 @@ $suffix = if ($args.Count -gt 0) { $args[0] } else { $version }
 
 cargo build --release -p opendrape
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
+New-Item -ItemType Directory -Force target/licenses | Out-Null
+cargo about generate -m crates/app/Cargo.toml about.hbs -o target/licenses/THIRD_PARTY_LICENSES.html
+if ($LASTEXITCODE -ne 0) { throw "cargo about failed" }
 cargo packager --release -p opendrape --formats nsis
 if ($LASTEXITCODE -ne 0) { throw "cargo packager failed" }
 
@@ -19,6 +22,6 @@ $portable = 'target/portable/OpenDrape'
 Remove-Item -Recurse -Force $portable -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $portable | Out-Null
 Copy-Item target/release/opendrape.exe "$portable/OpenDrape.exe"
-Copy-Item LICENSE, docs/PORTABLE.txt $portable
+Copy-Item LICENSE, docs/PORTABLE.txt, target/licenses/THIRD_PARTY_LICENSES.html $portable
 Compress-Archive -Path $portable -DestinationPath "dist/OpenDrape-$suffix-windows-x64-portable.zip" -Force
 Get-ChildItem dist

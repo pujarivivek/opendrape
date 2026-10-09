@@ -1,2 +1,7 @@
 [alias]
 xtask = "run --quiet -p xtask --"
+
+# Link the C runtime statically on Windows, so OpenDrape.exe starts on a fresh Windows
+# install without the "VCRUNTIME140.dll was not found" error.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

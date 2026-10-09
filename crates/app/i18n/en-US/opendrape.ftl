@@ -19,6 +19,8 @@ about-license = OpenDrape is free software under the GNU GPL, version 3 or later
 about-copy = Copy diagnostics
 about-copied = Copied. Paste it into your bug report.
 
-startup-failed = OpenDrape could not start its 3D graphics. Try updating your graphics driver, or start OpenDrape with --gpu=safe.
+startup-failed = OpenDrape could not start its 3D graphics on this computer. Updating the graphics driver usually fixes this. The next time you open OpenDrape it will try every graphics mode again.
 
     Details: { $error }
+
+graphics-starting-over = Last time, OpenDrape could not start its 3D graphics in any mode. It will now try again from the start. If this keeps happening, please update your graphics driver.

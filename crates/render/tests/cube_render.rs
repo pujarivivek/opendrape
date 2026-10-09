@@ -1,5 +1,6 @@
 use opendrape_render::{
-    CLEAR_COLOR, CubeRenderer, OrbitCamera, RenderTarget, headless_device, read_back,
+    CLEAR_COLOR, CubeRenderer, HeadlessGpu, OrbitCamera, RenderTarget, headless_device,
+    headless_device_with, read_back,
 };
 
 fn is_background(p: &image::Rgba<u8>) -> bool {
@@ -77,4 +78,50 @@ fn odd_sizes_read_back_correctly() {
         !is_background(img.get_pixel(50, 38)),
         "centre pixel is background"
     );
+}
+
+/// The backend every machine of this OS has (Metal on macOS, DX12 on Windows — WARP on CI —,
+/// Vulkan on Linux — lavapipe on CI).
+fn native_backend() -> wgpu::Backends {
+    if cfg!(target_os = "macos") {
+        wgpu::Backends::METAL
+    } else if cfg!(windows) {
+        wgpu::Backends::DX12
+    } else {
+        wgpu::Backends::VULKAN
+    }
+}
+
+fn assert_renders_cube(gpu: HeadlessGpu) {
+    let target = RenderTarget::new(&gpu.device, 96, 96);
+    let camera = OrbitCamera::default();
+    CubeRenderer::new(&gpu.device).render(&gpu.device, &gpu.queue, &target, camera.view_proj(1.0));
+    let img = read_back(&gpu.device, &gpu.queue, &target);
+    assert!(
+        !is_background(img.get_pixel(48, 48)),
+        "{:?}: centre pixel is background",
+        gpu.info.backend
+    );
+}
+
+#[test]
+fn explicitly_requested_backend_is_used() {
+    let wanted = native_backend();
+    let gpu = headless_device_with(wanted).expect("this OS's native backend is available");
+    assert!(
+        wanted.contains(wgpu::Backends::from(gpu.info.backend)),
+        "got {:?}",
+        gpu.info.backend
+    );
+    assert_renders_cube(gpu);
+}
+
+/// OpenGL is the main fallback on old Intel laptops; CI renders through Mesa llvmpipe.
+#[cfg(target_os = "linux")]
+#[test]
+fn opengl_fallback_renders_the_cube() {
+    let gpu =
+        headless_device_with(wgpu::Backends::GL).expect("Mesa OpenGL (llvmpipe) is installed");
+    assert_eq!(gpu.info.backend, wgpu::Backend::Gl);
+    assert_renders_cube(gpu);
 }

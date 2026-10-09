@@ -105,3 +105,38 @@ fn tiny_window_does_not_crash() {
         .build_eframe(move |cc| OpenDrapeApp::new(cc, startup, Rc::new(Shared::default())));
     h.run();
 }
+
+#[test]
+fn crash_marker_is_cleared_only_after_frames_were_presented() {
+    // A driver that crashes on its first present must still count as a crash, so the
+    // marker has to survive the first frame and only clear after several.
+    let dir = tempfile::tempdir().unwrap();
+    let store = StateStore::new(Some(dir.path()));
+    store.save(&GpuState {
+        preferred: GpuChoice::Auto,
+        pending: Some(GpuChoice::Auto),
+    });
+    let shared = SharedState::default();
+    let startup = Startup {
+        decision: SAVED_AUTO,
+        previous: GpuState::default(),
+        store: StateStore::new(Some(dir.path())),
+        smoke_test: false,
+    };
+    let app_shared = shared.clone();
+    // The harness draws one frame plus at most `max_steps` more while it is being built.
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1000.0, 700.0))
+        .with_max_steps(1)
+        .wgpu()
+        .build_eframe(move |cc| OpenDrapeApp::new(cc, startup, app_shared));
+    assert!(h.state().viewport_frames() >= 1);
+    assert!(
+        !shared.first_frame_drawn.get(),
+        "confirmed before any frame was presented"
+    );
+    assert_eq!(store.load().pending, Some(GpuChoice::Auto));
+    h.run_steps(5);
+    assert!(shared.first_frame_drawn.get());
+    assert_eq!(store.load().pending, None);
+}

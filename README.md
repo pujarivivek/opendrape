@@ -23,8 +23,9 @@ Get the latest build from the [Releases page](https://github.com/pujarivivek/ope
   "Windows protected your PC", click **More info → Run anyway**. Or download the
   portable `.zip`, unzip it anywhere and run `OpenDrape.exe`.
 
-If the 3D view does not appear, choose **Help → Graphics → Software (safe mode, slow)**
-or start OpenDrape with `--gpu=safe`.
+If the 3D view does not appear on Windows, choose **Help → Graphics → Software (safe mode, slow)**.
+If OpenDrape cannot start its graphics at all, it automatically tries safer modes the next
+times you open it, and tells you if none of them work.
 
 ## Build from source
 
