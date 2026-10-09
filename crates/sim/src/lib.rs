@@ -6,5 +6,5 @@ mod collide;
 mod solver;
 
 pub use cloth::{Cloth, ClothBuilder, Panel, PanelId};
-pub use collide::{Collider, Plane};
+pub use collide::{BodyCollider, Collider, ColliderError, Plane};
 pub use solver::{FRAME_DT, Params, Solver};
