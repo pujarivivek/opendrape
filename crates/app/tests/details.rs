@@ -6,7 +6,7 @@ use common::*;
 use egui::{Key, Modifiers, accesskit::Role, vec2};
 use egui_kittest::kittest::Queryable;
 use opendrape::editor::Selection;
-use opendrape_core::{Piece, PieceId, Point2};
+use opendrape_core::{Piece, PieceId, Point2, Units};
 use opendrape_geom as geom;
 
 /// A 150 × 300 mm half piece at (300,100), folded on its left edge (x = 300): its pale half
@@ -452,4 +452,59 @@ fn the_fold_edge_offers_only_removing_the_fold() {
         h.run();
         assert_eq!(piece_of(&h, id).fold, None, "fold {fold}");
     }
+}
+
+#[test]
+fn breaking_a_pair_keeps_the_selected_piece_selected() {
+    let mut h = harness();
+    let (id, twin) = with_pair(&mut h);
+    click(&mut h, 250.0, 300.0);
+    assert_eq!(h.state().selection, Selection::Piece(id));
+    h.get_by_label("Break pair").click();
+    h.run();
+    assert!(piece_of(&h, id).twin.is_none());
+    assert!(h.state().doc.project().piece(twin).is_some());
+    assert_eq!(h.state().selection, Selection::Piece(id));
+}
+
+#[test]
+fn a_twin_point_placed_higher_is_shown_and_typed_with_its_height() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    let twin = h
+        .state_mut()
+        .doc
+        .edit(|p| p.add_twin(id, "Front (mirror)".into(), Point2::new(850.0, 40.0)))
+        .unwrap();
+    h.run();
+    click(&mut h, 450.0, 140.0); // the twin's image of corner 1: (400,100) mirrored and raised
+    assert_eq!(h.state().selection, Selection::Vertex(twin, 1));
+    assert_eq!(field_text(&h, "X"), "45.0");
+    assert_eq!(field_text(&h, "Y"), "14.0"); // the stored 100 plus the offset's 40
+    type_into(&mut h, "Y", "16"); // 160 mm where the twin is
+    close(piece_of(&h, id).vertices[1].pos, Point2::new(400.0, 120.0)); // 160 - 40
+}
+
+#[test]
+fn the_allowance_limit_is_named_in_the_current_units() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    click(&mut h, 250.0, 300.0);
+    type_into(&mut h, "Seam allowance", "10,5");
+    assert_eq!(
+        h.state().notice.as_deref(),
+        Some("The seam allowance must be between 0 and 10 cm.")
+    );
+    h.state_mut().doc.edit(|p| p.units = Units::Inch);
+    h.run();
+    type_into(&mut h, "Seam allowance", "3,94"); // 100.08 mm: just over
+    assert_eq!(piece_of(&h, id).allowance, 10.0);
+    assert!(
+        h.state()
+            .notice
+            .as_deref()
+            .is_some_and(|n| n == "The seam allowance must be between 0 and 3.93 in.")
+    );
+    type_into(&mut h, "Seam allowance", "3,93"); // what the message names is accepted
+    assert!((piece_of(&h, id).allowance - 3.93 * 25.4).abs() < 1e-9);
 }

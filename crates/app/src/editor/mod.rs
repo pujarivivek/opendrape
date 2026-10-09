@@ -227,13 +227,6 @@ impl PatternEditor {
         geom::shapes(self.doc.project())
     }
 
-    /// The stored piece behind a shape id (the piece itself, or the one a twin mirrors).
-    // Not called yet: the properties panel uses it from the next task on.
-    #[allow(dead_code)]
-    pub(super) fn source_of(&self, id: PieceId) -> Option<PieceId> {
-        self.doc.project().owner(id).map(|(p, _)| p.id)
-    }
-
     /// Points placed so far in the piece being drawn with the pen.
     pub fn pen(&self) -> &[PenPoint] {
         &self.canvas.pen

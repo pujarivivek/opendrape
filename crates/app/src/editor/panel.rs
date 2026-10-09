@@ -104,7 +104,7 @@ impl PatternEditor {
                     &units.format_number(piece.allowance),
                     units.suffix(),
                 );
-                self.apply_typed(allowance, true, tr!("notice-bad-allowance"), |p, mm| {
+                self.apply_typed(allowance, true, bad_allowance(units), |p, mm| {
                     allowance_ok(mm)
                         && p.piece_mut(source).is_some_and(|pc| {
                             pc.allowance = mm;
@@ -163,7 +163,7 @@ impl PatternEditor {
                 if !is_fold {
                     let own = units.format_number(piece.edge_allowance(i));
                     let typed = self.field(ui, tr!("panel-allowance"), &own, units.suffix());
-                    self.apply_typed(typed, true, tr!("notice-bad-allowance"), |p, mm| {
+                    self.apply_typed(typed, true, bad_allowance(units), |p, mm| {
                         allowance_ok(mm)
                             && p.piece_mut(source).is_some_and(|pc| {
                                 pc.edge_props[i].allowance = Some(mm);
@@ -308,13 +308,10 @@ impl PatternEditor {
         }
     }
 
+    /// Both pieces keep their ids, so whichever was selected stays selected.
     fn break_pair(&mut self, source: PieceId) {
-        let piece = self.doc.edit(|p| p.break_twin(source));
-        if !self.note_if_refused()
-            && let Some(t) = piece
-        {
-            self.selection = Selection::Piece(t);
-        }
+        self.doc.edit(|p| p.break_twin(source));
+        self.note_if_refused();
     }
 
     fn unfold(&mut self, source: PieceId) {
@@ -411,6 +408,22 @@ impl PatternEditor {
 /// A seam allowance the pattern can hold: 0 to [`MAX_ALLOWANCE_MM`].
 fn allowance_ok(mm: f64) -> bool {
     mm.is_finite() && (0.0..=MAX_ALLOWANCE_MM).contains(&mm)
+}
+
+/// "The seam allowance must be between 0 and 10 cm.", with the limit in the current units.
+fn bad_allowance(units: Units) -> String {
+    tr!("notice-bad-allowance", max = allowance_limit(units))
+}
+
+/// The widest seam allowance in `units`, rounded down to the precision the panel shows so that
+/// a typed value up to it is accepted: "10 cm", "3.93 in".
+fn allowance_limit(units: Units) -> String {
+    let scale = match units {
+        Units::Cm => 10.0,
+        Units::Inch => 100.0,
+    };
+    let rounded_down = (units.from_mm(MAX_ALLOWANCE_MM) * scale + 1e-9).floor() / scale;
+    format!("{rounded_down} {}", units.suffix())
 }
 
 /// The offset that puts a piece's mirror image [`PAIR_GAP_MM`] to its right, at the same

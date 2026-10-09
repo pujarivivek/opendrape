@@ -121,5 +121,5 @@ panel-make-pair = Make mirrored pair
 panel-break-pair = Break pair
 panel-twin-of = Mirror image of { $name }
 twin-name = { $name } (mirror)
-notice-bad-allowance = The seam allowance must be between 0 and 10 cm.
+notice-bad-allowance = The seam allowance must be between 0 and { $max }.
 notice-fold-refused = The fold line must be a straight edge with the whole piece on one side of it.
