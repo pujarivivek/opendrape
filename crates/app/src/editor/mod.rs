@@ -120,6 +120,10 @@ pub struct PatternEditor {
     canvas: canvas::CanvasState,
     panel: panel::PanelState,
     fit_pending: bool,
+    /// A units switch asked for in the toolbar this frame, applied once the panels and the
+    /// canvas have run: a number typed in the old units and applied by the very same click
+    /// (the click that moves focus out of its field) must still be read in the old units.
+    pending_units: Option<Units>,
 }
 
 impl Default for PatternEditor {
@@ -141,6 +145,7 @@ impl PatternEditor {
             canvas: canvas::CanvasState::default(),
             panel: panel::PanelState::default(),
             fit_pending: true,
+            pending_units: None,
         }
     }
 
@@ -243,6 +248,11 @@ impl PatternEditor {
             .exact_size(240.0)
             .show(ui, |ui| self.properties(ui));
         egui::CentralPanel::default().show(ui, |ui| self.canvas_ui(ui, keys_free));
+        if let Some(units) = self.pending_units.take() {
+            self.doc.edit(|p| p.units = units);
+            self.note_if_refused();
+            ui.ctx().request_repaint(); // show the new units at once, not on the next input
+        }
     }
 
     fn shortcuts(&mut self, ui: &egui::Ui) {
@@ -281,8 +291,7 @@ impl PatternEditor {
                 (Units::Inch, tr!("units-inch")),
             ] {
                 if ui.selectable_label(units == u, label).clicked() && units != u {
-                    self.doc.edit(|p| p.units = u);
-                    self.note_if_refused();
+                    self.pending_units = Some(u);
                 }
             }
             ui.separator();

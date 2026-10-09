@@ -1062,3 +1062,26 @@ fn a_real_two_frame_click_into_a_filled_field_also_selects_it() {
     h.run();
     assert_eq!(field_text(&h, "Length"), "45");
 }
+
+#[test]
+fn switching_units_does_not_change_how_a_pending_typed_length_is_read() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    click(&mut h, 250.0, 100.0);
+    h.get_by_role_and_label(Role::TextInput, "Length").click();
+    h.run();
+    h.get_by_role_and_label(Role::TextInput, "Length")
+        .type_text("45"); // 45 cm, typed but not yet entered
+    h.run();
+    // A real mouse click on "inch": the press and the release are separate frames.
+    let inch = h.get_by_label("inch").rect().center();
+    slow_click(&mut h, inch);
+    h.run();
+    let p = piece_of(&h, id);
+    assert!(
+        (opendrape_geom::edge_length(&p, 0) - 450.0).abs() < 1e-9,
+        "45 was typed in cm: {} mm",
+        opendrape_geom::edge_length(&p, 0)
+    );
+    assert_eq!(h.state().doc.project().units, opendrape_core::Units::Inch);
+}
