@@ -707,3 +707,231 @@ fn notches_go_on_a_folded_pieces_drawn_edges_and_never_on_the_fold() {
     click(&mut h, 225.0, 92.0);
     assert_eq!(h.state().selection, Selection::Notch(id, 0));
 }
+
+#[test]
+fn a_notch_clicked_off_centre_counts_from_the_edges_start() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    key(&mut h, Key::N);
+    click(&mut h, 175.0, 101.0); // a quarter along the bottom edge (100,100) to (400,100)
+    let notches = piece_of(&h, id).notches;
+    assert_eq!(notches.len(), 1);
+    assert_eq!(notches[0].edge, 0);
+    assert!(
+        (notches[0].distance - 75.0).abs() < 0.5,
+        "{}",
+        notches[0].distance
+    );
+
+    // The right edge runs up from (400,100): a quarter of its 400 mm is 100 mm.
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    key(&mut h, Key::N);
+    click(&mut h, 401.0, 200.0);
+    let notches = piece_of(&h, id).notches;
+    assert_eq!(notches.len(), 1);
+    assert_eq!(notches[0].edge, 1);
+    assert!(
+        (notches[0].distance - 100.0).abs() < 0.5,
+        "{}",
+        notches[0].distance
+    );
+}
+
+#[test]
+fn a_notch_clicked_off_centre_on_a_twin_counts_from_the_twins_start() {
+    // The twin's edge 0 runs from (750,100) to (450,100), like the piece's from (100,100) to
+    // (400,100): a quarter of the way along the twin is x = 675, and the stored notch is 75 mm
+    // from the stored edge's start (a mirrored curve parameter would say 225).
+    let mut h = harness();
+    let (id, twin) = with_pair(&mut h);
+    key(&mut h, Key::N);
+    click(&mut h, 675.0, 101.0);
+    let notches = piece_of(&h, id).notches;
+    assert_eq!(notches.len(), 1);
+    assert_eq!(notches[0].edge, 0);
+    assert!(
+        (notches[0].distance - 75.0).abs() < 0.5,
+        "{}",
+        notches[0].distance
+    );
+    assert_eq!(h.state().selection, Selection::Notch(twin, 0));
+
+    // Edge 1 climbs the twin's near side from (450,100): a quarter of 400 mm is 100 mm.
+    let mut h = harness();
+    let (id, twin) = with_pair(&mut h);
+    key(&mut h, Key::N);
+    click(&mut h, 449.0, 200.0);
+    let notches = piece_of(&h, id).notches;
+    assert_eq!(notches.len(), 1);
+    assert_eq!(notches[0].edge, 1);
+    assert!(
+        (notches[0].distance - 100.0).abs() < 0.5,
+        "{}",
+        notches[0].distance
+    );
+    assert_eq!(h.state().selection, Selection::Notch(twin, 0));
+}
+
+#[test]
+fn a_typed_distance_on_a_twin_counts_from_the_nearer_end_of_the_twins_edge() {
+    let mut h = harness();
+    let (id, _) = with_pair(&mut h);
+    key(&mut h, Key::N);
+    // The twin's bottom edge starts at x = 750 and ends at x = 450. Near its start, 4 cm in is
+    // 40 mm from the stored start; near its end, 4 cm from the end is 300 - 40 from the start.
+    let near_start = at(&h, 730.0, 101.0);
+    h.hover_at(near_start);
+    h.run();
+    type_number(&mut h, "4");
+    key(&mut h, Key::Enter);
+    let near_end = at(&h, 470.0, 101.0);
+    h.hover_at(near_end);
+    h.run();
+    type_number(&mut h, "4");
+    key(&mut h, Key::Enter);
+    assert_eq!(
+        piece_of(&h, id).notches,
+        vec![Notch::new(0, 40.0), Notch::new(0, 260.0)]
+    );
+}
+
+#[test]
+fn clicking_a_twins_notch_mark_selects_it_on_the_twin() {
+    let mut h = harness();
+    let (id, twin) = with_pair(&mut h);
+    // 75 mm along: x = 175 on the piece, and x = 675 on the twin (750 - 75).
+    h.state_mut()
+        .doc
+        .edit(|p| p.piece_mut(id).unwrap().notches.push(Notch::new(0, 75.0)));
+    h.run();
+    click(&mut h, 675.0, 92.0);
+    assert_eq!(h.state().selection, Selection::Notch(twin, 0));
+    click(&mut h, 175.0, 92.0);
+    assert_eq!(h.state().selection, Selection::Notch(id, 0));
+}
+
+/// The 300 mm rectangle with no seam allowance and a notch right on its first corner (100,100),
+/// where the mark runs from the corner 5 mm up into the piece.
+fn corner_notch_without_allowance(h: &mut H) -> PieceId {
+    let id = with_rectangle(h);
+    h.state_mut().doc.edit(|p| {
+        let piece = p.piece_mut(id).unwrap();
+        piece.allowance = 0.0;
+        piece.notches.push(Notch::new(0, 0.0));
+    });
+    h.run();
+    id
+}
+
+#[test]
+fn a_notch_on_a_corner_without_allowance_does_not_hide_the_corner() {
+    let mut h = harness();
+    let id = corner_notch_without_allowance(&mut h);
+    click(&mut h, 100.0, 100.0);
+    assert_eq!(h.state().selection, Selection::Vertex(id, 0));
+    // A hair along the mark is still the corner: positions pass through f32 screen points.
+    click(&mut h, 100.0, 100.2);
+    assert_eq!(h.state().selection, Selection::Vertex(id, 0));
+    // Further along the mark the notch is nearer.
+    click(&mut h, 100.0, 104.0);
+    assert_eq!(h.state().selection, Selection::Notch(id, 0));
+    click(&mut h, 100.0, 100.0);
+    assert_eq!(h.state().selection, Selection::Vertex(id, 0));
+
+    let mut h = harness();
+    let id = corner_notch_without_allowance(&mut h);
+    drag(&mut h, (100.0, 100.0), (80.0, 90.0));
+    close(piece_of(&h, id).vertices[0].pos, Point2::new(80.0, 90.0));
+}
+
+#[test]
+fn a_notch_on_the_cut_line_beside_a_corner_does_not_hide_the_corner() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h); // the default 10 mm allowance: the mark is at y = 90..95
+    h.state_mut()
+        .doc
+        .edit(|p| p.piece_mut(id).unwrap().notches.push(Notch::new(0, 0.0)));
+    h.run();
+    click(&mut h, 100.0, 100.0);
+    assert_eq!(h.state().selection, Selection::Vertex(id, 0));
+    click(&mut h, 100.0, 92.0);
+    assert_eq!(h.state().selection, Selection::Notch(id, 0));
+    click(&mut h, 100.0, 100.0);
+    assert_eq!(h.state().selection, Selection::Vertex(id, 0));
+}
+
+#[test]
+fn a_notch_does_not_hide_a_curve_handle_but_still_beats_the_edge() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    h.state_mut().doc.edit(|p| {
+        let piece = p.piece_mut(id).unwrap();
+        // A straight-looking curve whose first handle sits at (200,100); a notch 100 mm along
+        // has its mark at x = 200, y = 90..95.
+        piece.edges[0] = opendrape_core::Edge::Curve {
+            c1: Point2::new(200.0, 100.0),
+            c2: Point2::new(300.0, 100.0),
+        };
+        piece.notches.push(Notch::new(0, 100.0));
+    });
+    h.run();
+    click(&mut h, 250.0, 300.0); // select the piece, so its handles show
+    assert_eq!(h.state().selection, Selection::Piece(id));
+    click(&mut h, 200.0, 100.0);
+    assert_eq!(h.state().selection, Selection::Edge(id, 0)); // the handle
+    click(&mut h, 200.0, 92.0);
+    assert_eq!(h.state().selection, Selection::Notch(id, 0));
+}
+
+#[test]
+fn the_nearer_end_of_a_curved_edge_is_by_arc_length_not_curve_parameter() {
+    // The bottom edge is a straight-looking curve with its handles pulled to the far end, so
+    // x = 300 (200 mm along, past the middle) is at curve parameter 0.37, before the middle.
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    h.state_mut().doc.edit(|p| {
+        p.piece_mut(id).unwrap().edges[0] = opendrape_core::Edge::Curve {
+            c1: Point2::new(350.0, 100.0),
+            c2: Point2::new(390.0, 100.0),
+        };
+    });
+    h.run();
+    key(&mut h, Key::N);
+    let p = at(&h, 300.0, 101.0);
+    h.hover_at(p);
+    h.run();
+    type_number(&mut h, "4");
+    key(&mut h, Key::Enter);
+    let piece = piece_of(&h, id);
+    assert_eq!(piece.notches.len(), 1);
+    let len = geom::edge_length(&piece, 0);
+    assert!(
+        (piece.notches[0].distance - (len - 40.0)).abs() < 0.01,
+        "{} of {len}",
+        piece.notches[0].distance
+    );
+}
+
+#[test]
+fn delete_removes_a_notch_in_the_notch_tool_too() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    key(&mut h, Key::N);
+    click(&mut h, 250.0, 101.0);
+    assert_eq!(h.state().selection, Selection::Notch(id, 0));
+    key(&mut h, Key::Delete);
+    assert!(piece_of(&h, id).notches.is_empty());
+    assert_eq!(h.state().selection, Selection::Piece(id));
+}
+
+#[test]
+fn delete_in_the_notch_tool_leaves_a_selected_piece_alone() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    click(&mut h, 250.0, 300.0); // select the piece with the Edit tool
+    key(&mut h, Key::N);
+    key(&mut h, Key::Delete);
+    assert!(h.state().doc.project().piece(id).is_some());
+    assert_eq!(h.state().selection, Selection::Piece(id));
+}

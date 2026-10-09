@@ -351,6 +351,7 @@ impl PatternEditor {
 
     fn canvas_keys(&mut self, ui: &egui::Ui, response: &Response) {
         let pressed = |k: Key| ui.input(|i| i.key_pressed(k));
+        let delete_pressed = || pressed(Key::Delete) || pressed(Key::Backspace);
         match self.tool {
             Tool::Pen if !self.canvas.pen.is_empty() => {
                 self.open_box_on_digits(ui, response);
@@ -365,12 +366,18 @@ impl PatternEditor {
                 }
             }
             Tool::Rectangle if pressed(Key::Escape) => self.canvas.rect_start = None,
-            Tool::Notch => self.notch_box_on_digits(ui, response),
+            Tool::Notch => {
+                self.notch_box_on_digits(ui, response);
+                // Only a notch: a piece or point selected earlier is the Edit tool's to delete.
+                if matches!(self.selection, Selection::Notch(..)) && delete_pressed() {
+                    self.delete_selection();
+                }
+            }
             Tool::Edit => {
                 if pressed(Key::Escape) {
                     self.selection = Selection::None;
                 }
-                if pressed(Key::Delete) || pressed(Key::Backspace) {
+                if delete_pressed() {
                     self.delete_selection();
                 }
             }
@@ -512,26 +519,71 @@ impl PatternEditor {
         }
     }
 
-    /// What the edit tool picks at `w`: the selected shape's curve handles first, then notch
-    /// marks, then points, edges and insides, topmost shape first. Points and edges of a fold's pale half
-    /// are not editable: they pick the piece.
+    /// What the edit tool picks at `w`. A point or curve handle and a notch mark can both be
+    /// under the pointer (a mark may start at a corner): the nearer wins, and the point or
+    /// handle wins a tie. Then come edges and insides, topmost shape first, so a notch mark
+    /// still beats the edge it is on. The handles are the selected shape's only. Points and
+    /// edges of a fold's pale half are not editable: they pick the piece.
     fn hit(&self, shapes: &[geom::Shape], w: Point2, tol: f64) -> Option<Hit> {
-        if let Some(sel) = self.selection.piece()
-            && let Some(s) = shapes.iter().find(|s| s.id == sel)
-        {
-            for (k, edge) in s.piece.edges.iter().enumerate() {
-                let (Some(i), Edge::Curve { c1, c2 }) = (s.stored_edge(k), *edge) else {
-                    continue;
-                };
-                if c1.distance(w) <= tol {
-                    return Some(Hit::Handle(s.id, i, HandleEnd::Start));
-                }
-                if c2.distance(w) <= tol {
-                    return Some(Hit::Handle(s.id, i, HandleEnd::End));
-                }
+        let topmost = || shapes.iter().rev();
+        let handle = self
+            .selection
+            .piece()
+            .and_then(|sel| shapes.iter().find(|s| s.id == sel))
+            .and_then(|s| {
+                s.piece.edges.iter().enumerate().find_map(|(k, edge)| {
+                    let (Some(i), Edge::Curve { c1, c2 }) = (s.stored_edge(k), *edge) else {
+                        return None;
+                    };
+                    if c1.distance(w) <= tol {
+                        Some((Hit::Handle(s.id, i, HandleEnd::Start), c1.distance(w)))
+                    } else if c2.distance(w) <= tol {
+                        Some((Hit::Handle(s.id, i, HandleEnd::End), c2.distance(w)))
+                    } else {
+                        None
+                    }
+                })
+            });
+        let corner = handle.or_else(|| {
+            topmost().find_map(|s| {
+                (0..s.piece.len()).find_map(|k| {
+                    let i = s.stored_vertex(k)?;
+                    let d = s.piece.vertices[k].pos.distance(w);
+                    (d <= tol).then_some((Hit::Vertex(s.id, i), d))
+                })
+            })
+        });
+        // Pointer positions pass through f32 screen coordinates, so a press on a corner a mark
+        // starts at can land a hair along the mark: a notch must be nearer by a screen point.
+        let slack = tol / HIT_PX;
+        match (corner, self.notch_at(shapes, w, tol)) {
+            (Some((hit, d)), Some((notch, dn))) => {
+                return Some(if dn + slack < d { notch } else { hit });
             }
+            (Some((hit, _)), None) | (None, Some((hit, _))) => return Some(hit),
+            (None, None) => {}
         }
-        // Notch marks sit out on the cut line, so they never hide a point or an edge.
+        topmost()
+            .find_map(|s| {
+                geom::nearest_edge(&s.piece, w)
+                    .filter(|e| e.2 <= tol)
+                    .map(|(k, _, _)| match s.stored_edge(k) {
+                        Some(i) => Hit::Edge(s.id, i),
+                        None => Hit::Inside(s.id),
+                    })
+            })
+            .or_else(|| {
+                topmost()
+                    .find(|s| geom::contains(&s.piece, w))
+                    .map(|s| Hit::Inside(s.id))
+            })
+    }
+
+    /// The notch mark nearest to `w` within `tol` mm, with its distance: the topmost shape's
+    /// first on a tie. A shape shows a notch's marks as the stored piece has them, and a
+    /// fold's pale half repeats the stored notches after them, in order.
+    fn notch_at(&self, shapes: &[geom::Shape], w: Point2, tol: f64) -> Option<(Hit, f64)> {
+        let mut best: Option<(Hit, f64)> = None;
         for s in shapes.iter().rev() {
             let stored = self
                 .doc
@@ -539,38 +591,16 @@ impl PatternEditor {
                 .owner(s.id)
                 .map_or(0, |(p, _)| p.notches.len());
             for (j, notch) in s.piece.notches.iter().enumerate() {
-                let near = geom::notch_marks(&s.piece, notch)
+                let d = geom::notch_marks(&s.piece, notch)
                     .iter()
-                    .any(|[a, b]| segment_distance(w, *a, *b) <= tol);
-                if near && stored > 0 {
-                    // A fold's pale half repeats the stored notches after them, in order.
-                    return Some(Hit::Notch(s.id, j % stored));
+                    .map(|[a, b]| segment_distance(w, *a, *b))
+                    .fold(f64::INFINITY, f64::min);
+                if d <= tol && stored > 0 && best.is_none_or(|(_, b)| d < b) {
+                    best = Some((Hit::Notch(s.id, j % stored), d));
                 }
             }
         }
-        let topmost = || shapes.iter().rev();
-        topmost()
-            .find_map(|s| {
-                (0..s.piece.len()).find_map(|k| {
-                    let i = s.stored_vertex(k)?;
-                    (s.piece.vertices[k].pos.distance(w) <= tol).then_some(Hit::Vertex(s.id, i))
-                })
-            })
-            .or_else(|| {
-                topmost().find_map(|s| {
-                    geom::nearest_edge(&s.piece, w)
-                        .filter(|e| e.2 <= tol)
-                        .map(|(k, _, _)| match s.stored_edge(k) {
-                            Some(i) => Hit::Edge(s.id, i),
-                            None => Hit::Inside(s.id),
-                        })
-                })
-            })
-            .or_else(|| {
-                topmost()
-                    .find(|s| geom::contains(&s.piece, w))
-                    .map(|s| Hit::Inside(s.id))
-            })
+        best
     }
 
     /// Deletes the selected point or piece. A piece keeps at least 3 points.

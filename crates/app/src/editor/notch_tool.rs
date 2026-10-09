@@ -65,6 +65,11 @@ impl PatternEditor {
         let Some((shape, source, edge, t, _)) = nearest_edge(self.doc.project(), hover, tol) else {
             return;
         };
+        let Some(piece) = self.doc.project().piece(source) else {
+            return;
+        };
+        // The nearer end by arc length: the curve parameter is not distance along a curve.
+        let from_end = geom::distance_along(piece, edge, t) > geom::edge_length(piece, edge) / 2.0;
         let typed = take_typed_digits(ui);
         if typed.is_empty() {
             return;
@@ -74,7 +79,7 @@ impl PatternEditor {
             shape,
             source,
             edge,
-            from_end: t > 0.5,
+            from_end,
         };
         self.canvas.length_box = Some(LengthBox::new(kind, typed, String::new(), pos));
     }
