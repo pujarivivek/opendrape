@@ -48,8 +48,8 @@ impl LengthBox {
         }
     }
 
-    /// Shows the box. Enter in either field commits; Tab moves between the fields; Escape or
-    /// clicking elsewhere cancels.
+    /// Shows the box. Enter in either field commits; Tab moves between the fields (and back);
+    /// Escape or clicking elsewhere cancels.
     pub fn show(&mut self, ctx: &egui::Context, units: Units) -> Option<Outcome> {
         let (first_label, second) = match self.kind {
             BoxKind::PenSegment => (tr!("box-length"), Some((tr!("box-angle"), "°"))),
@@ -57,6 +57,20 @@ impl LengthBox {
             BoxKind::NotchDistance { .. } => (tr!("box-distance"), None),
         };
         let focus = std::mem::take(&mut self.focus_first);
+        // The fields keep their focus on Tab (lock_focus), and the box moves it itself, so Tab
+        // cycles between the two fields instead of leaving. This happens before they are drawn:
+        // a field that gains focus then shows as focused that frame, which is what
+        // `select_all_on_focus` needs to select a pre-filled number.
+        let (first_id, second_id) = (Id::new("length_box_first"), Id::new("length_box_second"));
+        if ctx.input(|i| i.key_pressed(Key::Tab)) {
+            match ctx.memory(|m| m.focused()) {
+                Some(id) if id == first_id && second.is_some() => {
+                    ctx.memory_mut(|m| m.request_focus(second_id));
+                }
+                Some(id) if id == second_id => ctx.memory_mut(|m| m.request_focus(first_id)),
+                _ => {}
+            }
+        }
         let (mut enter, mut lost, mut any_focus) = (false, false, false);
         egui::Area::new(Id::new("pattern_number_box"))
             .order(egui::Order::Foreground)
@@ -66,13 +80,20 @@ impl LengthBox {
                     ui.horizontal(|ui| {
                         let la = ui.label(first_label);
                         let a = ui
-                            .add(egui::TextEdit::singleline(&mut self.first).desired_width(56.0))
+                            .add(
+                                egui::TextEdit::singleline(&mut self.first)
+                                    .id(first_id)
+                                    .desired_width(56.0)
+                                    .lock_focus(true),
+                            )
                             .labelled_by(la.id);
                         ui.label(units.suffix());
                         let b = second.map(|(label, unit)| {
                             let lb = ui.label(label);
                             let mut out = egui::TextEdit::singleline(&mut self.second)
+                                .id(second_id)
                                 .desired_width(48.0)
+                                .lock_focus(true)
                                 .show(ui);
                             // The first field is opened by a typed digit and keeps its cursor
                             // at the end; the second arrives pre-filled (an angle), so Tab

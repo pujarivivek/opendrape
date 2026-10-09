@@ -1753,3 +1753,44 @@ fn starting_a_line_drops_a_notch_selection_too() {
     key(&mut h, Key::Backspace);
     assert_eq!(piece_of(&h, id).notches.len(), 1);
 }
+
+#[test]
+fn tab_cycles_between_the_two_box_fields() {
+    let mut h = harness();
+    key(&mut h, Key::H);
+    click(&mut h, 100.0, 100.0);
+    type_number(&mut h, "3");
+    key(&mut h, Key::Tab);
+    assert!(
+        h.get_by_role_and_label(Role::TextInput, "Angle")
+            .is_focused()
+    );
+    key(&mut h, Key::Tab);
+    assert!(h.state().length_box_open(), "Tab never closes the box");
+    assert!(
+        h.get_by_role_and_label(Role::TextInput, "Length")
+            .is_focused()
+    );
+    key(&mut h, Key::Tab);
+    assert!(
+        h.get_by_role_and_label(Role::TextInput, "Angle")
+            .is_focused()
+    );
+}
+
+#[test]
+fn tab_in_a_one_field_box_keeps_it_open() {
+    let mut h = harness();
+    with_rectangle(&mut h);
+    key(&mut h, Key::N);
+    let p = at(&h, 380.0, 101.0);
+    h.hover_at(p);
+    h.run();
+    type_number(&mut h, "5");
+    key(&mut h, Key::Tab);
+    assert!(h.state().length_box_open());
+    assert!(
+        h.get_by_role_and_label(Role::TextInput, "Distance")
+            .is_focused()
+    );
+}
