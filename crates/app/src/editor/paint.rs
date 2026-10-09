@@ -83,7 +83,46 @@ impl PatternEditor {
         {
             self.paint_selection(painter, rect, d, &c);
         }
+        self.paint_seams(painter, rect);
         self.paint_drafts(painter, rect, &c);
+    }
+
+    /// Every seam and mirror image: a line in its colour just inside each side, with the seam's
+    /// number halfway along. The selected seam's lines are thicker, and thin guides join its
+    /// two starts and its two ends: they cross when the seam is sewn twisted.
+    fn paint_seams(&self, painter: &Painter, rect: Rect) {
+        for line in self.seam_lines() {
+            let selected = self.selection == Selection::Seam(line.id);
+            let width = if selected { 4.5 } else { 2.5 };
+            for side in &line.sides {
+                painter.add(Shape::line(
+                    self.screen_points(rect, side.clone()),
+                    Stroke::new(width, line.colour),
+                ));
+                if let Some(middle) = side.get(side.len() / 2) {
+                    let at = self.view.to_screen(rect, *middle);
+                    painter.circle_filled(at, 7.5, line.colour);
+                    painter.text(
+                        at,
+                        Align2::CENTER_CENTER,
+                        line.id.0.to_string(),
+                        FontId::proportional(10.0),
+                        Color32::WHITE,
+                    );
+                }
+            }
+            if selected {
+                let [a, b] = &line.sides;
+                for (p, q) in [(a.first(), b.first()), (a.last(), b.last())] {
+                    if let (Some(p), Some(q)) = (p, q) {
+                        painter.line_segment(
+                            [self.view.to_screen(rect, *p), self.view.to_screen(rect, *q)],
+                            Stroke::new(1.0, line.colour),
+                        );
+                    }
+                }
+            }
+        }
     }
 
     fn mesh(&self, rect: Rect, points: &[Point2], triangles: &[u32], fill: Color32) -> Shape {

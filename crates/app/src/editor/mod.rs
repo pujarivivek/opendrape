@@ -8,6 +8,7 @@ mod line_tool;
 mod notch_tool;
 mod paint;
 mod panel;
+mod seams;
 mod sew_tool;
 mod view;
 

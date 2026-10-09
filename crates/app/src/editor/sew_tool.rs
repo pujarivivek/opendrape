@@ -110,6 +110,12 @@ impl PatternEditor {
             return;
         }
         let Some(at) = pointer else { return };
+        // A click on a seam's line selects that seam.
+        if let Some(seam) = self.seam_at(at, tol) {
+            self.selection = Selection::Seam(seam);
+            self.canvas.sew = None;
+            return;
+        }
         let Some(hit) = edge_under(self.doc.project(), at, tol) else {
             // A click away from every edge ends extending; a half-made seam waits for its
             // second edge.

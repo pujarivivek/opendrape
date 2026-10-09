@@ -5,8 +5,8 @@ use super::{PatternEditor, Selection, Tool, select_all_on_focus};
 use crate::tr;
 use egui::{Id, Key};
 use opendrape_core::{
-    Edge, LineKind, MAX_ALLOWANCE_MM, Notch, NotchStyle, Piece, PieceId, Point2, Project, Side,
-    Units, VertexKind,
+    Edge, LineKind, MAX_ALLOWANCE_MM, Notch, NotchStyle, Piece, PieceId, Point2, Project, SeamId,
+    SeamSide, Side, Units, VertexKind,
 };
 use opendrape_geom::{self as geom, Anchor};
 use std::collections::HashMap;
@@ -48,11 +48,48 @@ impl PatternEditor {
             Selection::Vertex(id, i) => self.vertex_properties(ui, id, i),
             Selection::Notch(id, k) => self.notch_properties(ui, id, k),
             Selection::Line(id, l) => self.line_properties(ui, id, l),
-            // The seam panel comes with seam drawing.
-            Selection::Seam(_) => {}
+            Selection::Seam(id) => self.seam_properties(ui, id),
         }
         let shown = &self.panel.shown;
         self.panel.editing.retain(|id, _| shown.contains(id));
+    }
+
+    /// A seam: each side's length, a warning when they differ by more than 3 mm, Flip and
+    /// Delete.
+    fn seam_properties(&mut self, ui: &mut egui::Ui, id: SeamId) {
+        let project = self.doc.project();
+        let Some(seam) = project.seam(id).copied() else {
+            return;
+        };
+        let units = project.units;
+        let length = |side: &SeamSide| {
+            geom::shape_of(project, side.shape).and_then(|s| geom::side_length(&s, side))
+        };
+        let (Some(a), Some(b)) = (length(&seam.a), length(&seam.b)) else {
+            return;
+        };
+        ui.strong(tr!("panel-seam", number = id.0));
+        ui.label(tr!("panel-seam-side", side = 1, length = units.format(a)));
+        ui.label(tr!("panel-seam-side", side = 2, length = units.format(b)));
+        let difference = (a - b).abs();
+        if difference > opendrape_mesh::LENGTH_WARNING_MM {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                tr!("panel-seam-differ", difference = units.format(difference)),
+            );
+        }
+        ui.add_space(6.0);
+        if ui.button(tr!("panel-seam-flip")).clicked() {
+            self.doc.edit(|p| {
+                if let Some(s) = p.seam_mut(id) {
+                    s.b.forward = !s.b.forward;
+                }
+            });
+            self.note_if_refused();
+        }
+        if ui.button(tr!("panel-delete-seam")).clicked() {
+            self.delete_selection();
+        }
     }
 
     fn piece_properties(&mut self, ui: &mut egui::Ui, id: PieceId) {

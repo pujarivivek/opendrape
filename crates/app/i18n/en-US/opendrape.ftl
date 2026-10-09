@@ -166,3 +166,9 @@ hint-sew-extend = Shift-click to add edges to the second side, or click an edge 
 notice-already-sewn = This edge is already sewn.
 notice-sew-not-next = Shift-click an edge right next to this side, on the same piece.
 notice-sew-same-edge = Pick a different edge for the other side of the seam.
+
+panel-seam = Seam { $number }
+panel-seam-side = Side { $side }: { $length }
+panel-seam-differ = Lengths differ by { $difference }
+panel-seam-flip = Flip
+panel-delete-seam = Delete seam

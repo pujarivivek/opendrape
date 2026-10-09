@@ -469,7 +469,15 @@ impl PatternEditor {
                     self.delete_selection();
                 }
             }
-            Tool::Sew if pressed(Key::Escape) => self.canvas.sew = None,
+            Tool::Sew => {
+                if pressed(Key::Escape) {
+                    self.canvas.sew = None;
+                }
+                // Only a seam: a piece or point selected earlier is the Edit tool's to delete.
+                if matches!(self.selection, Selection::Seam(_)) && delete_pressed() {
+                    self.delete_selection();
+                }
+            }
             _ => {}
         }
     }
@@ -629,9 +637,23 @@ impl PatternEditor {
         if response.clicked()
             && let Some(at) = pointer
         {
-            self.selection = self
-                .hit(&self.shapes(), at, tol)
-                .map_or(Selection::None, Hit::selection);
+            let hit = self.hit(&self.shapes(), at, tol);
+            // A point, handle or notch under the pointer comes first; then a seam's line
+            // (drawn just inside the outline), when it is nearer than the outline itself.
+            let on_a_point = matches!(
+                hit,
+                Some(
+                    Hit::Vertex(..)
+                        | Hit::Handle(..)
+                        | Hit::Notch(..)
+                        | Hit::LineVertex(..)
+                        | Hit::LineHandle(..)
+                )
+            );
+            self.selection = match self.seam_at(at, tol) {
+                Some(seam) if !on_a_point => Selection::Seam(seam),
+                _ => hit.map_or(Selection::None, Hit::selection),
+            };
         }
     }
 
