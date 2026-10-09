@@ -8,19 +8,23 @@ mod line_tool;
 mod notch_tool;
 mod paint;
 mod panel;
+mod placing;
 mod seams;
 mod sew_tool;
 mod view;
 
 pub use canvas::PenPoint;
 pub use document::{Document, UNDO_LIMIT};
+pub use placing::DEFAULT_SHOULDER_M;
 pub use view::View;
 
+use crate::stage::Stage;
 use crate::tr;
 use egui::{Key, KeyboardShortcut, Modifiers};
 use opendrape_core::{PieceId, Point2, Project, SeamId, Units};
 use opendrape_geom as geom;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Undo: Cmd+Z (Ctrl+Z on Windows).
 pub const UNDO: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Z);
@@ -169,6 +173,8 @@ pub struct PatternEditor {
     pub canvas_rect: egui::Rect,
     /// Why the last action was refused, shown in the status bar until the next click.
     pub notice: Option<String>,
+    /// The form pieces are placed round (Place at… needs it); None without a 3D view.
+    pub stage: Option<Arc<Stage>>,
     canvas: canvas::CanvasState,
     panel: panel::PanelState,
     cache: cache::ShapeCache,
@@ -196,6 +202,7 @@ impl PatternEditor {
             show_allowance: true,
             canvas_rect: egui::Rect::NOTHING,
             notice: None,
+            stage: None,
             canvas: canvas::CanvasState::default(),
             panel: panel::PanelState::default(),
             cache: cache::ShapeCache::default(),
@@ -207,9 +214,11 @@ impl PatternEditor {
     /// Starts over with `project` (File → New or Open): clears the history and fits the view.
     pub fn set_project(&mut self, project: Project, path: Option<PathBuf>) {
         let (show_lengths, show_allowance) = (self.show_lengths, self.show_allowance);
+        let stage = self.stage.take();
         *self = Self {
             show_lengths,
             show_allowance,
+            stage,
             ..Self::new()
         };
         self.doc = Document::new(project, path);

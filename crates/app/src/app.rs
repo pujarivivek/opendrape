@@ -119,6 +119,8 @@ pub struct OpenDrapeApp {
     arranger: Arranger,
     /// The 3D view's camera as last drawn.
     view_camera: Option<ScreenCamera>,
+    /// The piece the 3D view's Place at… menu was opened on.
+    menu_for: Option<PieceId>,
     pending: Option<Pending>,
     /// An action requested from code rather than the menu or keyboard; handled on the next frame.
     queued: Option<FileAction>,
@@ -148,6 +150,9 @@ impl OpenDrapeApp {
             let ctx = cc.egui_ctx.clone();
             SimRunner::start(stage.clone(), move || ctx.request_repaint())
         });
+        // Place at… needs the form; there is none without a 3D view.
+        let mut editor = PatternEditor::new();
+        editor.stage = render_state.map(|_| stage.clone());
         // Read before `startup` moves into the app below.
         let recovery = startup.recovery.clone();
         let offered = recovery.take();
@@ -160,12 +165,13 @@ impl OpenDrapeApp {
             copied: false,
             runner,
             fps: 0.0,
-            editor: PatternEditor::new(),
+            editor,
             stage,
             draped: None,
             arranged: SceneCache::default(),
             arranger: Arranger::default(),
             view_camera: None,
+            menu_for: None,
             pending: None,
             queued: None,
             error: None,
@@ -416,30 +422,42 @@ impl OpenDrapeApp {
     ) {
         let at = |p: egui::Pos2| glam::DVec2::new(f64::from(p.x), f64::from(p.y));
         let shift = ui.input(|i| i.modifiers.shift);
-        let doc = &mut self.editor.doc;
-        let selection = &mut self.editor.selection;
+        let editor = &mut self.editor;
         if response.drag_started_by(egui::PointerButton::Primary)
             && let Some(p) = ui.input(|i| i.pointer.press_origin())
         {
-            self.arranger.press(cam, scene, selection, doc, at(p));
+            self.arranger
+                .press(cam, scene, &editor.selection, &mut editor.doc, at(p));
         }
         if self.arranger.is_dragging()
             && let Some(p) = response.interact_pointer_pos()
         {
-            self.arranger.drag_to(cam, doc, at(p), shift);
+            self.arranger.drag_to(cam, &mut editor.doc, at(p), shift);
         }
         if response.drag_stopped() {
-            self.arranger.release(doc);
+            self.arranger.release(&mut editor.doc);
         }
         if response.clicked()
             && let Some(p) = response.interact_pointer_pos()
         {
-            self.arranger.click(cam, scene, selection, at(p));
+            self.arranger
+                .click(cam, scene, &mut editor.selection, at(p));
+        }
+        // A right-click on a piece selects it and opens Place at… for it.
+        if response.secondary_clicked()
+            && let Some(p) = response.interact_pointer_pos()
+        {
+            self.arranger
+                .click(cam, scene, &mut editor.selection, at(p));
+            self.menu_for = editor.selection.piece();
+        }
+        if let Some(id) = self.menu_for {
+            response.context_menu(|ui| editor.place_menu(ui, id));
         }
         if !self.arranger.is_dragging()
             && let Some(p) = response.hover_pos()
         {
-            self.arranger.hover(cam, scene, selection, at(p));
+            self.arranger.hover(cam, scene, &editor.selection, at(p));
         }
         // Drawn where the piece is now, after this frame's drag.
         let scene = self

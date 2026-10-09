@@ -1351,3 +1351,30 @@ fn the_view_buttons_turn_the_camera_to_each_side() {
         assert!((camera.yaw - yaw).abs() < 1e-6, "{label}: {}", camera.yaw);
     }
 }
+
+#[test]
+fn right_clicking_a_piece_in_3d_offers_place_at() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    add_piece(&mut h);
+    let camera = h.state().view_camera().expect("the 3D view was drawn");
+    let centre = h.state_mut().arranged_scene().panels[0].placement.position;
+    let p = camera.project(glam::DVec3::from_array(centre)).unwrap();
+    let p = egui::pos2(p.x as f32, p.y as f32);
+    h.hover_at(p);
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    h.run();
+    assert_eq!(h.state().editor().selection, Selection::Piece(PieceId(1)));
+    h.get_by_label("Place at front").click();
+    h.run();
+    let placed = h.state().editor().doc.project().placement_of(PieceId(1));
+    assert!(placed.is_some_and(|p| p.curve.is_some()), "{placed:?}");
+}

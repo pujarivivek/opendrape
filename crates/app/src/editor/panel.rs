@@ -180,6 +180,7 @@ impl PatternEditor {
         if ui.button(tr!("panel-delete-piece")).clicked() {
             self.delete_selection();
         }
+        self.placement_properties(ui, id);
     }
 
     fn edge_properties(&mut self, ui: &mut egui::Ui, id: PieceId, i: usize) {
@@ -485,7 +486,7 @@ impl PatternEditor {
 
     /// One row of a 3-column grid (label, text field, unit). Returns what the user typed once
     /// they press Enter or click elsewhere, if it changed.
-    fn field(
+    pub(super) fn field(
         &mut self,
         ui: &mut egui::Ui,
         label: String,
@@ -505,7 +506,7 @@ impl PatternEditor {
     /// units and passed on in millimetres. `apply` returns false to refuse the value, and the
     /// document may refuse the result: either way the pattern stays unchanged and a notice
     /// says why (`refusal` for a value that isn't a number or that `apply` refused).
-    fn apply_typed(
+    pub(super) fn apply_typed(
         &mut self,
         typed: Option<String>,
         is_length: bool,

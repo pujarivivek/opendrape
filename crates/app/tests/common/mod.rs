@@ -50,6 +50,21 @@ pub fn shift_click(h: &mut H, x: f64, y: f64) {
     h.run();
 }
 
+/// A right-click (secondary button) at pattern point (x, y) mm.
+pub fn right_click(h: &mut H, x: f64, y: f64) {
+    let p = at(h, x, y);
+    h.hover_at(p);
+    for pressed in [true, false] {
+        h.event(Event::PointerButton {
+            pos: p,
+            button: PointerButton::Secondary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    h.run();
+}
+
 /// Press at `from`, move there in steps, release at `to` (all in mm).
 pub fn drag(h: &mut H, from: (f64, f64), to: (f64, f64)) {
     let (a, b) = (at(h, from.0, from.1), at(h, to.0, to.1));

@@ -192,3 +192,16 @@ gizmo-forward = { $distance } forward
 gizmo-back = { $distance } back
 gizmo-moved = { $distance }
 gizmo-turned = { $angle }°
+
+place-front = Place at front
+place-back = Place at back
+place-left = Place at left side
+place-right = Place at right side
+place-flat = Flat
+panel-placement = 3D placement
+panel-position-x = Position X
+panel-position-y = Position Y
+panel-position-z = Position Z
+panel-rotation-x = Rotation X
+panel-rotation-y = Rotation Y
+panel-rotation-z = Rotation Z

@@ -44,6 +44,8 @@ pub(super) struct CanvasState {
     pub line_dragging: bool,
     /// Sew tool: the seam being sewn.
     pub sew: Option<super::sew_tool::SewDraft>,
+    /// The shape the Place at… menu was opened on (right-click).
+    pub menu_for: Option<PieceId>,
 }
 
 /// What placing a pen point did.
@@ -243,6 +245,7 @@ impl PatternEditor {
             Tool::Line => self.line_tool(&response, press, pointer, tol),
             Tool::Sew => self.sew_tool(&response, pointer, tol, shift),
         }
+        self.place_menu_on(&response, tol);
         if keys_free {
             self.canvas_keys(ui, &response);
         }
@@ -258,6 +261,35 @@ impl PatternEditor {
             .cache
             .shapes(self.doc.project(), self.view.zoom, self.show_allowance);
         self.paint(&painter, rect, ui.visuals().dark_mode, &drawn);
+    }
+
+    /// A right-click on a shape selects it and opens Place at… for it (when there is a form
+    /// to place it round).
+    fn place_menu_on(&mut self, response: &Response, tol: f64) {
+        if self.stage.is_none() {
+            return;
+        }
+        if response.secondary_clicked()
+            && let Some(at) = response
+                .interact_pointer_pos()
+                .map(|p| self.view.to_world(self.canvas_rect, p))
+        {
+            self.canvas.menu_for = self
+                .shapes()
+                .iter()
+                .rev()
+                .find(|s| {
+                    geom::contains(&s.piece, at)
+                        || geom::nearest_edge(&s.piece, at).is_some_and(|e| e.2 <= tol)
+                })
+                .map(|s| s.id);
+            if let Some(id) = self.canvas.menu_for {
+                self.selection = Selection::Piece(id);
+            }
+        }
+        if let Some(id) = self.canvas.menu_for {
+            response.context_menu(|ui| self.place_menu(ui, id));
+        }
     }
 
     fn pan_and_zoom(&mut self, ui: &egui::Ui, response: &Response) {
