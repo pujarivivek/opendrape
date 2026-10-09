@@ -183,3 +183,12 @@ view-front = Front
 view-back = Back
 view-left = Left side
 view-right = Right side
+
+gizmo-up = { $distance } up
+gizmo-down = { $distance } down
+gizmo-left = { $distance } to the form's left
+gizmo-right = { $distance } to the form's right
+gizmo-forward = { $distance } forward
+gizmo-back = { $distance } back
+gizmo-moved = { $distance }
+gizmo-turned = { $angle }°

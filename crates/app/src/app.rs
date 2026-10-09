@@ -378,12 +378,12 @@ impl OpenDrapeApp {
         if let Some(drawn) = viewport.ui(ui, rs, show) {
             self.view_camera = Some(drawn.camera);
             if sim.is_none() {
-                self.arrange(&drawn.response, &drawn.camera, &scene);
+                self.arrange(ui, &drawn.response, &drawn.camera, &scene);
             }
             if let Some(viewport) = self.viewport.as_mut() {
-                // A drag turns the camera.
+                // A drag that didn't grab the gizmo turns the camera.
                 let drag = drawn.response.drag_delta();
-                if drag != egui::Vec2::ZERO {
+                if drag != egui::Vec2::ZERO && !self.arranger.is_dragging() {
                     viewport.camera_mut().drag(drag.x, drag.y);
                 }
                 if drawn.response.hovered() {
@@ -405,15 +405,56 @@ impl OpenDrapeApp {
         }
     }
 
-    /// The pointer in the 3D view while arranging: a click picks a piece (or clears the
-    /// selection).
-    fn arrange(&mut self, response: &egui::Response, cam: &ScreenCamera, scene: &ArrangedScene) {
+    /// The pointer in the 3D view while arranging: clicks pick pieces, the selected piece's
+    /// gizmo moves and turns it, and the gizmo is drawn over the view.
+    fn arrange(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        cam: &ScreenCamera,
+        scene: &ArrangedScene,
+    ) {
+        let at = |p: egui::Pos2| glam::DVec2::new(f64::from(p.x), f64::from(p.y));
+        let shift = ui.input(|i| i.modifiers.shift);
+        let doc = &mut self.editor.doc;
+        let selection = &mut self.editor.selection;
+        if response.drag_started_by(egui::PointerButton::Primary)
+            && let Some(p) = ui.input(|i| i.pointer.press_origin())
+        {
+            self.arranger.press(cam, scene, selection, doc, at(p));
+        }
+        if self.arranger.is_dragging()
+            && let Some(p) = response.interact_pointer_pos()
+        {
+            self.arranger.drag_to(cam, doc, at(p), shift);
+        }
+        if response.drag_stopped() {
+            self.arranger.release(doc);
+        }
         if response.clicked()
             && let Some(p) = response.interact_pointer_pos()
         {
-            let at = glam::DVec2::new(f64::from(p.x), f64::from(p.y));
-            self.arranger
-                .click(cam, scene, &mut self.editor.selection, at);
+            self.arranger.click(cam, scene, selection, at(p));
+        }
+        if !self.arranger.is_dragging()
+            && let Some(p) = response.hover_pos()
+        {
+            self.arranger.hover(cam, scene, selection, at(p));
+        }
+        // Drawn where the piece is now, after this frame's drag.
+        let scene = self
+            .arranged
+            .scene(self.editor.doc.project(), self.stage.shoulder_y());
+        let painter = ui.painter_at(response.rect);
+        if let Some(gizmo) = Arranger::gizmo(cam, &scene, &self.editor.selection) {
+            let lit = self.arranger.active().or(self.arranger.hovered);
+            crate::arrange::overlay::paint(&painter, cam, &gizmo, lit);
+        }
+        if let (Some(text), Some(p)) = (
+            self.arranger.readout(self.editor.doc.project().units),
+            response.interact_pointer_pos(),
+        ) {
+            crate::arrange::overlay::paint_readout(&painter, p, text);
         }
     }
 
