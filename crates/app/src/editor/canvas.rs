@@ -511,9 +511,10 @@ impl PatternEditor {
                 }
             }
             Selection::Vertex(id, i) => {
-                let removed = self
-                    .doc
-                    .edit(|p| p.piece_mut(id).is_some_and(|piece| piece.remove_vertex(i)));
+                let removed = self.doc.edit(|p| {
+                    p.piece_mut(id)
+                        .is_some_and(|piece| geom::remove_vertex(piece, i))
+                });
                 if self.note_if_refused() {
                     // The notice says why.
                 } else if removed {

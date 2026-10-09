@@ -100,20 +100,34 @@ fn read_from<R: Read + Seek>(r: R) -> Result<Project, OdpError> {
         return Err(OdpError::TooLarge);
     }
     let text = std::str::from_utf8(&bytes).map_err(|e| OdpError::Corrupt(e.to_string()))?;
-    check_version(text)?;
-    let project: Project =
+    let found = check_version(text)?;
+    let mut project: Project =
         serde_json::from_str(text).map_err(|e| OdpError::Corrupt(e.to_string()))?;
+    if found == 1 {
+        upgrade_from_v1(&mut project);
+    }
     project.check().map_err(OdpError::Invalid)?;
     Ok(project)
 }
 
+/// Version 1 (M2a) had no seam allowances, notches, internal lines, folds or twins. Serde's
+/// field defaults already give a v1 file every new field except one set of edge properties per
+/// edge, which needs the edge count; add those, and mark the project as current.
+fn upgrade_from_v1(project: &mut Project) {
+    for piece in &mut project.pieces {
+        piece.edge_props = vec![opendrape_core::EdgeProps::default(); piece.edges.len()];
+    }
+    project.schema_version = SCHEMA_VERSION;
+}
+
 /// Reads only `schema_version` (other fields are skipped without building anything), so a file
-/// from a newer format is reported as such even when its contents have changed shape.
+/// from a newer format is reported as such even when its contents have changed shape. Returns
+/// the version found.
 ///
-/// Version 1 is the first format, so nothing is upgraded yet. When version 2 arrives, older
-/// documents will need a step here that parses them as a `serde_json::Value`, rewrites them to
-/// the new shape, and deserializes `Project` from that. Current files skip the `Value` entirely.
-fn check_version(text: &str) -> Result<(), OdpError> {
+/// Versions 1 and 2 parse directly into `Project` (version 1's missing fields take their
+/// defaults; see [`upgrade_from_v1`]). A future version that renames or reshapes fields will
+/// need a step that parses older documents as a `serde_json::Value` and rewrites them first.
+fn check_version(text: &str) -> Result<u64, OdpError> {
     #[derive(Deserialize)]
     struct Version {
         schema_version: Option<u64>,
@@ -130,7 +144,7 @@ fn check_version(text: &str) -> Result<(), OdpError> {
     if found == 0 {
         return Err(OdpError::Corrupt("format version 0".into()));
     }
-    Ok(())
+    Ok(found)
 }
 
 pub fn to_bytes(project: &Project) -> Result<Vec<u8>, OdpError> {

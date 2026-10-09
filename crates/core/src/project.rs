@@ -1,9 +1,10 @@
-use crate::{Piece, PieceId, Units};
+use crate::{Piece, PieceId, Point2, Side, Units};
 use serde::{Deserialize, Serialize};
 
 /// Version of the project format written by this build. Bump it when the format changes, and
-/// add a migration step in `opendrape-io`.
-pub const SCHEMA_VERSION: u32 = 1;
+/// add a migration step in `opendrape-io`. Version 2 added seam allowances, notches, internal
+/// lines, folds and twins (2026-10-09).
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Most pieces a project may hold.
 pub const MAX_PIECES: usize = 500;
@@ -48,6 +49,10 @@ pub enum ModelError {
     IdCounterBehind(PieceId),
     TooManyPoints(PieceId),
     NameTooLong(PieceId),
+    BadAllowance(PieceId),
+    BadNotch(PieceId),
+    BadLine(PieceId),
+    BadFold(PieceId),
     TooManyPieces,
     TooManyPointsInProject,
     IdCounterTooLarge,
@@ -66,6 +71,10 @@ impl std::fmt::Display for ModelError {
             Self::IdCounterBehind(id) => write!(f, "piece id {} is ahead of the id counter", id.0),
             Self::TooManyPoints(id) => write!(f, "piece {} has too many points", id.0),
             Self::NameTooLong(id) => write!(f, "the name of piece {} is too long", id.0),
+            Self::BadAllowance(id) => write!(f, "piece {} has an invalid seam allowance", id.0),
+            Self::BadNotch(id) => write!(f, "piece {} has an invalid notch", id.0),
+            Self::BadLine(id) => write!(f, "piece {} has an invalid internal line", id.0),
+            Self::BadFold(id) => write!(f, "piece {} has an invalid fold line", id.0),
             Self::TooManyPieces => write!(f, "the project has too many pieces"),
             Self::TooManyPointsInProject => write!(f, "the project has too many points"),
             Self::IdCounterTooLarge => write!(f, "the piece id counter is too large"),
@@ -101,39 +110,109 @@ impl Project {
     pub fn piece_mut(&mut self, id: PieceId) -> Option<&mut Piece> {
         self.pieces.iter_mut().find(|p| p.id == id)
     }
+    /// The stored piece an id belongs to, and whether the id names that piece or its twin.
+    pub fn owner(&self, id: PieceId) -> Option<(&Piece, Side)> {
+        self.pieces.iter().find_map(|p| {
+            if p.id == id {
+                Some((p, Side::Master))
+            } else if p.twin.as_ref().is_some_and(|t| t.id == id) {
+                Some((p, Side::Twin))
+            } else {
+                None
+            }
+        })
+    }
+    pub fn owner_mut(&mut self, id: PieceId) -> Option<(&mut Piece, Side)> {
+        self.pieces.iter_mut().find_map(|p| {
+            if p.id == id {
+                Some((p, Side::Master))
+            } else if p.twin.as_ref().is_some_and(|t| t.id == id) {
+                Some((p, Side::Twin))
+            } else {
+                None
+            }
+        })
+    }
+    /// The name shown for an id: the piece's, or its twin's.
+    pub fn name_of(&self, id: PieceId) -> Option<&str> {
+        match self.owner(id)? {
+            (p, Side::Master) => Some(&p.name),
+            (p, Side::Twin) => p.twin.as_ref().map(|t| t.name.as_str()),
+        }
+    }
+    /// Gives `master` a mirror-image twin called `name`, placed by `offset` (see [`crate::Twin`]),
+    /// and returns the twin's id. None when there is no such piece, or it is folded or already
+    /// paired.
+    pub fn add_twin(&mut self, master: PieceId, name: String, offset: Point2) -> Option<PieceId> {
+        let id = PieceId(self.next_piece_id);
+        let piece = self.piece_mut(master)?;
+        if piece.twin.is_some() || piece.fold.is_some() {
+            return None;
+        }
+        piece.twin = Some(crate::Twin { id, name, offset });
+        self.next_piece_id = self.next_piece_id.saturating_add(1);
+        Some(id)
+    }
+    /// Turns `master`'s twin into an ordinary piece with the twin's current shape, id and name.
+    pub fn break_twin(&mut self, master: PieceId) -> Option<PieceId> {
+        let piece = self.piece_mut(master)?;
+        let twin = piece.twin_shape()?;
+        piece.twin = None;
+        let id = twin.id;
+        self.pieces.push(twin);
+        Some(id)
+    }
+    /// Removes the piece or twin with this id and returns its shape. Removing a piece that has
+    /// a twin keeps the twin, as an ordinary piece.
     pub fn remove_piece(&mut self, id: PieceId) -> Option<Piece> {
-        let at = self.pieces.iter().position(|p| p.id == id)?;
-        Some(self.pieces.remove(at))
+        match self.owner(id)? {
+            (_, Side::Twin) => {
+                let (piece, _) = self.owner_mut(id)?;
+                let shape = piece.twin_shape();
+                piece.twin = None;
+                shape
+            }
+            (piece, Side::Master) => {
+                if piece.twin.is_some() {
+                    self.break_twin(id);
+                }
+                let at = self.pieces.iter().position(|p| p.id == id)?;
+                Some(self.pieces.remove(at))
+            }
+        }
     }
     /// Default name for the next new piece: "<prefix> <number>".
     pub fn next_piece_name(&self, prefix: &str) -> String {
         format!("{prefix} {}", self.next_piece_id)
     }
-    /// At most [`MAX_PIECES`] pieces and [`MAX_TOTAL_VERTICES`] points in all, every piece
-    /// valid, ids unique and below the id counter, and the counter itself at most
-    /// [`MAX_PIECE_ID`].
+    /// At most [`MAX_PIECES`] pieces and [`MAX_TOTAL_VERTICES`] points in all (a twin counts
+    /// as a piece with its own points), every piece valid, ids (pieces' and twins') unique and
+    /// below the id counter, and the counter itself at most [`MAX_PIECE_ID`].
     pub fn check(&self) -> Result<(), ModelError> {
-        if self.pieces.len() > MAX_PIECES {
+        let shapes = self.pieces.len() + self.pieces.iter().filter(|p| p.twin.is_some()).count();
+        if shapes > MAX_PIECES {
             return Err(ModelError::TooManyPieces);
         }
         if self.next_piece_id > MAX_PIECE_ID {
             return Err(ModelError::IdCounterTooLarge);
         }
         let mut seen = std::collections::BTreeSet::new();
-        let mut total_vertices = 0_usize;
+        let mut total_points = 0_usize;
         for p in &self.pieces {
             p.check()?;
-            if !seen.insert(p.id) {
-                return Err(ModelError::DuplicateId(p.id));
+            let copies = if p.twin.is_some() { 2 } else { 1 };
+            // At most MAX_PIECES pieces of at most MAX_VERTICES_PER_PIECE points: no overflow.
+            total_points += p.point_count() * copies;
+            for id in std::iter::once(p.id).chain(p.twin.as_ref().map(|t| t.id)) {
+                if !seen.insert(id) {
+                    return Err(ModelError::DuplicateId(id));
+                }
+                if id.0 >= self.next_piece_id {
+                    return Err(ModelError::IdCounterBehind(id));
+                }
             }
-            if p.id.0 >= self.next_piece_id {
-                return Err(ModelError::IdCounterBehind(p.id));
-            }
-            // Each piece is at most `MAX_VERTICES_PER_PIECE` long and there are at most
-            // `MAX_PIECES` of them, so this cannot overflow.
-            total_vertices += p.len();
         }
-        if total_vertices > MAX_TOTAL_VERTICES {
+        if total_points > MAX_TOTAL_VERTICES {
             return Err(ModelError::TooManyPointsInProject);
         }
         Ok(())
@@ -143,7 +222,7 @@ impl Project {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MAX_VERTICES_PER_PIECE, Point2};
+    use crate::{MAX_VERTICES_PER_PIECE, Point2, Side};
 
     fn tri() -> Piece {
         Piece::polygon(
@@ -247,7 +326,63 @@ mod tests {
 
     #[test]
     fn missing_optional_fields_get_defaults() {
-        let pr: Project = serde_json::from_str(r#"{"schema_version":1}"#).unwrap();
+        let json = format!(r#"{{"schema_version":{SCHEMA_VERSION}}}"#);
+        let pr: Project = serde_json::from_str(&json).unwrap();
         assert_eq!(pr, Project::new());
+    }
+
+    #[test]
+    fn twins_get_ids_and_names_and_can_be_broken_off() {
+        let mut pr = Project::new();
+        let a = pr.add_piece(tri());
+        let t = pr
+            .add_twin(a, "T (mirror)".into(), Point2::new(50.0, 0.0))
+            .unwrap();
+        assert_eq!(t, PieceId(2));
+        assert_eq!(
+            pr.add_twin(a, "again".into(), Point2::new(0.0, 0.0)),
+            None,
+            "one twin each"
+        );
+        assert!(matches!(pr.owner(t), Some((p, Side::Twin)) if p.id == a));
+        assert!(matches!(pr.owner(a), Some((_, Side::Master))));
+        assert_eq!(pr.name_of(t), Some("T (mirror)"));
+        assert!(pr.piece(t).is_none(), "piece() finds stored pieces only");
+        assert_eq!(pr.check(), Ok(()));
+        assert_eq!(pr.break_twin(a), Some(t));
+        let broken = pr.piece(t).unwrap();
+        assert_eq!(broken.vertices[1].pos, Point2::new(40.0, 0.0)); // (10,0) reflected, +50
+        assert!(pr.piece(a).unwrap().twin.is_none());
+        assert_eq!(pr.check(), Ok(()));
+    }
+
+    #[test]
+    fn removing_a_paired_piece_keeps_its_twin() {
+        let mut pr = Project::new();
+        let a = pr.add_piece(tri());
+        let t = pr.add_twin(a, "T".into(), Point2::new(50.0, 0.0)).unwrap();
+        assert!(pr.remove_piece(a).is_some());
+        assert!(pr.piece(t).is_some(), "the twin becomes an ordinary piece");
+        let b = pr.add_piece(tri());
+        let u = pr.add_twin(b, "U".into(), Point2::new(50.0, 0.0)).unwrap();
+        assert!(pr.remove_piece(u).is_some());
+        assert!(pr.piece(b).unwrap().twin.is_none() && pr.owner(u).is_none());
+    }
+
+    #[test]
+    fn check_counts_twins_and_refuses_clashing_ids() {
+        let mut pr = Project::new();
+        let a = pr.add_piece(tri());
+        pr.add_twin(a, "T".into(), Point2::new(50.0, 0.0));
+        let mut clash = pr.clone();
+        clash.pieces[0].twin.as_mut().unwrap().id = a;
+        assert_eq!(clash.check(), Err(ModelError::DuplicateId(a)));
+        let mut ahead = pr.clone();
+        ahead.pieces[0].twin.as_mut().unwrap().id = PieceId(99);
+        assert_eq!(ahead.check(), Err(ModelError::IdCounterBehind(PieceId(99))));
+        let mut folded = pr.clone();
+        folded.pieces[0].fold = Some(1);
+        assert_eq!(folded.check(), Err(ModelError::BadFold(a)));
+        assert_eq!(SCHEMA_VERSION, 2);
     }
 }

@@ -7,8 +7,9 @@ mod project;
 mod units;
 
 pub use piece::{
-    Edge, HandleEnd, MAX_COORDINATE_MM, MAX_NAME_CHARS, MAX_VERTICES_PER_PIECE, Piece, PieceId,
-    Point2, Vertex, VertexKind,
+    DEFAULT_ALLOWANCE_MM, Edge, EdgeProps, HEM_ALLOWANCE_MM, HandleEnd, InternalLine, LineKind,
+    MAX_ALLOWANCE_MM, MAX_COORDINATE_MM, MAX_NAME_CHARS, MAX_VERTICES_PER_PIECE, Notch, NotchStyle,
+    Piece, PieceId, Point2, Side, Twin, Vertex, VertexKind,
 };
 pub use project::{
     MAX_PIECE_ID, MAX_PIECES, MAX_TOTAL_VERTICES, ModelError, Project, SCHEMA_VERSION,

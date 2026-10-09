@@ -198,13 +198,16 @@ pub fn centroid(piece: &Piece) -> Point2 {
 }
 
 /// Adds a vertex on edge `i` at curve parameter `t`; curves are split exactly. Returns the new
-/// vertex's index, or `None` when `t` is within 2% of either end (that would duplicate a vertex).
+/// vertex's index, or `None` when `t` is within 2% of either end (that would duplicate a vertex)
+/// or the edge is the piece's fold line (it must stay one straight edge). Notches keep their
+/// places.
 pub fn split_edge(piece: &mut Piece, i: usize, t: f64) -> Option<usize> {
-    if !(0.02..=0.98).contains(&t) {
+    if !(0.02..=0.98).contains(&t) || piece.fold == Some(i) {
         return None;
     }
     let seg = edge_seg(piece, i);
     let at = cp(seg.eval(t));
+    let first_len = seg.subsegment(0.0..t).arclen(ACCURACY);
     let (first, second, vertex) = match seg {
         PathSeg::Cubic(c) => {
             let (a, b) = (c.subsegment(0.0..t), c.subsegment(t..1.0));
@@ -222,10 +225,17 @@ pub fn split_edge(piece: &mut Piece, i: usize, t: f64) -> Option<usize> {
         }
         _ => (Edge::Line, Edge::Line, Vertex::corner(at)),
     };
-    piece.edges[i] = first;
-    piece.vertices.insert(i + 1, vertex);
-    piece.edges.insert(i + 1, second);
-    Some(i + 1)
+    Some(piece.split_edge_at(i, vertex, first, second, first_len))
+}
+
+/// Removes vertex `i` (see [`Piece::remove_vertex`]), measuring the edge before it so its
+/// notches keep their places. Refused (false) below 4 vertices.
+pub fn remove_vertex(piece: &mut Piece, i: usize) -> bool {
+    if piece.len() <= 3 {
+        return false;
+    }
+    let prev_len = edge_length(piece, piece.prev(i));
+    piece.remove_vertex(i, prev_len)
 }
 
 /// Changes edge `i` to `length` mm, keeping its `anchor` end fixed. A straight edge keeps its
@@ -404,6 +414,18 @@ mod tests {
         assert_eq!(split_edge(&mut s, 0, 0.005), None);
         assert_eq!(split_edge(&mut s, 0, 0.999), None);
         assert_eq!(s.len(), 4);
+    }
+
+    #[test]
+    fn splitting_keeps_notches_and_never_splits_the_fold() {
+        let mut s = square();
+        s.notches = vec![opendrape_core::Notch::new(0, 60.0)];
+        assert_eq!(split_edge(&mut s, 0, 0.25), Some(1));
+        assert_eq!(s.notches, vec![opendrape_core::Notch::new(1, 35.0)]);
+        assert!(remove_vertex(&mut s, 1));
+        assert_eq!(s.notches, vec![opendrape_core::Notch::new(0, 60.0)]);
+        s.fold = Some(3);
+        assert_eq!(split_edge(&mut s, 3, 0.5), None);
     }
 
     #[test]
