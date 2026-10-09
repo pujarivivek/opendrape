@@ -11,6 +11,9 @@ use opendrape_core::{Edge, Piece, Point2, Vertex};
 const ACCURACY: f64 = 1e-4;
 /// Longest edge a student can type (10 m), so a mistyped number can't create absurd pieces.
 pub const MAX_EDGE_MM: f64 = 10_000.0;
+/// Shortest edge a student can type (0.1 mm), so a typed length can never collapse an edge to a
+/// point that can no longer be resized.
+pub const MIN_EDGE_MM: f64 = 0.1;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Anchor {
@@ -79,7 +82,25 @@ pub fn nearest_edge(piece: &Piece, p: Point2) -> Option<(usize, f64, f64)> {
         .min_by(|a, b| a.2.total_cmp(&b.2))
 }
 
+/// The larger of |x| and |y| of a point.
+fn largest_abs(p: Point) -> f64 {
+    p.x.abs().max(p.y.abs())
+}
+
 fn flatten(path: &BezPath, tolerance: f64) -> Vec<Point2> {
+    // The point count grows with the square root of size over tolerance, so a huge coordinate
+    // (from a corrupt file) at a fixed tolerance would flood memory. Flooring the tolerance
+    // relative to the path's size bounds the count for any finite input.
+    let extent = path.elements().iter().fold(1.0_f64, |m, el| match *el {
+        PathEl::MoveTo(p) | PathEl::LineTo(p) => m.max(largest_abs(p)),
+        PathEl::QuadTo(p1, p2) => m.max(largest_abs(p1)).max(largest_abs(p2)),
+        PathEl::CurveTo(p1, p2, p3) => m
+            .max(largest_abs(p1))
+            .max(largest_abs(p2))
+            .max(largest_abs(p3)),
+        PathEl::ClosePath => m,
+    });
+    let tolerance = tolerance.max(extent * 1e-7);
     let mut out = Vec::new();
     kurbo::flatten(path.iter(), tolerance, |el| {
         if let PathEl::MoveTo(p) | PathEl::LineTo(p) = el {
@@ -166,9 +187,10 @@ pub fn split_edge(piece: &mut Piece, i: usize, t: f64) -> Option<usize> {
 
 /// Changes edge `i` to `length` mm, keeping its `anchor` end fixed. A straight edge keeps its
 /// direction; a curve is scaled about the anchor, so its shape is kept. Returns false (piece
-/// unchanged) for a length that is not finite, ≤ 0 or above [`MAX_EDGE_MM`], or a zero-length edge.
+/// unchanged) for a length that is not finite or outside [`MIN_EDGE_MM`]..=[`MAX_EDGE_MM`], or a
+/// zero-length edge.
 pub fn set_edge_length(piece: &mut Piece, i: usize, length: f64, anchor: Anchor) -> bool {
-    if !(length.is_finite() && length > 0.0 && length <= MAX_EDGE_MM) {
+    if !(length.is_finite() && (MIN_EDGE_MM..=MAX_EDGE_MM).contains(&length)) {
         return false;
     }
     let current = edge_length(piece, i);
@@ -266,6 +288,17 @@ mod tests {
     }
 
     #[test]
+    fn flattening_huge_coordinates_stays_bounded() {
+        // A corrupt or hostile file can hold 1e12 mm coordinates; the point count must not
+        // explode with them.
+        let mut s = Piece::rectangle(PieceId(1), "H", p(0.0, 0.0), 1e12, 1e12);
+        s.set_curved(0, true);
+        s.set_handle(0, opendrape_core::HandleEnd::Start, p(3e11, -2e11));
+        let pts = outline_points(&s, 0.001);
+        assert!(pts.len() < 100_000, "{} points", pts.len());
+    }
+
+    #[test]
     fn splitting_a_line_inserts_a_corner() {
         let mut s = square();
         assert_eq!(split_edge(&mut s, 0, 0.25), Some(1));
@@ -322,7 +355,15 @@ mod tests {
 
     #[test]
     fn set_edge_length_rejects_nonsense() {
-        for bad in [0.0, -5.0, f64::NAN, f64::INFINITY, MAX_EDGE_MM + 1.0] {
+        for bad in [
+            0.0,
+            -5.0,
+            1e-9,
+            0.01,
+            f64::NAN,
+            f64::INFINITY,
+            MAX_EDGE_MM + 1.0,
+        ] {
             let mut s = square();
             assert!(!set_edge_length(&mut s, 0, bad, Anchor::Start), "{bad}");
             assert_eq!(s, square());

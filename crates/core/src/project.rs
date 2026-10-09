@@ -32,6 +32,7 @@ pub enum ModelError {
     TooFewVertices(PieceId),
     EdgeCountMismatch(PieceId),
     NotFinite(PieceId),
+    OutOfRange(PieceId),
     DuplicateId(PieceId),
     IdCounterBehind(PieceId),
 }
@@ -44,6 +45,7 @@ impl std::fmt::Display for ModelError {
                 write!(f, "piece {} has the wrong number of edges", id.0)
             }
             Self::NotFinite(id) => write!(f, "piece {} contains an invalid number", id.0),
+            Self::OutOfRange(id) => write!(f, "piece {} is too far from the origin", id.0),
             Self::DuplicateId(id) => write!(f, "piece id {} is used twice", id.0),
             Self::IdCounterBehind(id) => write!(f, "piece id {} is ahead of the id counter", id.0),
         }

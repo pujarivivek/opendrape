@@ -103,6 +103,10 @@ pub enum HandleEnd {
     End,
 }
 
+/// Largest distance (mm) a point may lie from the pattern origin on either axis: 1 km. Anything
+/// further only comes from a corrupt or hostile file, and would overwhelm the curve maths.
+pub const MAX_COORDINATE_MM: f64 = 1_000_000.0;
+
 /// One closed pattern piece.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Piece {
@@ -265,7 +269,8 @@ impl Piece {
         self.edges.remove(i);
         true
     }
-    /// At least 3 vertices, one edge per vertex, and only finite numbers.
+    /// At least 3 vertices, one edge per vertex, only finite numbers, and every point within
+    /// [`MAX_COORDINATE_MM`] of the origin.
     pub fn check(&self) -> Result<(), ModelError> {
         if self.vertices.len() < 3 {
             return Err(ModelError::TooFewVertices(self.id));
@@ -279,12 +284,25 @@ impl Piece {
                 Edge::Line => true,
                 Edge::Curve { c1, c2 } => c1.is_finite() && c2.is_finite(),
             });
-        if finite {
+        if !finite {
+            return Err(ModelError::NotFinite(self.id));
+        }
+        let in_range = self.vertices.iter().all(|v| within_range(v.pos))
+            && self.edges.iter().all(|e| match e {
+                Edge::Line => true,
+                Edge::Curve { c1, c2 } => within_range(*c1) && within_range(*c2),
+            });
+        if in_range {
             Ok(())
         } else {
-            Err(ModelError::NotFinite(self.id))
+            Err(ModelError::OutOfRange(self.id))
         }
     }
+}
+
+/// Whether both coordinates of `p` are within [`MAX_COORDINATE_MM`] of the origin.
+fn within_range(p: Point2) -> bool {
+    p.x.abs() <= MAX_COORDINATE_MM && p.y.abs() <= MAX_COORDINATE_MM
 }
 
 #[cfg(test)]
@@ -422,6 +440,13 @@ mod tests {
         let mut nan = square();
         nan.vertices[2].pos.x = f64::NAN;
         assert_eq!(nan.check(), Err(ModelError::NotFinite(PieceId(1))));
+        let mut far = square();
+        far.vertices[2].pos.x = 2e6;
+        assert_eq!(far.check(), Err(ModelError::OutOfRange(PieceId(1))));
+        let mut far_handle = square();
+        far_handle.set_curved(0, true);
+        far_handle.set_handle(0, HandleEnd::Start, p(-2e6, 0.0));
+        assert_eq!(far_handle.check(), Err(ModelError::OutOfRange(PieceId(1))));
     }
 
     #[test]
