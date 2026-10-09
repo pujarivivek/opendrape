@@ -1792,6 +1792,72 @@ fn a_gizmo_drag_still_held_when_play_is_pressed_ends_where_it_is() {
     assert_eq!(pieces(&h), 1);
 }
 
+#[test]
+fn a_press_on_a_handle_let_go_beyond_its_reach_is_still_the_gizmos_click() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    let (cam, g) = piece_with_gizmo(&mut h);
+    // Pressed 7 points off the x arrow (it reaches 8), let go 10 points off it: less than the
+    // 6 points that make a drag of it, so it is a click.
+    let on_arrow = near_tip(&cam, &g, 0);
+    let tip = cam.project(g.arrow_tip(0)).unwrap();
+    let side = (tip - cam.project(g.centre).unwrap()).normalize().perp();
+    let (pressed, released) = (on_arrow + side * 7.0, on_arrow + side * 10.0);
+    assert_eq!(g.hit(&cam, pressed), Some(Handle::Move(0)));
+    assert_eq!(g.hit(&cam, released), None);
+
+    // A click that begins and ends there is a click on the background.
+    click_at(&mut h, released);
+    assert_eq!(h.state().editor().selection, Selection::None);
+    h.state_mut().editor_mut().selection = Selection::Piece(PieceId(1));
+    h.run();
+
+    // One that begins on the arrow is not, wherever the button comes up.
+    h.hover_at(screen(pressed));
+    h.step();
+    pointer_button(&mut h, pressed, true);
+    h.step();
+    h.hover_at(screen(released));
+    h.step();
+    pointer_button(&mut h, released, false);
+    h.step();
+    assert_eq!(
+        h.state().editor().selection,
+        Selection::Piece(PieceId(1)),
+        "the piece is still selected"
+    );
+    assert!(!h.state().arranger().is_dragging());
+    assert_eq!(own_place(&h), None, "and nothing moved");
+    // The next click is its own again, even one that comes down and up in a single frame (the
+    // press is then not seen on its own: the release stands for it).
+    let one_frame = |h: &mut App, at: DVec2| {
+        let p = screen(at);
+        h.input_mut().events.push(egui::Event::PointerMoved(p));
+        for pressed in [true, false] {
+            h.input_mut().events.push(egui::Event::PointerButton {
+                pos: p,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        h.step();
+    };
+    one_frame(&mut h, pressed);
+    assert_eq!(
+        h.state().editor().selection,
+        Selection::Piece(PieceId(1)),
+        "a quick click on the arrow"
+    );
+    one_frame(&mut h, released);
+    assert_eq!(
+        h.state().editor().selection,
+        Selection::None,
+        "a quick click beside it is judged by itself, not by the press before"
+    );
+}
+
 // The rings in the views the student gets without touching the camera: as the app opens, and
 // from each of the four view buttons, with the piece where it starts and lower down.
 

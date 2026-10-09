@@ -948,6 +948,62 @@ fn a_ring_dragged_out_and_back_to_the_start_in_several_moves_changes_nothing() {
 }
 
 #[test]
+fn a_click_that_began_on_a_handle_is_the_gizmos_wherever_the_button_comes_up() {
+    let (mut doc, a, sel) = one_piece();
+    let b = doc.edit(|p| {
+        p.add_piece(Piece::rectangle(
+            PieceId(0),
+            "Back",
+            Point2::new(500.0, 0.0),
+            300.0,
+            400.0,
+        ))
+    });
+    let mut cache = SceneCache::default();
+    let g = gizmo(&doc, &mut cache, &sel);
+    let cam = camera();
+    // Pressed 7 points off the y arrow, which grabs it (8 points is the reach), and released
+    // 10 points off it, which does not.
+    let on_arrow = near_tip(&g, &cam, 1);
+    let tip = cam.project(g.arrow_tip(1)).unwrap();
+    let side = (tip - cam.project(g.centre).unwrap()).normalize().perp();
+    let (pressed, released) = (on_arrow + side * 7.0, on_arrow + side * 10.0);
+    assert_eq!(g.hit(&cam, pressed), Some(Handle::Move(1)));
+    assert_eq!(g.hit(&cam, released), None);
+    // The back hangs right behind the release point, 20 cm nearer the viewer than the front: a
+    // click there picks it.
+    let (origin, dir) = cam.ray(released);
+    let t = (g.centre - origin).dot(dir) - 0.2;
+    doc.edit(|p| p.set_placement(b, Some(Placement::at((origin + dir * t).to_array()))));
+    let scene = cache.scene(doc.project(), SHOULDER);
+    assert_eq!(scene.pick(origin, dir), Some(b));
+
+    let mut arranger = Arranger::default();
+    // With the press unknown, a click there is a click on the background.
+    let mut selection = sel;
+    arranger.click(&cam, &scene, &mut selection, released);
+    assert_eq!(selection, Selection::Piece(b));
+    // With the press known, it is the arrow's: the piece stays selected and nothing is picked.
+    arranger.pressed(pressed);
+    let mut selection = sel;
+    arranger.click(&cam, &scene, &mut selection, released);
+    assert_eq!(
+        selection,
+        Selection::Piece(a),
+        "a press on a handle is never a background click"
+    );
+    // Once the button is up, the next click is judged by itself again.
+    arranger.released();
+    arranger.click(&cam, &scene, &mut selection, released);
+    assert_eq!(selection, Selection::Piece(b));
+    // A press off the handle that comes up on it is still the handle's, as it was before.
+    arranger.pressed(released);
+    let mut selection = sel;
+    arranger.click(&cam, &scene, &mut selection, pressed);
+    assert_eq!(selection, sel);
+}
+
+#[test]
 fn a_piece_that_had_its_own_place_gets_it_back_when_a_drag_nets_to_nothing() {
     let cam = camera();
     let (mut doc, id, sel) = one_piece();

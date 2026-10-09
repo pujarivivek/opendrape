@@ -58,6 +58,8 @@ pub struct Arranger {
     /// The gizmo handle under the pointer, drawn highlighted.
     pub hovered: Option<Handle>,
     drag: Option<GizmoDrag>,
+    /// Where the button that is down (or has just come up) went down in the view.
+    pressed_at: Option<DVec2>,
 }
 
 impl Arranger {
@@ -74,9 +76,23 @@ impl Arranger {
         Some(Gizmo::new(cam, DVec3::from_array(panel.placement.position)))
     }
 
-    /// A click: the piece under the pointer becomes the selection (in the pattern window too);
-    /// a click on nothing clears it. A click on a handle of the selected piece's gizmo is the
-    /// gizmo's: it neither clears the selection nor picks the piece behind the handle.
+    /// A button went down in the view at `pos`. A click that follows is judged by this too: a
+    /// press that began on a handle belongs to the gizmo, even if the button comes up beyond the
+    /// handle's reach.
+    pub fn pressed(&mut self, pos: DVec2) {
+        self.pressed_at = Some(pos);
+    }
+
+    /// The button came up: the press is over.
+    pub fn released(&mut self) {
+        self.pressed_at = None;
+    }
+
+    /// A click at `pos`: the piece under the pointer becomes the selection (in the pattern
+    /// window too); a click on nothing clears it. A click that began or ended on a handle of the
+    /// selected piece's gizmo is the gizmo's: it neither clears the selection nor picks the piece
+    /// behind the handle. (It began where [`Self::pressed`] was told, if it was: a click's press
+    /// and release can be up to a few points apart.)
     pub fn click(
         &mut self,
         cam: &ScreenCamera,
@@ -84,7 +100,11 @@ impl Arranger {
         selection: &mut Selection,
         pos: DVec2,
     ) {
-        if Self::handle_at(cam, scene, selection, pos).is_some() {
+        let began = self.pressed_at.unwrap_or(pos);
+        if [began, pos]
+            .into_iter()
+            .any(|at| Self::handle_at(cam, scene, selection, at).is_some())
+        {
             return;
         }
         let (origin, dir) = cam.ray(pos);

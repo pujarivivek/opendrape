@@ -408,6 +408,7 @@ impl OpenDrapeApp {
                 // No arranging now (a drape, or no view to arrange in): a gizmo drag still held
                 // ends where it is, and nothing is lit.
                 self.arranger.release(&mut self.editor.doc);
+                self.arranger.released();
                 self.arranger.hovered = None;
             }
         }
@@ -456,6 +457,15 @@ impl OpenDrapeApp {
         if self.arranger.is_dragging() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.arranger.cancel(&mut editor.doc);
         }
+        // Where a button went down in the view: a click is judged by that as well as by where
+        // the button comes up (egui no longer says, by then). A press and its release in one
+        // frame leave no trace of the press; the release stands for it.
+        if ui.input(|i| i.pointer.any_pressed())
+            && response.is_pointer_button_down_on()
+            && let Some(p) = ui.input(|i| i.pointer.press_origin())
+        {
+            self.arranger.pressed(at(p));
+        }
         if response.drag_started_by(egui::PointerButton::Primary)
             && let Some(p) = ui.input(|i| i.pointer.press_origin())
         {
@@ -485,6 +495,9 @@ impl OpenDrapeApp {
             self.arranger
                 .click(cam, scene, &mut editor.selection, at(p));
             self.menu_for = editor.selection.piece();
+        }
+        if ui.input(|i| i.pointer.any_released()) {
+            self.arranger.released();
         }
         if let Some(id) = self.menu_for {
             response.context_menu(|ui| editor.place_menu(ui, id));
