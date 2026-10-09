@@ -621,3 +621,183 @@ fn selection_survives_undo_of_its_piece() {
     h.run();
     assert_eq!(h.state().doc.project().pieces.len(), 1);
 }
+
+fn piece_of(h: &H, id: PieceId) -> Piece {
+    h.state().doc.project().piece(id).unwrap().clone()
+}
+
+fn field_text(h: &H, label: &str) -> String {
+    h.get_by_role_and_label(Role::TextInput, label)
+        .value()
+        .unwrap_or_default()
+}
+
+/// Clicks the property field `label`, replaces its text with `text` and presses Enter.
+fn type_into(h: &mut H, label: &str, text: &str) {
+    h.get_by_role_and_label(Role::TextInput, label).click();
+    h.run();
+    cmd(h, Key::A);
+    h.get_by_role_and_label(Role::TextInput, label)
+        .type_text(text);
+    h.run();
+    key(h, Key::Enter);
+}
+
+fn untouched_rectangle(id: PieceId) -> Piece {
+    Piece::rectangle(id, "Front", Point2::new(100.0, 100.0), 300.0, 400.0)
+}
+
+#[test]
+fn panel_sets_an_edge_length() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    click(&mut h, 250.0, 100.0);
+    assert_eq!(h.state().selection, Selection::Edge(id, 0));
+    assert_eq!(field_text(&h, "Length"), "30.0");
+    type_into(&mut h, "Length", "45");
+    let p = piece_of(&h, id);
+    assert!((opendrape_geom::edge_length(&p, 0) - 450.0).abs() < 1e-9);
+    assert_eq!(
+        p.vertices[0].pos,
+        Point2::new(100.0, 100.0),
+        "the start point stays"
+    );
+    assert_eq!(field_text(&h, "Length"), "45.0");
+    cmd(&mut h, Key::Z);
+    assert_eq!(piece_of(&h, id), untouched_rectangle(id), "one undo step");
+}
+
+#[test]
+fn panel_refuses_nonsense_lengths() {
+    for text in ["abc", "-5", "0", "99999"] {
+        let mut h = harness();
+        let id = with_rectangle(&mut h);
+        click(&mut h, 250.0, 100.0);
+        type_into(&mut h, "Length", text);
+        assert_eq!(piece_of(&h, id), untouched_rectangle(id), "{text}");
+        assert!(h.state().notice.is_some(), "{text}");
+    }
+}
+
+#[test]
+fn keeping_the_end_point_fixed() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    click(&mut h, 250.0, 100.0);
+    h.get_by_label("End point").click();
+    h.run();
+    type_into(&mut h, "Length", "45");
+    let p = piece_of(&h, id);
+    assert_eq!(p.vertices[1].pos, Point2::new(400.0, 100.0));
+    assert_eq!(p.vertices[0].pos, Point2::new(-50.0, 100.0));
+}
+
+#[test]
+fn curved_checkbox_bends_the_edge() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    click(&mut h, 250.0, 100.0);
+    h.get_by_label("Curved").click();
+    h.run();
+    assert!(matches!(piece_of(&h, id).edges[0], Edge::Curve { .. }));
+    cmd(&mut h, Key::Z);
+    assert_eq!(piece_of(&h, id).edges[0], Edge::Line);
+}
+
+#[test]
+fn renaming_a_piece_and_setting_its_grain() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    click(&mut h, 250.0, 300.0);
+    assert_eq!(field_text(&h, "Name"), "Front");
+    h.get_by_label("1200.0 cm²"); // 30 × 40 cm
+    h.get_by_label("140.0 cm");
+    type_into(&mut h, "Name", "Front skirt");
+    type_into(&mut h, "Grain angle", "45");
+    let p = piece_of(&h, id);
+    assert_eq!((p.name.as_str(), p.grain_deg), ("Front skirt", 45.0));
+}
+
+#[test]
+fn moving_a_point_by_typing_its_position() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    click(&mut h, 100.0, 100.0);
+    assert_eq!(field_text(&h, "X"), "10.0");
+    type_into(&mut h, "X", "12");
+    type_into(&mut h, "Y", "-3,5");
+    assert_eq!(piece_of(&h, id).vertices[0].pos, Point2::new(120.0, -35.0));
+    assert_eq!(h.state().selection, Selection::Vertex(id, 0));
+}
+
+#[test]
+fn inches_change_what_is_shown_not_the_pattern() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    click(&mut h, 250.0, 100.0);
+    h.get_by_label("inch").click();
+    h.run();
+    assert_eq!(field_text(&h, "Length"), "11.81");
+    assert_eq!(piece_of(&h, id), untouched_rectangle(id));
+    type_into(&mut h, "Length", "12");
+    assert!((opendrape_geom::edge_length(&piece_of(&h, id), 0) - 304.8).abs() < 1e-9);
+}
+
+#[test]
+fn fit_shows_every_piece() {
+    let mut h = harness();
+    with_rectangle(&mut h);
+    h.state_mut().doc.edit(|p| {
+        p.add_piece(Piece::rectangle(
+            PieceId(0),
+            "Far",
+            Point2::new(5000.0, 3000.0),
+            200.0,
+            200.0,
+        ))
+    });
+    h.run();
+    key(&mut h, Key::F);
+    let ed = h.state();
+    for p in [Point2::new(100.0, 100.0), Point2::new(5200.0, 3200.0)] {
+        assert!(
+            ed.canvas_rect
+                .contains(ed.view.to_screen(ed.canvas_rect, p)),
+            "{p:?}"
+        );
+    }
+}
+
+#[test]
+fn clicking_away_applies_the_typed_length_to_the_right_edge() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    click(&mut h, 250.0, 100.0);
+    h.get_by_role_and_label(Role::TextInput, "Length").click();
+    h.run();
+    cmd(&mut h, Key::A);
+    h.get_by_role_and_label(Role::TextInput, "Length")
+        .type_text("45");
+    h.run();
+    click(&mut h, 100.0, 300.0); // the left edge
+    let p = piece_of(&h, id);
+    assert!(
+        (opendrape_geom::edge_length(&p, 0) - 450.0).abs() < 1e-9,
+        "typed into the bottom edge"
+    );
+    assert!(
+        (opendrape_geom::edge_length(&p, 3) - 400.0).abs() < 1e-9,
+        "left edge untouched"
+    );
+    assert_eq!(h.state().selection, Selection::Edge(id, 3));
+}
+
+#[test]
+fn status_bar_explains_the_current_tool() {
+    let mut h = harness();
+    h.get_by_label_contains("Click to select");
+    key(&mut h, Key::H);
+    h.get_by_label_contains("press and drag to make a curve point");
+    click(&mut h, 100.0, 100.0);
+    h.get_by_label_contains("Type a number for an exact length");
+}

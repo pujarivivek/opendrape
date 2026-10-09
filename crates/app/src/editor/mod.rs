@@ -4,6 +4,7 @@ mod canvas;
 mod document;
 mod length_box;
 mod paint;
+mod panel;
 mod view;
 
 pub use canvas::PenPoint;
@@ -117,6 +118,7 @@ pub struct PatternEditor {
     /// Why the last action was refused, shown in the status bar until the next click.
     pub notice: Option<String>,
     canvas: canvas::CanvasState,
+    panel: panel::PanelState,
     fit_pending: bool,
 }
 
@@ -137,6 +139,7 @@ impl PatternEditor {
             canvas_rect: egui::Rect::NOTHING,
             notice: None,
             canvas: canvas::CanvasState::default(),
+            panel: panel::PanelState::default(),
             fit_pending: true,
         }
     }
@@ -210,6 +213,11 @@ impl PatternEditor {
         }
         self.selection = self.selection.validated(self.doc.project());
         egui::Panel::top("pattern_tools").show(ui, |ui| self.toolbar(ui));
+        egui::Panel::bottom("pattern_status").show(ui, |ui| self.status_bar(ui));
+        egui::Panel::right("pattern_properties")
+            .resizable(false)
+            .exact_size(240.0)
+            .show(ui, |ui| self.properties(ui));
         egui::CentralPanel::default().show(ui, |ui| self.canvas_ui(ui, keys_free));
     }
 
