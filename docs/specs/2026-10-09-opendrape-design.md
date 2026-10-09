@@ -168,6 +168,10 @@ Each milestone ends with a **GitHub Release** (installers + portable ZIP) and a 
 7. **No Windows machine in hand** → WARP/GL CI renders; recruit 2–3 student testers in India/Africa by M3.
 8. **AI-written regressions** → small PRs, CI gates, a `CONTRACTS.md` per crate, golden tests.
 
+## Status
+
+- **M0 Foundations: complete (2026-10-09).** Public repo https://github.com/pujarivivek/opendrape, CI green on Linux/Windows/macOS, nightly installers published. Windows start-up on real hardware still to be confirmed by a tester.
+
 ## On approval: next steps
 1. `git init` in `/Users/vivekpuajri/Developer/vibe-clo3d`, delete the stray `firebase-debug.log`, and save this plan as `docs/specs/2026-10-09-opendrape-design.md`.
 2. Save memory notes: user is a non-developer and Claude writes all code; OpenDrape key decisions.
