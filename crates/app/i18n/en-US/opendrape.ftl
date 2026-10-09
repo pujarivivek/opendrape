@@ -178,6 +178,7 @@ note-unmeshable = { $name } couldn't be made into fabric.
 note-cutout-left-out = A cut-out in { $name } touches its outline or another cut-out, or lies outside the piece, so it was left out.
 note-lengths-differ = Seam { $number }: the sides' lengths differ by { $difference }; the longer one gathers as ease.
 note-starts-inside = { $name } starts inside the form; move it out first.
+note-more = …and { $count } more
 note-went-wrong = The drape went wrong and was reset. Check for seams that pull pieces through the form.
 
 view-front = Front

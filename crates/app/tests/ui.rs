@@ -279,6 +279,43 @@ fn a_piece_that_cannot_be_made_into_fabric_is_named() {
 }
 
 #[test]
+fn only_five_drape_notes_are_listed_and_the_rest_are_counted() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    // Eight outlines that cross themselves: eight notes.
+    h.state_mut().editor_mut().doc.edit(|p| {
+        for k in 0..8 {
+            p.add_piece(Piece::polygon(
+                PieceId(0),
+                format!("Bow {}", k + 1),
+                &[
+                    Point2::new(0.0, 0.0),
+                    Point2::new(100.0, 100.0),
+                    Point2::new(100.0, 0.0),
+                    Point2::new(0.0, 100.0),
+                ],
+            ));
+        }
+    });
+    h.run();
+    h.get_by_label("Play").click();
+    h.run_steps(2);
+    wait_until(&mut h, "the drape", |a| a.sim_frame().is_some());
+    h.run_steps(2);
+    for k in 1..=5 {
+        h.get_by_label(&format!(
+            "Bow {k} couldn't be made into fabric: its outline crosses itself."
+        ));
+    }
+    assert!(
+        h.query_by_label("Bow 6 couldn't be made into fabric: its outline crosses itself.")
+            .is_none()
+    );
+    h.get_by_label("…and 3 more");
+}
+
+#[test]
 fn play_with_nothing_drawn_shows_just_the_form() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = harness(dir.path(), SharedState::default());

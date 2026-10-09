@@ -344,8 +344,13 @@ impl OpenDrapeApp {
             ui.label(tr!("hint-draping"));
         }
         if let Some(frame) = runner.latest() {
-            for note in frame.notes.iter() {
+            for note in frame.notes.iter().take(MAX_NOTES_SHOWN) {
                 ui.colored_label(warn, note_text(note, self.editor.doc.project()));
+            }
+            // A big pattern can have many: the 3D view must not shrink to nothing under them.
+            let more = frame.notes.len().saturating_sub(MAX_NOTES_SHOWN);
+            if more > 0 {
+                ui.colored_label(warn, tr!("note-more", count = more));
             }
         }
     }
@@ -883,6 +888,9 @@ enum Toolbar {
     /// Turn the camera to look from this side of the form.
     Look(PlaceAt),
 }
+
+/// Most drape notes the 3D view lists; the rest are counted ("…and 3 more").
+const MAX_NOTES_SHOWN: usize = 5;
 
 /// A drape note as the student reads it, naming pieces as the project does now.
 fn note_text(note: &DrapeNote, project: &Project) -> String {
