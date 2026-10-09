@@ -2,6 +2,7 @@ use egui_kittest::{
     Harness,
     kittest::{NodeT, Queryable},
 };
+use opendrape::editor::{Selection, Tool};
 use opendrape::gpu::{Decision, GpuChoice, GpuState, Reason, StateStore};
 use opendrape::{FileDialogs, OpenDrapeApp, Shared, SharedState, Startup};
 use opendrape_core::{Piece, PieceId, Point2, Project};
@@ -626,4 +627,108 @@ fn file_menu_quit_asks_first() {
     file_menu(&mut h, "Quit OpenDrape");
     h.get_by_label("Save your changes?");
     assert!(!h.state().is_closing());
+}
+
+/// Clicks the pattern table at (x, y) mm, as a mouse does.
+fn canvas_click(h: &mut App, x: f64, y: f64) {
+    let ed = h.state().editor();
+    let pos = ed.view.to_screen(ed.canvas_rect, Point2::new(x, y));
+    h.hover_at(pos);
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    h.run();
+}
+
+/// Starts a pen draft of three points and leaves unsaved changes (a drawn piece).
+fn pen_draft_with_unsaved_changes(h: &mut App) {
+    h.state_mut().editor_mut().set_tool(Tool::Pen);
+    h.run();
+    for (x, y) in [(100.0, 100.0), (400.0, 100.0), (400.0, 300.0)] {
+        canvas_click(h, x, y);
+    }
+    assert_eq!(h.state().editor().pen().len(), 3);
+    add_piece(h);
+}
+
+#[test]
+fn escape_closes_the_question_and_leaves_the_pen_draft_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    pen_draft_with_unsaved_changes(&mut h);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Q);
+    h.run();
+    h.get_by_label("Save your changes?");
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(
+        h.query_by_label("Save your changes?").is_none(),
+        "Escape answers the question"
+    );
+    assert_eq!(
+        h.state().editor().pen().len(),
+        3,
+        "and must not also cancel the piece being drawn"
+    );
+}
+
+#[test]
+fn delete_does_nothing_to_the_pattern_while_the_question_is_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    add_piece(&mut h);
+    h.state_mut().editor_mut().selection = Selection::Piece(PieceId(1));
+    h.run();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Q);
+    h.run();
+    h.get_by_label("Save your changes?");
+    h.key_press(egui::Key::Delete);
+    h.run();
+    assert_eq!(pieces(&h), 1, "the piece is still there");
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(pieces(&h), 1, "and Cmd+Z did not undo it");
+    h.get_by_label("Cancel").click();
+    h.run();
+    h.key_press(egui::Key::Delete);
+    h.run();
+    assert_eq!(
+        pieces(&h),
+        0,
+        "once the question is gone, Delete works again"
+    );
+}
+
+#[test]
+fn the_pattern_ignores_keys_while_an_error_is_shown() {
+    let dir = tempfile::tempdir().unwrap();
+    let bad = dir.path().join("bad.odp");
+    std::fs::write(&bad, b"not a zip file").unwrap();
+    let mut h = harness_with(
+        dir.path(),
+        SharedState::default(),
+        FileDialogs::scripted(vec![Some(bad)]),
+    );
+    h.run();
+    add_piece(&mut h);
+    h.state_mut().editor_mut().selection = Selection::Piece(PieceId(1));
+    file_menu(&mut h, "Open…");
+    h.get_by_label("Don't save").click();
+    h.run();
+    h.get_by_label_contains("not an OpenDrape project file");
+    h.key_press(egui::Key::Delete);
+    h.run();
+    assert_eq!(pieces(&h), 1);
+    h.get_by_label("OK").click();
+    h.run();
+    h.key_press(egui::Key::Delete);
+    h.run();
+    assert_eq!(pieces(&h), 0);
 }

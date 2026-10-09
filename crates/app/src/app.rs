@@ -671,7 +671,10 @@ impl eframe::App for OpenDrapeApp {
             .default_size(width * 0.42)
             .size_range(240.0..=(width - 360.0).max(240.0))
             .show(ui, |ui| self.view_3d(ui, frame));
-        egui::CentralPanel::default().show(ui, |ui| self.editor.ui(ui));
+        // Decided here, before the question or message box below has run: when one of them is
+        // closed by Escape this frame, that Escape must not reach the pattern table too.
+        let keys_for_pattern = self.pending.is_none() && self.error.is_none();
+        egui::CentralPanel::default().show(ui, |ui| self.editor.ui_with_keys(ui, keys_for_pattern));
         self.unsaved_changes_modal(frame, &ctx);
         self.error_modal(&ctx);
         self.poll_dialog(frame, &ctx);

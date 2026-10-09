@@ -216,10 +216,20 @@ impl PatternEditor {
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
+        self.ui_with_keys(ui, true);
+    }
+
+    /// Like [`Self::ui`]. With `keys_allowed` false nothing the pattern table listens for on
+    /// the keyboard acts (no shortcuts, Delete, Escape or typed numbers): the app passes false
+    /// while a question or message box is open over it, so its keys don't also reach the
+    /// pattern. Decide it from the state at the start of the frame, before that box has had
+    /// the chance to close itself on this very key press.
+    pub fn ui_with_keys(&mut self, ui: &mut egui::Ui, keys_allowed: bool) {
         // Sampled before any text box runs this frame. Escape has already cleared focus by
         // now, so an open number box, or a property field that was being typed in last frame,
         // also counts as owning the keyboard.
-        let keys_free = !ui.ctx().text_edit_focused()
+        let keys_free = keys_allowed
+            && !ui.ctx().text_edit_focused()
             && self.canvas.length_box.is_none()
             && !self.panel.is_editing();
         if keys_free {
