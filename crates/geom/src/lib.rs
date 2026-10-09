@@ -15,7 +15,7 @@ pub use marks::{
     NOTCH_DEPTH_MM, NOTCH_SPACING_MM, distance_along, edge_label_anchor, edge_label_anchors,
     is_counter_clockwise, line_length, line_points, nearest_line, notch_marks, point_at_distance,
 };
-pub use shapes::{Shape, ShapeKind, shape_of, shapes, unfolded};
+pub use shapes::{ON_OUTLINE_MM, Shape, ShapeKind, shape_of, shapes, unfolded};
 
 /// Accuracy (mm) of curve lengths and nearest-point searches.
 pub(crate) const ACCURACY: f64 = 1e-4;

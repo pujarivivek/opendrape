@@ -1572,3 +1572,151 @@ fn a_line_that_sticks_out_can_be_brought_back_in_one_point_at_a_time() {
     );
     assert!(notice_is(&h, OUTSIDE));
 }
+
+#[test]
+fn a_line_started_a_fraction_of_a_millimetre_either_side_of_the_fold_is_stored() {
+    // The fold is x = 300. A click that close to it is on the fold line, and the line is stored
+    // with that point on it: not refused for lying on both sides, whichever side it landed on.
+    let mut h = harness();
+    let id = with_half(&mut h);
+    key(&mut h, Key::L);
+    for (first, second, stored_second) in [
+        ((299.7, 200.0), (380.0, 300.0), (380.0, 300.0)), // pale side, the rest on the drawn half
+        ((300.3, 150.0), (380.0, 250.0), (380.0, 250.0)), // drawn side, the rest on the drawn half
+        ((299.7, 250.0), (250.0, 300.0), (350.0, 300.0)), // pale side, the rest on the pale half
+        ((300.3, 120.0), (250.0, 160.0), (350.0, 160.0)), // drawn side, the rest on the pale half
+    ] {
+        click(&mut h, first.0, first.1);
+        click(&mut h, second.0, second.1);
+        key(&mut h, Key::Enter);
+        assert!(
+            h.state().notice.is_none(),
+            "{first:?}: {:?}",
+            h.state().notice
+        );
+        let line = piece_of(&h, id).lines.pop().unwrap();
+        assert!(
+            (line.vertices[0].pos.x - 300.0).abs() < 1e-9,
+            "{first:?}: {line:?}"
+        );
+        close(line.vertices[0].pos, Point2::new(300.0, first.1));
+        close(
+            line.vertices[1].pos,
+            Point2::new(stored_second.0, stored_second.1),
+        );
+    }
+    assert_eq!(piece_of(&h, id).lines.len(), 4);
+}
+
+/// A 1200 × 100 mm piece with an 8 mm wide, 40 mm deep slot cut in from the top at
+/// x = 602..610, shown whole.
+fn with_slotted(h: &mut H) -> PieceId {
+    let id = h.state_mut().doc.edit(|p| {
+        let corners = [
+            (0.0, 0.0),
+            (1200.0, 0.0),
+            (1200.0, 100.0),
+            (610.0, 100.0),
+            (610.0, 60.0),
+            (602.0, 60.0),
+            (602.0, 100.0),
+            (0.0, 100.0),
+        ]
+        .map(|(x, y)| Point2::new(x, y));
+        p.add_piece(Piece::polygon(PieceId(0), "Slotted", &corners))
+    });
+    h.state_mut().fit();
+    h.run();
+    id
+}
+
+#[test]
+fn a_metre_long_line_may_not_cross_a_narrow_slot() {
+    let mut h = harness();
+    let id = with_slotted(&mut h);
+    key(&mut h, Key::L);
+    click(&mut h, 50.0, 80.0);
+    click(&mut h, 1150.0, 80.0); // both ends are inside the piece
+    key(&mut h, Key::Enter);
+    assert!(piece_of(&h, id).lines.is_empty());
+    assert_eq!(h.state().line_draft().len(), 2, "the draft is kept");
+    assert!(notice_is(&h, OUTSIDE), "{:?}", h.state().notice);
+    // Up to the slot is fine.
+    key(&mut h, Key::Backspace);
+    click(&mut h, 590.0, 80.0);
+    key(&mut h, Key::Enter);
+    assert_eq!(piece_of(&h, id).lines.len(), 1);
+}
+
+#[test]
+fn a_notch_does_not_hide_a_line_point_that_starts_at_it() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    h.state_mut().doc.edit(|p| {
+        let piece = p.piece_mut(id).unwrap();
+        piece.allowance = 0.0; // the notch mark runs 5 mm in from the stitching line
+        piece.notches.push(Notch::new(0, 150.0)); // at (250,100), up to (250,105)
+        piece.lines.push(InternalLine::open(&[
+            Point2::new(250.0, 100.0),
+            Point2::new(250.0, 300.0),
+        ]));
+    });
+    h.run();
+    assert!(
+        h.state().view.mm(8.0) > 6.0,
+        "both are within reach of each other"
+    );
+    click(&mut h, 250.0, 105.0); // the mark's inner end
+    assert_eq!(h.state().selection, Selection::Notch(id, 0));
+    click(&mut h, 250.0, 100.0); // the line's first point, where the mark starts
+    assert_eq!(h.state().selection, Selection::Line(id, 0));
+    drag(&mut h, (250.0, 100.0), (270.0, 150.0));
+    close(
+        piece_of(&h, id).lines[0].vertices[0].pos,
+        Point2::new(270.0, 150.0),
+    );
+    assert_eq!(piece_of(&h, id).notches, vec![Notch::new(0, 150.0)]);
+}
+
+#[test]
+fn delete_removes_a_selected_line_in_the_line_tool_too() {
+    for removing in [Key::Delete, Key::Backspace] {
+        let mut h = harness();
+        let id = with_rectangle(&mut h);
+        key(&mut h, Key::L);
+        click(&mut h, 150.0, 200.0);
+        click(&mut h, 300.0, 200.0);
+        key(&mut h, Key::Enter);
+        assert_eq!(h.state().selection, Selection::Line(id, 0));
+        key(&mut h, removing);
+        assert!(piece_of(&h, id).lines.is_empty(), "{removing:?}");
+        assert_eq!(h.state().selection, Selection::Piece(id));
+        assert_eq!(h.state().tool, Tool::Line);
+    }
+}
+
+#[test]
+fn delete_in_the_line_tool_leaves_a_selected_piece_alone() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    click(&mut h, 250.0, 300.0); // select the piece with the Edit tool
+    key(&mut h, Key::L);
+    key(&mut h, Key::Delete);
+    assert!(h.state().doc.project().piece(id).is_some());
+    assert_eq!(h.state().selection, Selection::Piece(id));
+}
+
+#[test]
+fn delete_while_drawing_a_line_removes_draft_points_not_the_selected_line() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    key(&mut h, Key::L);
+    click(&mut h, 150.0, 200.0);
+    click(&mut h, 300.0, 200.0);
+    key(&mut h, Key::Enter);
+    click(&mut h, 150.0, 400.0);
+    click(&mut h, 300.0, 400.0);
+    key(&mut h, Key::Delete);
+    assert_eq!(h.state().line_draft().len(), 1);
+    assert_eq!(piece_of(&h, id).lines.len(), 1, "the finished line stays");
+}

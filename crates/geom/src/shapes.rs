@@ -85,10 +85,16 @@ impl Shape {
     }
     /// An internal line drawn on this shape, as the stored piece keeps it. A twin's points are
     /// mirrored back. The stored piece of a cut-on-fold piece keeps everything on its own side
-    /// of the fold, so a line drawn on the pale half (judged by its first point off the fold
-    /// line) is stored as its mirror image across the fold; the pale half shows it again where
-    /// it was drawn. A line that then still crosses the fold makes an invalid piece, which the
-    /// document refuses.
+    /// of the fold, so:
+    /// - a point of the line within [`ON_OUTLINE_MM`] of the fold line is moved onto it (a line
+    ///   may start on the fold, and a click a fraction of a millimetre to either side of it
+    ///   would otherwise put the line on both sides);
+    /// - a line whose point furthest from the fold is on the pale half is stored as its mirror
+    ///   image across the fold, and the pale half shows it again where it was drawn;
+    /// - a line with every point on the fold is stored as it is.
+    ///
+    /// A line that then still crosses the fold makes an invalid piece, which the document
+    /// refuses.
     pub fn line_to_stored(&self, line: &InternalLine) -> InternalLine {
         let ShapeKind::Folded {
             drawn,
@@ -98,11 +104,11 @@ impl Shape {
         else {
             return line.mapped(|p| self.to_stored(p));
         };
-        let length = (far - near).length();
+        let d = far - near;
+        let length = d.length();
         if length < 1e-9 {
             return line.clone();
         }
-        let d = far - near;
         // Distance of a point from the fold line, positive on one side and negative on the other.
         let side = |p: Point2| (d.x * (p.y - near.y) - d.y * (p.x - near.x)) / length;
         // The stored half is on the side of its point furthest from the fold line.
@@ -111,22 +117,30 @@ impl Shape {
             .map(|v| side(v.pos))
             .max_by(|a, b| a.abs().total_cmp(&b.abs()))
             .unwrap_or(0.0);
-        let first = line
+        // Points only: a curve handle is left where it was drawn.
+        let mut line = line.clone();
+        for v in &mut line.vertices {
+            let s = side(v.pos);
+            if s.abs() <= ON_OUTLINE_MM {
+                v.pos = v.pos - Point2::new(-d.y, d.x) * (s / length);
+            }
+        }
+        let furthest = line
             .vertices
             .iter()
             .map(|v| side(v.pos))
-            .find(|s| s.abs() > FOLD_SIDE_EPS_MM)
+            .max_by(|a, b| a.abs().total_cmp(&b.abs()))
             .unwrap_or(0.0);
-        if first * stored < 0.0 {
+        if furthest * stored < 0.0 {
             line.mapped(|p| reflect_across(p, near, far))
         } else {
-            line.clone()
+            line
         }
     }
 }
 
-/// How far (mm) from the fold line a point must be to count as being on one side of it.
-const FOLD_SIDE_EPS_MM: f64 = 1e-6;
+/// How far (mm) from an outline, or from a fold line, a point may be and still count as on it.
+pub const ON_OUTLINE_MM: f64 = 0.5;
 
 impl ShapeKind {
     /// A movement on a shape of this kind as a movement of its stored piece: a twin is the
@@ -406,6 +420,55 @@ mod tests {
             &line(p(50.0, 40.0), p(100.0, 60.0)),
         );
         same(&shapes(&pr)[0].line_to_stored(&drawn), &drawn);
+    }
+
+    /// `piece` with `line` stored on it, as a project: whether the model accepts it.
+    fn accepted(half: &Piece, line: &InternalLine) -> bool {
+        let mut piece = half.clone();
+        piece.lines.push(line.clone());
+        let mut project = Project::new();
+        project.add_piece(piece);
+        project.check().is_ok()
+    }
+
+    #[test]
+    fn a_line_started_on_the_fold_is_stored_with_that_point_on_it() {
+        // Folded on x = 0, stored on its right. A click within half a millimetre of the fold
+        // line is on it, whichever side it lands on, and the rest of the line decides the side.
+        let mut pr = Project::new();
+        pr.add_piece(half());
+        let shape = shape_of(&pr, PieceId(1)).unwrap();
+        let line = |a: Point2, b: Point2| InternalLine::open(&[a, b]);
+        let cases = [
+            ("pale, then the drawn half", p(-0.3, 50.0), p(60.0, 150.0)),
+            ("drawn, then the drawn half", p(0.3, 50.0), p(60.0, 150.0)),
+            ("drawn, then the pale half", p(0.3, 50.0), p(-60.0, 150.0)),
+            ("pale, then the pale half", p(-0.3, 50.0), p(-60.0, 150.0)),
+            ("at the limit", p(-0.5, 50.0), p(60.0, 150.0)),
+        ];
+        for (name, a, b) in cases {
+            let stored = shape.line_to_stored(&line(a, b));
+            assert!(accepted(&half(), &stored), "{name}: {stored:?}");
+            close(stored.vertices[0].pos, p(0.0, 50.0));
+            assert!(stored.vertices[0].pos.x.abs() < 1e-9, "{name}: on the fold");
+            close(stored.vertices[1].pos, p(60.0, 150.0));
+        }
+        // Further away it is a point on the pale half, and the line crosses the fold.
+        let across = shape.line_to_stored(&line(p(-0.6, 50.0), p(60.0, 150.0)));
+        close(across.vertices[0].pos, p(-0.6, 50.0));
+        assert!(!accepted(&half(), &across));
+        // Every point on the fold: stored as it is.
+        let along = line(p(0.0, 50.0), p(0.0, 150.0));
+        assert_eq!(shape.line_to_stored(&along), along);
+        // Only points are moved: a curve handle stays where it was drawn.
+        let mut curved = line(p(-0.3, 50.0), p(60.0, 150.0));
+        curved.edges = vec![Edge::Curve {
+            c1: p(10.0, 90.0),
+            c2: p(40.0, 120.0),
+        }];
+        let stored = shape.line_to_stored(&curved);
+        assert_eq!(stored.edges, curved.edges);
+        close(stored.vertices[0].pos, p(0.0, 50.0));
     }
 
     #[test]

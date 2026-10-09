@@ -10,13 +10,15 @@ use egui::{PointerButton, Response};
 use opendrape_core::{Edge, InternalLine, LineKind, Piece, Point2};
 use opendrape_geom as geom;
 
-/// How far (mm) outside a piece's outline a point may be and still count as on it.
-const OUTLINE_TOLERANCE_MM: f64 = 0.5;
-/// Spacing (mm) of the points a line is tested at along its length: a straight run between two
-/// points inside a piece can still cross a notch in its outline.
+/// How closely (mm) a curved line is flattened to be tested.
+const FLATTEN_MM: f64 = 0.5;
+/// Longest gap (mm) between the points a line is tested at along its length: a run between two
+/// points inside a piece can still cross a narrow slot in its outline, and the narrowest a
+/// student cuts is a few millimetres.
 const TEST_STEP_MM: f64 = 2.0;
-/// Most points one run of a line is tested at, so checking a very long line stays quick.
-const MAX_TESTS_PER_RUN: usize = 64;
+/// Most points one check tests, so a very long line (a hostile file's) stays quick: a longer
+/// line is tested at a wider spacing.
+const MAX_TESTS: f64 = 20_000.0;
 
 impl PatternEditor {
     pub(super) fn line_tool(
@@ -145,19 +147,28 @@ fn draft_line(points: &[PenPoint], closed: bool) -> InternalLine {
 /// Inside `piece`'s outline, or on it (within 0.5 mm).
 pub(super) fn inside(piece: &Piece, p: Point2) -> bool {
     geom::contains(piece, p)
-        || geom::nearest_edge(piece, p).is_some_and(|e| e.2 <= OUTLINE_TOLERANCE_MM)
+        || geom::nearest_edge(piece, p).is_some_and(|e| e.2 <= geom::ON_OUTLINE_MM)
 }
 
 /// Whether all of `line` is inside `full`, the whole piece: its drawn points, and the runs
-/// between them tested every few millimetres.
+/// between them tested every [`TEST_STEP_MM`] or so.
 fn stays_inside(full: &Piece, line: &InternalLine) -> bool {
-    let points = geom::line_points(line, OUTLINE_TOLERANCE_MM);
-    let runs_inside = points.windows(2).all(|run| {
+    all_tested_points(line, |p| inside(full, p))
+}
+
+/// Whether `ok` holds at the points of `line` that are tested: each drawn point, and points along
+/// every run between them. A very long line is tested at a wider spacing, so there are at most
+/// [`MAX_TESTS`] along it, plus one for each run.
+fn all_tested_points(line: &InternalLine, mut ok: impl FnMut(Point2) -> bool) -> bool {
+    let points = geom::line_points(line, FLATTEN_MM);
+    let length: f64 = points.windows(2).map(|run| run[0].distance(run[1])).sum();
+    let step = TEST_STEP_MM.max(length / MAX_TESTS);
+    let runs_ok = points.windows(2).all(|run| {
         let (a, b) = (run[0], run[1]);
-        let tests = ((a.distance(b) / TEST_STEP_MM).ceil() as usize).clamp(1, MAX_TESTS_PER_RUN);
-        (0..tests).all(|i| inside(full, a.lerp(b, i as f64 / tests as f64)))
+        let tests = ((a.distance(b) / step).ceil() as usize).max(1);
+        (0..tests).all(|i| ok(a.lerp(b, i as f64 / tests as f64)))
     });
-    runs_inside && points.last().is_none_or(|p| inside(full, *p))
+    runs_ok && points.last().is_none_or(|p| ok(*p))
 }
 
 /// Whether every point of `piece`'s line `l` (in stored coordinates) is inside the whole piece.
@@ -260,5 +271,60 @@ mod tests {
         // On the outline counts as inside.
         let along = InternalLine::open(&[p(0.0, 10.0), p(0.0, 390.0)]);
         assert!(stays_inside(&l, &along));
+    }
+
+    /// 1200 × 100 mm with an 8 mm wide, 40 mm deep slot cut in from the top at x = 602..610.
+    fn slotted() -> Piece {
+        Piece::polygon(
+            opendrape_core::PieceId(1),
+            "Slotted",
+            &[
+                p(0.0, 0.0),
+                p(1200.0, 0.0),
+                p(1200.0, 100.0),
+                p(610.0, 100.0),
+                p(610.0, 60.0),
+                p(602.0, 60.0),
+                p(602.0, 100.0),
+                p(0.0, 100.0),
+            ],
+        )
+    }
+
+    #[test]
+    fn a_long_line_is_tested_finely_enough_to_find_a_narrow_slot() {
+        let piece = slotted();
+        let across = InternalLine::open(&[p(50.0, 80.0), p(1150.0, 80.0)]);
+        assert!(!stays_inside(&piece, &across));
+        let short = InternalLine::open(&[p(50.0, 80.0), p(590.0, 80.0)]);
+        assert!(stays_inside(&piece, &short));
+        let beneath = InternalLine::open(&[p(50.0, 40.0), p(1150.0, 40.0)]);
+        assert!(stays_inside(&piece, &beneath));
+    }
+
+    #[test]
+    fn a_huge_line_is_tested_at_a_bounded_number_of_points() {
+        // 2,000 runs of 900 m, in a 1 km square (the biggest the model allows): every 2 mm
+        // would be 900 million tests, so the spacing widens.
+        let mut zigzag = vec![p(10.0, 10.0)];
+        for k in 0..2_000 {
+            zigzag.push(p(
+                10.0 + f64::from(k % 2) * 900_000.0,
+                10.0 + f64::from(k) * 400.0,
+            ));
+        }
+        let mut tested = 0_usize;
+        assert!(all_tested_points(&InternalLine::open(&zigzag), |_| {
+            tested += 1;
+            true
+        }));
+        assert!(tested <= 20_000 + 2_001, "{tested}"); // the cap, and one for each run
+        // And an ordinary line is still tested every 2 mm.
+        let mut tested = 0_usize;
+        all_tested_points(&InternalLine::open(&[p(0.0, 0.0), p(1000.0, 0.0)]), |_| {
+            tested += 1;
+            true
+        });
+        assert_eq!(tested, 501);
     }
 }

@@ -416,6 +416,12 @@ impl PatternEditor {
                     }
                 }
             }
+            // Nothing being drawn: Delete removes a selected line, as in the Notch tool.
+            Tool::Line => {
+                if matches!(self.selection, Selection::Line(..)) && delete_pressed() {
+                    self.delete_selection();
+                }
+            }
             Tool::Notch => {
                 self.notch_box_on_digits(ui, response);
                 // Only a notch: a piece or point selected earlier is the Edit tool's to delete.
@@ -582,8 +588,8 @@ impl PatternEditor {
     /// What the edit tool picks at `w`. A point or curve handle and a notch mark can both be
     /// under the pointer (a mark may start at a corner): the nearer wins, and the point or
     /// handle wins a tie. A point of an internal line likewise only beats a point or handle
-    /// by being nearer. Then come edges, lines and insides, topmost shape first, so a notch
-    /// mark still beats the edge it is on. The handles are the selected shape's only. Points
+    /// by being nearer, and beats a notch mark on a tie. Then come edges, lines and insides,
+    /// topmost shape first, so a notch mark still beats the edge it is on. The handles are the selected shape's only. Points
     /// and edges of a fold's pale half, and its mirror images of lines, are not editable: they
     /// pick the piece.
     fn hit(&self, shapes: &[geom::Shape], w: Point2, tol: f64) -> Option<Hit> {
@@ -618,21 +624,27 @@ impl PatternEditor {
         // Pointer positions pass through f32 screen coordinates, so a press on a corner a mark
         // starts at can land a hair along the mark: a notch must be nearer by a screen point.
         let slack = tol / HIT_PX;
-        let near = match (corner, self.notch_at(shapes, w, tol)) {
-            (Some((hit, d)), Some((notch, dn))) => Some(if dn + slack < d { notch } else { hit }),
-            (Some((hit, _)), None) | (None, Some((hit, _))) => Some(hit),
-            (None, None) => None,
+        // A point of an internal line can be under the pointer with a notch mark (a line may
+        // start where a notch is): a notch can be picked anywhere along its mark, so the line
+        // point wins a tie, and the mark only by being nearer by the slack.
+        let mark_or_line = match (
+            self.notch_at(shapes, w, tol),
+            self.line_vertex_at(shapes, w, tol),
+        ) {
+            (Some((notch, dn)), Some((vertex, dv))) => Some(if dn + slack < dv {
+                (notch, dn)
+            } else {
+                (vertex, dv)
+            }),
+            (notch, vertex) => notch.or(vertex),
         };
-        // A point of an internal line can be under the pointer too (a line may start at a
-        // corner): it beats a corner or handle only by being nearer, by the same slack.
-        let line_point = self.line_vertex_at(shapes, w, tol);
-        match (near, corner, line_point) {
-            (Some(hit), Some((point, d)), Some((vertex, dv))) if hit == point && dv + slack < d => {
-                return Some(vertex);
+        // A corner or handle beats either unless that is nearer by the slack.
+        match (corner, mark_or_line) {
+            (Some((hit, d)), Some((other, dn))) => {
+                return Some(if dn + slack < d { other } else { hit });
             }
-            (Some(hit), ..) => return Some(hit),
-            (None, _, Some((vertex, _))) => return Some(vertex),
-            (None, _, None) => {}
+            (Some((hit, _)), None) | (None, Some((hit, _))) => return Some(hit),
+            (None, None) => {}
         }
         topmost()
             .find_map(|s| {
