@@ -1406,6 +1406,220 @@ fn the_mirror_image_of_a_line_on_a_fold_is_not_editable() {
     close(piece.lines[0].vertices[1].pos, Point2::new(420.0, 250.0));
 }
 
+/// An open line across the `with_rectangle` piece, (150,200) to (350,200), curved up with its
+/// handles at (200,300) and (300,300): its middle is (250,275).
+fn curved_line() -> InternalLine {
+    let mut line = InternalLine::open(&[Point2::new(150.0, 200.0), Point2::new(350.0, 200.0)]);
+    line.edges[0] = Edge::Curve {
+        c1: Point2::new(200.0, 300.0),
+        c2: Point2::new(300.0, 300.0),
+    };
+    line
+}
+
+fn line_handles(h: &H, id: PieceId) -> (Point2, Point2) {
+    let Edge::Curve { c1, c2 } = piece_of(h, id).lines[0].edges[0] else {
+        panic!("the line should still be curved")
+    };
+    (c1, c2)
+}
+
+#[test]
+fn dragging_the_handle_of_a_selected_curved_line_moves_that_handle() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    with_line(&mut h, id, curved_line());
+    let before = piece_of(&h, id);
+    click(&mut h, 250.0, 275.0);
+    assert_eq!(h.state().selection, Selection::Line(id, 0));
+    drag(&mut h, (200.0, 300.0), (220.0, 340.0));
+    let (c1, c2) = line_handles(&h, id);
+    close(c1, Point2::new(220.0, 340.0));
+    close(c2, Point2::new(300.0, 300.0));
+    let moved = piece_of(&h, id);
+    assert_eq!(moved.lines[0].vertices, before.lines[0].vertices);
+    assert_eq!(moved.vertices, before.vertices, "the piece did not move");
+    assert_eq!(h.state().selection, Selection::Line(id, 0));
+    // The other handle, and the whole drag is one undo step.
+    drag(&mut h, (300.0, 300.0), (280.0, 280.0));
+    let (c1, c2) = line_handles(&h, id);
+    close(c1, Point2::new(220.0, 340.0));
+    close(c2, Point2::new(280.0, 280.0));
+    cmd(&mut h, Key::Z);
+    let (c1, c2) = line_handles(&h, id);
+    close(c1, Point2::new(220.0, 340.0));
+    close(c2, Point2::new(300.0, 300.0));
+    cmd(&mut h, Key::Z);
+    assert_eq!(piece_of(&h, id), before);
+}
+
+/// How many curve-handle rings (4 points across) the last frame drew.
+fn handle_rings(h: &H) -> usize {
+    h.output()
+        .shapes
+        .iter()
+        .filter(|s| matches!(&s.shape, egui::Shape::Circle(c) if c.radius == 4.0))
+        .count()
+}
+
+#[test]
+fn a_selected_curved_line_shows_its_handles() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    with_line(&mut h, id, curved_line());
+    assert_eq!(handle_rings(&h), 0);
+    h.state_mut().selection = Selection::Piece(id);
+    h.run();
+    assert_eq!(handle_rings(&h), 0, "the piece has no curved edge");
+    h.state_mut().selection = Selection::Line(id, 0);
+    h.run();
+    assert_eq!(
+        handle_rings(&h),
+        2,
+        "one ring on each handle, and an arm to each"
+    );
+    // A straight line has none.
+    with_line(
+        &mut h,
+        id,
+        InternalLine::open(&[Point2::new(150.0, 400.0), Point2::new(350.0, 400.0)]),
+    );
+    h.state_mut().selection = Selection::Line(id, 1);
+    h.run();
+    assert_eq!(handle_rings(&h), 0);
+}
+
+#[test]
+fn only_the_selected_lines_handles_can_be_grabbed() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    with_line(&mut h, id, curved_line());
+    let before = piece_of(&h, id);
+    // Nothing selected: the same spot is inside the piece, and a drag moves the piece.
+    drag(&mut h, (200.0, 300.0), (220.0, 340.0));
+    let moved = piece_of(&h, id);
+    close(
+        moved.vertices[0].pos,
+        before.vertices[0].pos + Point2::new(20.0, 40.0),
+    );
+    let Edge::Curve { c1, .. } = moved.lines[0].edges[0] else {
+        panic!()
+    };
+    close(c1, Point2::new(220.0, 340.0)); // carried along with the piece, 20 right, 40 up
+    assert_eq!(h.state().selection, Selection::Piece(id));
+}
+
+#[test]
+fn a_lines_handle_is_picked_by_being_nearer_than_a_corner_of_the_piece() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h); // corner (100,100)
+    let mut line = InternalLine::open(&[Point2::new(150.0, 150.0), Point2::new(350.0, 150.0)]);
+    line.edges[0] = Edge::Curve {
+        c1: Point2::new(110.0, 110.0),
+        c2: Point2::new(300.0, 200.0),
+    };
+    with_line(&mut h, id, line);
+    h.state_mut().selection = Selection::Line(id, 0);
+    h.run();
+    // 4.2 mm from the corner and 9.9 from the handle: the corner.
+    click(&mut h, 103.0, 103.0);
+    assert_eq!(h.state().selection, Selection::Vertex(id, 0));
+    // 8.5 mm from the corner and 5.7 from the handle: the handle, so a drag moves it.
+    h.state_mut().selection = Selection::Line(id, 0);
+    h.run();
+    drag(&mut h, (106.0, 106.0), (120.0, 140.0));
+    let piece = piece_of(&h, id);
+    assert_eq!(piece.vertices[0].pos, Point2::new(100.0, 100.0));
+    let Edge::Curve { c1, c2 } = piece.lines[0].edges[0] else {
+        panic!()
+    };
+    close(c1, Point2::new(124.0, 144.0));
+    close(c2, Point2::new(300.0, 200.0));
+    assert_eq!(h.state().selection, Selection::Line(id, 0));
+}
+
+#[test]
+fn dragging_a_lines_handle_on_a_twin_moves_the_stored_handle_the_mirrored_way() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    let twin = h
+        .state_mut()
+        .doc
+        .edit(|p| p.add_twin(id, "Front (mirror)".into(), Point2::new(850.0, 40.0)))
+        .unwrap();
+    with_line(&mut h, id, curved_line());
+    // Stored handles (200,300) and (300,300), shown on the twin at (650,340) and (550,340);
+    // the line's middle (250,275) at (600,315).
+    click(&mut h, 600.0, 315.0);
+    assert_eq!(h.state().selection, Selection::Line(twin, 0));
+    drag(&mut h, (650.0, 340.0), (680.0, 320.0)); // right 30, down 20 on the twin
+    let (c1, c2) = line_handles(&h, id);
+    close(c1, Point2::new(170.0, 280.0)); // stored: left 30, down 20
+    close(c2, Point2::new(300.0, 300.0));
+    drag(&mut h, (550.0, 340.0), (550.0, 360.0)); // up 20 on the twin
+    let (c1, c2) = line_handles(&h, id);
+    close(c1, Point2::new(170.0, 280.0));
+    close(c2, Point2::new(300.0, 320.0));
+    assert_eq!(h.state().selection, Selection::Line(twin, 0));
+    let piece = piece_of(&h, id);
+    assert_eq!(piece.twin.map(|t| t.offset), Some(Point2::new(850.0, 40.0)));
+}
+
+#[test]
+fn a_handle_dragged_so_the_curve_leaves_the_piece_is_held_back() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h); // left edge x = 100
+    with_line(&mut h, id, curved_line());
+    let before = piece_of(&h, id);
+    h.state_mut().selection = Selection::Line(id, 0);
+    view_at(&mut h, 300.0, 300.0, 0.5);
+    h.run();
+    // The first handle goes 600 mm left of the piece: the curve leaves it by the left edge.
+    drag(&mut h, (200.0, 300.0), (-400.0, 300.0));
+    assert_eq!(piece_of(&h, id), before);
+    assert!(notice_is(&h, OUTSIDE), "{:?}", h.state().notice);
+    // Within the piece it moves.
+    drag(&mut h, (200.0, 300.0), (200.0, 350.0));
+    let (c1, c2) = line_handles(&h, id);
+    close(c1, Point2::new(200.0, 350.0));
+    close(c2, Point2::new(300.0, 300.0));
+}
+
+#[test]
+fn the_handles_of_a_line_on_a_fold_are_the_stored_halfs_only() {
+    let mut h = harness();
+    let id = with_half(&mut h); // stored half x 300..450, pale half x 150..300
+    let mut line = InternalLine::open(&[Point2::new(330.0, 150.0), Point2::new(420.0, 150.0)]);
+    line.edges[0] = Edge::Curve {
+        c1: Point2::new(350.0, 250.0),
+        c2: Point2::new(400.0, 250.0),
+    };
+    with_line(&mut h, id, line);
+    click(&mut h, 375.0, 225.0);
+    assert_eq!(h.state().selection, Selection::Line(id, 0));
+    // The mirror image of the first handle, (250,250), is not one: a drag from it moves the
+    // whole piece.
+    drag(&mut h, (250.0, 250.0), (250.0, 270.0));
+    let piece = piece_of(&h, id);
+    close(piece.vertices[0].pos, Point2::new(300.0, 120.0));
+    let Edge::Curve { c1, c2 } = piece.lines[0].edges[0] else {
+        panic!()
+    };
+    close(c1, Point2::new(350.0, 270.0));
+    close(c2, Point2::new(400.0, 270.0));
+    // The stored handle is: only it moves.
+    h.state_mut().selection = Selection::Line(id, 0);
+    h.run();
+    drag(&mut h, (350.0, 270.0), (360.0, 260.0));
+    let piece = piece_of(&h, id);
+    close(piece.vertices[0].pos, Point2::new(300.0, 120.0));
+    let Edge::Curve { c1, c2 } = piece.lines[0].edges[0] else {
+        panic!()
+    };
+    close(c1, Point2::new(360.0, 260.0));
+    close(c2, Point2::new(400.0, 270.0));
+}
+
 #[test]
 fn the_first_point_decides_the_piece() {
     let mut h = harness();

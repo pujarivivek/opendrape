@@ -70,6 +70,9 @@ enum Hit {
     Notch(PieceId, usize),
     /// A point of an internal line: the shape, the stored line and its vertex.
     LineVertex(PieceId, usize, usize),
+    /// A curve handle of the selected internal line: the shape, the stored line, its edge and
+    /// which end of the edge the handle belongs to.
+    LineHandle(PieceId, usize, usize, HandleEnd),
     /// An internal line itself: the shape and the stored line's index.
     Line(PieceId, usize),
 }
@@ -83,6 +86,7 @@ impl Hit {
             | Self::Inside(id)
             | Self::Notch(id, _)
             | Self::LineVertex(id, ..)
+            | Self::LineHandle(id, ..)
             | Self::Line(id, _) => id,
         }
     }
@@ -93,7 +97,9 @@ impl Hit {
             Self::Vertex(id, i) => Selection::Vertex(id, i),
             Self::Inside(id) => Selection::Piece(id),
             Self::Notch(id, k) => Selection::Notch(id, k),
-            Self::LineVertex(id, l, _) | Self::Line(id, l) => Selection::Line(id, l),
+            Self::LineVertex(id, l, _) | Self::LineHandle(id, l, ..) | Self::Line(id, l) => {
+                Selection::Line(id, l)
+            }
         }
     }
 }
@@ -155,6 +161,23 @@ impl Drag {
                 move_line_vertex(&mut p.lines[l], k, to);
                 if self.line_was_inside && !line_inside(&p, l) {
                     return (o.clone(), true);
+                }
+            }
+            Hit::LineHandle(_, l, e, end) => {
+                if let Edge::Curve { c1, c2 } = o.lines[l].edges[e] {
+                    let to = match end {
+                        HandleEnd::Start => c1,
+                        HandleEnd::End => c2,
+                    } + ds;
+                    if let Edge::Curve { c1, c2 } = &mut p.lines[l].edges[e] {
+                        match end {
+                            HandleEnd::Start => *c1 = to,
+                            HandleEnd::End => *c2 = to,
+                        }
+                    }
+                    if self.line_was_inside && !line_inside(&p, l) {
+                        return (o.clone(), true);
+                    }
                 }
             }
             Hit::Line(_, l) => {
@@ -538,7 +561,9 @@ impl PatternEditor {
                 self.selection = hit.selection();
                 self.doc.begin_gesture();
                 let line_was_inside = match hit {
-                    Hit::Line(_, l) | Hit::LineVertex(_, l, _) => line_inside(&original, l),
+                    Hit::Line(_, l) | Hit::LineVertex(_, l, _) | Hit::LineHandle(_, l, ..) => {
+                        line_inside(&original, l)
+                    }
                     _ => true,
                 };
                 self.canvas.drag = Some(Drag {
@@ -589,8 +614,9 @@ impl PatternEditor {
 
     /// What the edit tool picks at `w`. A point or curve handle and a notch mark can both be
     /// under the pointer (a mark may start at a corner): the nearer wins, and the point or
-    /// handle wins a tie. A point of an internal line likewise only beats a point or handle
-    /// by being nearer, and beats a notch mark on a tie. Then come edges, lines and insides,
+    /// handle wins a tie. A point of an internal line, or a curve handle of the selected line
+    /// (which comes first), likewise only beats a point or handle by being nearer, and beats a
+    /// notch mark on a tie. Then come edges, lines and insides,
     /// topmost shape first, so a notch mark still beats the edge it is on. The handles are the selected shape's only. Points
     /// and edges of a fold's pale half, and its mirror images of lines, are not editable: they
     /// pick the piece.
@@ -629,10 +655,11 @@ impl PatternEditor {
         // A point of an internal line can be under the pointer with a notch mark (a line may
         // start where a notch is): a notch can be picked anywhere along its mark, so the line
         // point wins a tie, and the mark only by being nearer by the slack.
-        let mark_or_line = match (
-            self.notch_at(shapes, w, tol),
-            self.line_vertex_at(shapes, w, tol),
-        ) {
+        // The selected line's curve handles come before the line's points.
+        let line_point = self
+            .line_handle_at(shapes, w, tol)
+            .or_else(|| self.line_vertex_at(shapes, w, tol));
+        let mark_or_line = match (self.notch_at(shapes, w, tol), line_point) {
             (Some((notch, dn)), Some((vertex, dv))) => Some(if dn + slack < dv {
                 (notch, dn)
             } else {
@@ -678,6 +705,31 @@ impl PatternEditor {
             .project()
             .owner(id)
             .map_or(0, |(p, _)| p.lines.len())
+    }
+
+    /// The curve handle of the selected internal line nearest to `w` within `tol` mm, with its
+    /// distance. Only the selected line has handles to grab, and a line on a fold's pale half
+    /// (never selected) has none.
+    fn line_handle_at(&self, shapes: &[geom::Shape], w: Point2, tol: f64) -> Option<(Hit, f64)> {
+        let Selection::Line(id, l) = self.selection else {
+            return None;
+        };
+        if l >= self.stored_lines(id) {
+            return None;
+        }
+        let line = shapes.iter().find(|s| s.id == id)?.piece.lines.get(l)?;
+        let mut best: Option<(Hit, f64)> = None;
+        for (e, edge) in line.edges.iter().enumerate() {
+            if let Edge::Curve { c1, c2 } = *edge {
+                for (end, handle) in [(HandleEnd::Start, c1), (HandleEnd::End, c2)] {
+                    let d = handle.distance(w);
+                    if d <= tol && best.is_none_or(|(_, b)| d < b) {
+                        best = Some((Hit::LineHandle(id, l, e, end), d));
+                    }
+                }
+            }
+        }
+        best
     }
 
     /// The point of an internal line nearest to `w` within `tol` mm, with its distance: the

@@ -350,6 +350,20 @@ impl PatternEditor {
                     let pts = self.screen_points(rect, points.clone());
                     painter.add(Shape::line(pts, Stroke::new(3.0, c.selected)));
                 }
+                // Its curve handles, as a selected piece's: a ring on each, and an arm to the
+                // point it belongs to.
+                if let Some(line) = piece.lines.get(l) {
+                    for (e, edge) in line.edges.iter().enumerate() {
+                        if let Edge::Curve { c1, c2 } = *edge {
+                            let (a, b) = line.edge_ends(e);
+                            for (end, h) in [(a, c1), (b, c2)] {
+                                let (end, h) = (v.to_screen(rect, end), v.to_screen(rect, h));
+                                painter.line_segment([end, h], handle);
+                                painter.circle_stroke(h, 4.0, handle);
+                            }
+                        }
+                    }
+                }
             }
             Selection::Piece(_) | Selection::None => {}
         }

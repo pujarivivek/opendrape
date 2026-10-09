@@ -153,11 +153,15 @@ pub fn watchdog(seconds: u64) -> std::sync::mpsc::Sender<()> {
     done
 }
 
-/// Zooms right in (the most the pattern table allows) with pattern point (x, y) mm in the
-/// middle of the canvas.
-pub fn zoom_in_on(h: &mut H, x: f64, y: f64) {
+/// Shows the pattern at `zoom` screen points per mm with pattern point (x, y) mm in the middle
+/// of the canvas.
+pub fn view_at(h: &mut H, x: f64, y: f64, zoom: f64) {
     let ed = h.state_mut();
-    let zoom = 50.0;
     ed.view.zoom = zoom;
     ed.view.pan = ed.canvas_rect.size() * 0.5 - vec2((x * zoom) as f32, (-y * zoom) as f32);
+}
+
+/// Zooms right in (the most the pattern table allows) on pattern point (x, y) mm.
+pub fn zoom_in_on(h: &mut H, x: f64, y: f64) {
+    view_at(h, x, y, 50.0);
 }
