@@ -1,6 +1,10 @@
 //! Drawing the pattern table: grid, pieces, the selection, and drafts in progress.
 
-use super::{PatternEditor, Selection, Tool, cache::Drawn, canvas::pen_piece};
+use super::{
+    PatternEditor, Selection, Tool,
+    cache::Drawn,
+    canvas::{PenPoint, pen_piece},
+};
 use crate::tr;
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, vec2};
 use opendrape_core::{Edge, LineKind, Point2};
@@ -328,6 +332,13 @@ impl PatternEditor {
                     }
                 }
             }
+            Selection::Line(_, l) => {
+                // The cached points of the line: thinned for very long ones, as when drawn.
+                if let Some((points, _)) = d.lines.get(l) {
+                    let pts = self.screen_points(rect, points.clone());
+                    painter.add(Shape::line(pts, Stroke::new(3.0, c.selected)));
+                }
+            }
             Selection::Piece(_) | Selection::None => {}
         }
     }
@@ -335,54 +346,8 @@ impl PatternEditor {
     fn paint_drafts(&self, painter: &Painter, rect: Rect, c: &Palette) {
         let v = self.view;
         let ink = Stroke::new(1.5, c.selected);
-        let pen = &self.canvas.pen;
-        if let (Some(first), Some(last)) = (pen.first(), pen.last()) {
-            if pen.len() >= 2 {
-                let draft = pen_piece(pen);
-                for i in 0..pen.len() - 1 {
-                    painter.add(Shape::line(
-                        self.screen_points(rect, geom::edge_points(&draft, i, v.mm(0.25))),
-                        ink,
-                    ));
-                }
-            }
-            for p in pen {
-                let at = v.to_screen(rect, p.pos);
-                painter.circle_filled(at, 3.5, c.selected);
-                if let Some(h) = p.handle {
-                    let mirrored = p.pos - (h - p.pos);
-                    let handle = Stroke::new(1.0, c.handle);
-                    painter
-                        .line_segment([v.to_screen(rect, mirrored), v.to_screen(rect, h)], handle);
-                    painter.circle_stroke(v.to_screen(rect, h), 4.0, handle);
-                }
-            }
-            // Ring around the first point: click it to finish.
-            painter.circle_stroke(
-                v.to_screen(rect, first.pos),
-                7.0,
-                Stroke::new(1.0, c.selected),
-            );
-            if let Some(cursor) = self.canvas.cursor
-                && self.canvas.length_box.is_none()
-            {
-                let (a, b) = (v.to_screen(rect, last.pos), v.to_screen(rect, cursor));
-                painter.extend(Shape::dashed_line(
-                    &[a, b],
-                    Stroke::new(1.0, c.selected),
-                    4.0,
-                    3.0,
-                ));
-                let text = self.doc.project().units.format(last.pos.distance(cursor));
-                painter.text(
-                    b + vec2(12.0, -12.0),
-                    Align2::LEFT_BOTTOM,
-                    text,
-                    FontId::proportional(12.0),
-                    c.label,
-                );
-            }
-        }
+        self.paint_draft(painter, rect, &self.canvas.pen, c);
+        self.paint_draft(painter, rect, &self.canvas.line, c);
         if let (Some(start), Some(end)) = (self.canvas.rect_start, self.canvas.cursor) {
             let r = Rect::from_two_pos(v.to_screen(rect, start), v.to_screen(rect, end));
             painter.rect_stroke(r, 0.0, ink, StrokeKind::Middle);
@@ -391,6 +356,61 @@ impl PatternEditor {
             && let Some(p) = self.canvas.preview
         {
             painter.circle_stroke(v.to_screen(rect, p), 4.5, ink);
+        }
+    }
+
+    /// The points placed so far with the pen or the line tool: the edges between them, each
+    /// point (with its curve handle, if pulled out), a ring on the first and a dashed line to
+    /// the pointer with its length.
+    fn paint_draft(&self, painter: &Painter, rect: Rect, points: &[PenPoint], c: &Palette) {
+        let v = self.view;
+        let ink = Stroke::new(1.5, c.selected);
+        let (Some(first), Some(last)) = (points.first(), points.last()) else {
+            return;
+        };
+        if points.len() >= 2 {
+            let draft = pen_piece(points);
+            for i in 0..points.len() - 1 {
+                painter.add(Shape::line(
+                    self.screen_points(rect, geom::edge_points(&draft, i, v.mm(0.25))),
+                    ink,
+                ));
+            }
+        }
+        for p in points {
+            let at = v.to_screen(rect, p.pos);
+            painter.circle_filled(at, 3.5, c.selected);
+            if let Some(h) = p.handle {
+                let mirrored = p.pos - (h - p.pos);
+                let handle = Stroke::new(1.0, c.handle);
+                painter.line_segment([v.to_screen(rect, mirrored), v.to_screen(rect, h)], handle);
+                painter.circle_stroke(v.to_screen(rect, h), 4.0, handle);
+            }
+        }
+        // Ring around the first point: click it to finish.
+        painter.circle_stroke(
+            v.to_screen(rect, first.pos),
+            7.0,
+            Stroke::new(1.0, c.selected),
+        );
+        if let Some(cursor) = self.canvas.cursor
+            && self.canvas.length_box.is_none()
+        {
+            let (a, b) = (v.to_screen(rect, last.pos), v.to_screen(rect, cursor));
+            painter.extend(Shape::dashed_line(
+                &[a, b],
+                Stroke::new(1.0, c.selected),
+                4.0,
+                3.0,
+            ));
+            let text = self.doc.project().units.format(last.pos.distance(cursor));
+            painter.text(
+                b + vec2(12.0, -12.0),
+                Align2::LEFT_BOTTOM,
+                text,
+                FontId::proportional(12.0),
+                c.label,
+            );
         }
     }
 }

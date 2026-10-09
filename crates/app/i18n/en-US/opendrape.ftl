@@ -138,3 +138,16 @@ panel-notch-slit = Slit
 panel-notch-v = V
 panel-delete-notch = Delete notch
 notice-bad-notch = Type a distance from 0 up to the length of the edge.
+
+tool-line = Internal line
+tool-line-tip = Draw lines inside a piece: placement marks, fold lines, or shapes to cut out.
+hint-line-start = Click inside a piece to start a line; press and drag for a curve point.
+hint-line-drawing = Click the first point to close the shape, or press Return to finish the line. Backspace removes the last point; Esc cancels.
+notice-line-outside = Internal lines must stay inside their piece.
+notice-line-short = A line needs at least 2 points, and a closed shape 3.
+panel-line = Internal line
+panel-line-length = Length: { $length }
+panel-line-kind = Kind
+panel-line-marking = Marking
+panel-line-cutout = Cut-out
+panel-delete-line = Delete line

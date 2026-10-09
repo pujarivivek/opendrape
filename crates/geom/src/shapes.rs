@@ -4,7 +4,9 @@
 //! because edits always go to the stored piece.
 
 use crate::edge_length;
-use opendrape_core::{Edge, EdgeProps, Notch, Piece, PieceId, Point2, Project, Vertex};
+use opendrape_core::{
+    Edge, EdgeProps, InternalLine, Notch, Piece, PieceId, Point2, Project, Vertex,
+};
 
 /// One thing drawn on the pattern table.
 #[derive(Clone, Debug, PartialEq)]
@@ -81,7 +83,50 @@ impl Shape {
     pub fn to_stored_delta(&self, d: Point2) -> Point2 {
         self.kind.to_stored_delta(d)
     }
+    /// An internal line drawn on this shape, as the stored piece keeps it. A twin's points are
+    /// mirrored back. The stored piece of a cut-on-fold piece keeps everything on its own side
+    /// of the fold, so a line drawn on the pale half (judged by its first point off the fold
+    /// line) is stored as its mirror image across the fold; the pale half shows it again where
+    /// it was drawn. A line that then still crosses the fold makes an invalid piece, which the
+    /// document refuses.
+    pub fn line_to_stored(&self, line: &InternalLine) -> InternalLine {
+        let ShapeKind::Folded {
+            drawn,
+            fold: (near, far),
+            ..
+        } = self.kind
+        else {
+            return line.mapped(|p| self.to_stored(p));
+        };
+        let length = (far - near).length();
+        if length < 1e-9 {
+            return line.clone();
+        }
+        let d = far - near;
+        // Distance of a point from the fold line, positive on one side and negative on the other.
+        let side = |p: Point2| (d.x * (p.y - near.y) - d.y * (p.x - near.x)) / length;
+        // The stored half is on the side of its point furthest from the fold line.
+        let stored = self.piece.vertices[..drawn]
+            .iter()
+            .map(|v| side(v.pos))
+            .max_by(|a, b| a.abs().total_cmp(&b.abs()))
+            .unwrap_or(0.0);
+        let first = line
+            .vertices
+            .iter()
+            .map(|v| side(v.pos))
+            .find(|s| s.abs() > FOLD_SIDE_EPS_MM)
+            .unwrap_or(0.0);
+        if first * stored < 0.0 {
+            line.mapped(|p| reflect_across(p, near, far))
+        } else {
+            line.clone()
+        }
+    }
 }
+
+/// How far (mm) from the fold line a point must be to count as being on one side of it.
+const FOLD_SIDE_EPS_MM: f64 = 1e-6;
 
 impl ShapeKind {
     /// A movement on a shape of this kind as a movement of its stored piece: a twin is the
@@ -310,6 +355,57 @@ mod tests {
         assert_eq!(shape.shape_vertex(2), 0);
         assert_eq!(shape.shape_edge(3), 1);
         close(shape.piece.vertices[4].pos, p(200.0, 0.0));
+    }
+
+    #[test]
+    fn a_line_is_stored_the_way_its_piece_keeps_it() {
+        let line = |a: Point2, b: Point2| InternalLine::open(&[a, b]);
+        let same = |a: &InternalLine, b: &InternalLine| {
+            for (u, v) in a.vertices.iter().zip(&b.vertices) {
+                close(u.pos, v.pos);
+            }
+        };
+        // Folded on x = 0, stored on its right: a line on the pale half is stored mirrored.
+        let mut pr = Project::new();
+        pr.add_piece(half());
+        let shape = shape_of(&pr, PieceId(1)).unwrap();
+        let pale = line(p(-30.0, 50.0), p(-60.0, 150.0));
+        same(
+            &shape.line_to_stored(&pale),
+            &line(p(30.0, 50.0), p(60.0, 150.0)),
+        );
+        let drawn = line(p(30.0, 50.0), p(60.0, 150.0));
+        same(&shape.line_to_stored(&drawn), &drawn);
+        // The first point off the fold line decides.
+        let from_fold = line(p(0.0, 50.0), p(-40.0, 50.0));
+        same(
+            &shape.line_to_stored(&from_fold),
+            &line(p(0.0, 50.0), p(40.0, 50.0)),
+        );
+        // On the left of the fold line when the piece is stored on the left.
+        let mut left = Piece::rectangle(PieceId(2), "Left", p(-100.0, 0.0), 100.0, 200.0);
+        left.fold = Some(1); // the right edge, x = 0
+        pr.add_piece(left);
+        let shape = shape_of(&pr, PieceId(2)).unwrap();
+        same(
+            &shape.line_to_stored(&line(p(30.0, 50.0), p(60.0, 150.0))),
+            &line(p(-30.0, 50.0), p(-60.0, 150.0)),
+        );
+        same(
+            &shape.line_to_stored(&drawn.mapped(|q| p(-q.x, q.y))),
+            &drawn.mapped(|q| p(-q.x, q.y)),
+        );
+        // A twin shows the stored point (x, y) at (offset.x - x, y + offset.y).
+        let mut pr = Project::new();
+        let id = pr.add_piece(Piece::rectangle(PieceId(0), "A", p(0.0, 0.0), 100.0, 200.0));
+        pr.add_twin(id, "A (mirror)".into(), p(300.0, 20.0))
+            .unwrap();
+        let twin = &shapes(&pr)[1];
+        same(
+            &twin.line_to_stored(&line(p(250.0, 60.0), p(200.0, 80.0))),
+            &line(p(50.0, 40.0), p(100.0, 60.0)),
+        );
+        same(&shapes(&pr)[0].line_to_stored(&drawn), &drawn);
     }
 
     #[test]

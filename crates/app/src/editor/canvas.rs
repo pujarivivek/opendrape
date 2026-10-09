@@ -1,6 +1,7 @@
 //! Pointer and keyboard handling on the pattern table, one tool at a time.
 
 use super::length_box::{BoxKind, LengthBox, Outcome};
+use super::line_tool::{line_inside, move_line_vertex};
 use super::{EMPTY_TABLE, HIT_PX, PatternEditor, Selection, Tool, project_bounds};
 use crate::tr;
 use egui::{Event, Key, PointerButton, Response, Sense, vec2};
@@ -34,6 +35,13 @@ pub(super) struct CanvasState {
     pub preview: Option<Point2>,
     /// Edit tool: what is being dragged.
     pub drag: Option<Drag>,
+    /// Line tool: the points of the internal line being drawn.
+    pub line: Vec<PenPoint>,
+    /// The shape (a piece's or its twin's id) the line is being drawn in: the first point
+    /// decides it.
+    pub line_owner: Option<PieceId>,
+    /// The last line point is being dragged out into a curve point.
+    pub line_dragging: bool,
 }
 
 /// What placing a pen point did.
@@ -60,6 +68,10 @@ enum Hit {
     Inside(PieceId),
     /// A notch's mark: the shape and the stored notch's index.
     Notch(PieceId, usize),
+    /// A point of an internal line: the shape, the stored line and its vertex.
+    LineVertex(PieceId, usize, usize),
+    /// An internal line itself: the shape and the stored line's index.
+    Line(PieceId, usize),
 }
 
 impl Hit {
@@ -69,7 +81,9 @@ impl Hit {
             | Self::Vertex(id, _)
             | Self::Edge(id, _)
             | Self::Inside(id)
-            | Self::Notch(id, _) => id,
+            | Self::Notch(id, _)
+            | Self::LineVertex(id, ..)
+            | Self::Line(id, _) => id,
         }
     }
 
@@ -79,6 +93,7 @@ impl Hit {
             Self::Vertex(id, i) => Selection::Vertex(id, i),
             Self::Inside(id) => Selection::Piece(id),
             Self::Notch(id, k) => Selection::Notch(id, k),
+            Self::LineVertex(id, l, _) | Self::Line(id, l) => Selection::Line(id, l),
         }
     }
 }
@@ -95,11 +110,17 @@ pub(super) struct Drag {
     /// A refused move of this drag has been reported already: one notice per drag, not one per
     /// frame.
     refusal_noted: bool,
+    /// Dragging an internal line that was inside its piece when the drag began. One that
+    /// already sticks out (the outline was reshaped round it) may be moved freely, so it can
+    /// be brought back in a point at a time.
+    line_was_inside: bool,
 }
 
 impl Drag {
-    /// The stored piece after the pointer moved `d` (in the dragged shape's coordinates).
-    fn moved(&self, d: Point2) -> Piece {
+    /// The stored piece after the pointer moved `d` (in the dragged shape's coordinates), and
+    /// whether the move was held back because it would take an internal line out of its piece:
+    /// the piece is then as it was when the drag began.
+    fn moved(&self, d: Point2) -> (Piece, bool) {
         let o = &self.original;
         let mut p = o.clone();
         let twin = matches!(self.kind, geom::ShapeKind::Twin { .. });
@@ -129,8 +150,21 @@ impl Drag {
             Hit::Inside(_) => p.translate(d),
             // Notches are not dragged: no drag starts on one.
             Hit::Notch(..) => {}
+            Hit::LineVertex(_, l, k) => {
+                let to = o.lines[l].vertices[k].pos + ds;
+                move_line_vertex(&mut p.lines[l], k, to);
+                if self.line_was_inside && !line_inside(&p, l) {
+                    return (o.clone(), true);
+                }
+            }
+            Hit::Line(_, l) => {
+                p.lines[l].translate(ds);
+                if self.line_was_inside && !line_inside(&p, l) {
+                    return (o.clone(), true);
+                }
+            }
         }
-        p
+        (p, false)
     }
 }
 
@@ -154,7 +188,7 @@ impl PatternEditor {
         let cursor = hover.map(|w| match self.tool {
             Tool::Pen => self.snap(w, tol, shift),
             Tool::Rectangle => self.snap(w, tol, false),
-            Tool::Edit | Tool::AddPoint | Tool::Notch => w,
+            Tool::Edit | Tool::AddPoint | Tool::Notch | Tool::Line => w,
         });
         self.canvas.cursor = cursor;
         // A press on the canvas dismisses the last notice, unless a property field owned the
@@ -177,6 +211,7 @@ impl PatternEditor {
             Tool::Edit => self.edit_tool(&response, press, pointer, tol),
             Tool::AddPoint => self.add_point_tool(&response, hover, pointer, tol),
             Tool::Notch => self.notch_tool(&response, hover, pointer, tol),
+            Tool::Line => self.line_tool(&response, press, pointer, tol),
         }
         if keys_free {
             self.canvas_keys(ui, &response);
@@ -366,6 +401,21 @@ impl PatternEditor {
                 }
             }
             Tool::Rectangle if pressed(Key::Escape) => self.canvas.rect_start = None,
+            Tool::Line if !self.canvas.line.is_empty() => {
+                if pressed(Key::Enter) {
+                    self.finish_line(false);
+                }
+                if pressed(Key::Escape) {
+                    self.canvas.line.clear();
+                    self.canvas.line_owner = None;
+                }
+                if delete_pressed() {
+                    self.canvas.line.pop();
+                    if self.canvas.line.is_empty() {
+                        self.canvas.line_owner = None;
+                    }
+                }
+            }
             Tool::Notch => {
                 self.notch_box_on_digits(ui, response);
                 // Only a notch: a piece or point selected earlier is the Edit tool's to delete.
@@ -479,32 +529,42 @@ impl PatternEditor {
             {
                 self.selection = hit.selection();
                 self.doc.begin_gesture();
+                let line_was_inside = match hit {
+                    Hit::Line(_, l) | Hit::LineVertex(_, l, _) => line_inside(&original, l),
+                    _ => true,
+                };
                 self.canvas.drag = Some(Drag {
                     original,
                     hit,
                     grab,
                     kind: shape.kind,
                     refusal_noted: false,
+                    line_was_inside,
                 });
             }
         }
         if response.dragged_by(PointerButton::Primary)
             && let (Some(drag), Some(now)) = (&self.canvas.drag, pointer)
         {
-            let moved = drag.moved(now - drag.grab);
+            let (moved, held_back) = drag.moved(now - drag.grab);
             let id = moved.id;
             self.doc.gesture_edit(|p| {
                 if let Some(piece) = p.piece_mut(id) {
                     *piece = moved;
                 }
             });
-            // The move was refused (a point dragged over a fold line, or too large a piece):
-            // say so, as a typed change would, but only the first time in this drag.
-            if self.doc.last_change_refused()
+            // The move was refused (a point dragged over a fold line, or too large a piece) or
+            // held back (a line dragged out of its piece): say so, as a typed change would,
+            // but only the first time in this drag.
+            if (held_back || self.doc.last_change_refused())
                 && let Some(drag) = &mut self.canvas.drag
                 && !std::mem::replace(&mut drag.refusal_noted, true)
             {
-                self.note_if_refused();
+                if held_back {
+                    self.notice = Some(tr!("notice-line-outside"));
+                } else {
+                    self.note_if_refused();
+                }
             }
         }
         if response.drag_stopped() && self.canvas.drag.take().is_some() {
@@ -521,9 +581,11 @@ impl PatternEditor {
 
     /// What the edit tool picks at `w`. A point or curve handle and a notch mark can both be
     /// under the pointer (a mark may start at a corner): the nearer wins, and the point or
-    /// handle wins a tie. Then come edges and insides, topmost shape first, so a notch mark
-    /// still beats the edge it is on. The handles are the selected shape's only. Points and
-    /// edges of a fold's pale half are not editable: they pick the piece.
+    /// handle wins a tie. A point of an internal line likewise only beats a point or handle
+    /// by being nearer. Then come edges, lines and insides, topmost shape first, so a notch
+    /// mark still beats the edge it is on. The handles are the selected shape's only. Points
+    /// and edges of a fold's pale half, and its mirror images of lines, are not editable: they
+    /// pick the piece.
     fn hit(&self, shapes: &[geom::Shape], w: Point2, tol: f64) -> Option<Hit> {
         let topmost = || shapes.iter().rev();
         let handle = self
@@ -556,12 +618,21 @@ impl PatternEditor {
         // Pointer positions pass through f32 screen coordinates, so a press on a corner a mark
         // starts at can land a hair along the mark: a notch must be nearer by a screen point.
         let slack = tol / HIT_PX;
-        match (corner, self.notch_at(shapes, w, tol)) {
-            (Some((hit, d)), Some((notch, dn))) => {
-                return Some(if dn + slack < d { notch } else { hit });
+        let near = match (corner, self.notch_at(shapes, w, tol)) {
+            (Some((hit, d)), Some((notch, dn))) => Some(if dn + slack < d { notch } else { hit }),
+            (Some((hit, _)), None) | (None, Some((hit, _))) => Some(hit),
+            (None, None) => None,
+        };
+        // A point of an internal line can be under the pointer too (a line may start at a
+        // corner): it beats a corner or handle only by being nearer, by the same slack.
+        let line_point = self.line_vertex_at(shapes, w, tol);
+        match (near, corner, line_point) {
+            (Some(hit), Some((point, d)), Some((vertex, dv))) if hit == point && dv + slack < d => {
+                return Some(vertex);
             }
-            (Some((hit, _)), None) | (None, Some((hit, _))) => return Some(hit),
-            (None, None) => {}
+            (Some(hit), ..) => return Some(hit),
+            (None, _, Some((vertex, _))) => return Some(vertex),
+            (None, _, None) => {}
         }
         topmost()
             .find_map(|s| {
@@ -573,10 +644,44 @@ impl PatternEditor {
                     })
             })
             .or_else(|| {
+                topmost().find_map(|s| {
+                    geom::nearest_line(&s.piece, w)
+                        .filter(|line| line.3 <= tol && line.0 < self.stored_lines(s.id))
+                        .map(|(l, ..)| Hit::Line(s.id, l))
+                })
+            })
+            .or_else(|| {
                 topmost()
                     .find(|s| geom::contains(&s.piece, w))
                     .map(|s| Hit::Inside(s.id))
             })
+    }
+
+    /// How many internal lines the piece behind shape `id` stores. A fold's pale half repeats
+    /// them after the stored ones, so only line indices below this are editable.
+    fn stored_lines(&self, id: PieceId) -> usize {
+        self.doc
+            .project()
+            .owner(id)
+            .map_or(0, |(p, _)| p.lines.len())
+    }
+
+    /// The point of an internal line nearest to `w` within `tol` mm, with its distance: the
+    /// topmost shape's first on a tie.
+    fn line_vertex_at(&self, shapes: &[geom::Shape], w: Point2, tol: f64) -> Option<(Hit, f64)> {
+        let mut best: Option<(Hit, f64)> = None;
+        for s in shapes.iter().rev() {
+            let lines = s.piece.lines.iter().take(self.stored_lines(s.id));
+            for (l, line) in lines.enumerate() {
+                for (k, v) in line.vertices.iter().enumerate() {
+                    let d = v.pos.distance(w);
+                    if d <= tol && best.is_none_or(|(_, b)| d < b) {
+                        best = Some((Hit::LineVertex(s.id, l, k), d));
+                    }
+                }
+            }
+        }
+        best
     }
 
     /// The notch mark nearest to `w` within `tol` mm, with its distance: the topmost shape's
@@ -603,7 +708,7 @@ impl PatternEditor {
         best
     }
 
-    /// Deletes the selected point or piece. A piece keeps at least 3 points.
+    /// Deletes the selected point, notch, line or piece. A piece keeps at least 3 points.
     pub(super) fn delete_selection(&mut self) {
         match self.selection {
             Selection::Piece(id) => {
@@ -631,6 +736,18 @@ impl PatternEditor {
                         && k < pc.notches.len()
                     {
                         pc.notches.remove(k);
+                    }
+                });
+                if !self.note_if_refused() {
+                    self.selection = Selection::Piece(id);
+                }
+            }
+            Selection::Line(id, l) => {
+                self.doc.edit(|p| {
+                    if let Some((pc, _)) = p.owner_mut(id)
+                        && l < pc.lines.len()
+                    {
+                        pc.lines.remove(l);
                     }
                 });
                 if !self.note_if_refused() {

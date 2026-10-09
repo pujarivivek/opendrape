@@ -4,6 +4,7 @@ mod cache;
 mod canvas;
 mod document;
 mod length_box;
+mod line_tool;
 mod notch_tool;
 mod paint;
 mod panel;
@@ -45,15 +46,17 @@ pub enum Tool {
     Rectangle,
     AddPoint,
     Notch,
+    Line,
 }
 
 impl Tool {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Edit,
         Self::Pen,
         Self::Rectangle,
         Self::AddPoint,
         Self::Notch,
+        Self::Line,
     ];
 
     /// Single-key shortcut: the letters other pattern software uses, so habits carry over.
@@ -64,6 +67,7 @@ impl Tool {
             Self::Rectangle => Key::S,
             Self::AddPoint => Key::X,
             Self::Notch => Key::N,
+            Self::Line => Key::L,
         }
     }
 
@@ -74,6 +78,7 @@ impl Tool {
             Self::Rectangle => tr!("tool-rectangle"),
             Self::AddPoint => tr!("tool-add-point"),
             Self::Notch => tr!("tool-notch"),
+            Self::Line => tr!("tool-line"),
         }
     }
 
@@ -84,6 +89,7 @@ impl Tool {
             Self::Rectangle => tr!("tool-rectangle-tip"),
             Self::AddPoint => tr!("tool-add-point-tip"),
             Self::Notch => tr!("tool-notch-tip"),
+            Self::Line => tr!("tool-line-tip"),
         }
     }
 }
@@ -99,15 +105,19 @@ pub enum Selection {
     Edge(PieceId, usize),
     /// A notch: the shape's id and the index into the stored piece's notches.
     Notch(PieceId, usize),
+    /// An internal line: the shape's id and the index into the stored piece's lines.
+    Line(PieceId, usize),
 }
 
 impl Selection {
     pub fn piece(self) -> Option<PieceId> {
         match self {
             Self::None => None,
-            Self::Piece(id) | Self::Vertex(id, _) | Self::Edge(id, _) | Self::Notch(id, _) => {
-                Some(id)
-            }
+            Self::Piece(id)
+            | Self::Vertex(id, _)
+            | Self::Edge(id, _)
+            | Self::Notch(id, _)
+            | Self::Line(id, _) => Some(id),
         }
     }
 
@@ -123,6 +133,7 @@ impl Selection {
         match self {
             Self::Vertex(_, i) | Self::Edge(_, i) if i >= piece.len() => Self::Piece(id),
             Self::Notch(_, k) if k >= piece.notches.len() => Self::Piece(id),
+            Self::Line(_, l) if l >= piece.lines.len() => Self::Piece(id),
             other => other,
         }
     }
@@ -208,9 +219,13 @@ impl PatternEditor {
         self.tool = tool;
     }
 
-    /// Undo. While a piece is being drawn with the pen, removes its last point instead.
+    /// Undo. While a line or a piece is being drawn, removes its last point instead.
     pub fn undo(&mut self) {
-        if self.canvas.pen.pop().is_none() {
+        if self.canvas.line.pop().is_some() {
+            if self.canvas.line.is_empty() {
+                self.canvas.line_owner = None;
+            }
+        } else if self.canvas.pen.pop().is_none() {
             self.canvas.drag = None;
             self.doc.undo();
         }
@@ -218,7 +233,7 @@ impl PatternEditor {
     }
 
     pub fn redo(&mut self) {
-        if self.canvas.pen.is_empty() {
+        if self.canvas.pen.is_empty() && self.canvas.line.is_empty() {
             self.canvas.drag = None;
             self.doc.redo();
         }
@@ -226,11 +241,11 @@ impl PatternEditor {
     }
 
     pub fn can_undo(&self) -> bool {
-        !self.canvas.pen.is_empty() || self.doc.can_undo()
+        !self.canvas.pen.is_empty() || !self.canvas.line.is_empty() || self.doc.can_undo()
     }
 
     pub fn can_redo(&self) -> bool {
-        self.canvas.pen.is_empty() && self.doc.can_redo()
+        self.canvas.pen.is_empty() && self.canvas.line.is_empty() && self.doc.can_redo()
     }
 
     /// Show every piece on the next frame.
@@ -246,6 +261,11 @@ impl PatternEditor {
     /// Points placed so far in the piece being drawn with the pen.
     pub fn pen(&self) -> &[PenPoint] {
         &self.canvas.pen
+    }
+
+    /// Points placed so far in the internal line being drawn with the line tool.
+    pub fn line_draft(&self) -> &[PenPoint] {
+        &self.canvas.line
     }
 
     /// The number box (typed length and angle, or width and height) is open.

@@ -4,9 +4,11 @@
 mod common;
 use common::*;
 use egui::{Key, Modifiers, accesskit::Role, vec2};
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use opendrape::editor::{Selection, Tool};
-use opendrape_core::{Notch, NotchStyle, Piece, PieceId, Point2, Units};
+use opendrape_core::{
+    Edge, InternalLine, LineKind, Notch, NotchStyle, Piece, PieceId, Point2, Units, VertexKind,
+};
 use opendrape_geom as geom;
 
 /// A 150 × 300 mm half piece at (300,100), folded on its left edge (x = 300): its pale half
@@ -934,4 +936,639 @@ fn delete_in_the_notch_tool_leaves_a_selected_piece_alone() {
     key(&mut h, Key::Delete);
     assert!(h.state().doc.project().piece(id).is_some());
     assert_eq!(h.state().selection, Selection::Piece(id));
+}
+
+/// Puts `line` on piece `id`, as if drawn.
+fn with_line(h: &mut H, id: PieceId, line: InternalLine) {
+    h.state_mut()
+        .doc
+        .edit(|p| p.piece_mut(id).unwrap().lines.push(line));
+    h.run();
+}
+
+/// An L-shaped piece: a 300 × 100 mm foot along the bottom and a 100 × 400 mm arm up the left,
+/// from (100,100). Its inner corner is (200,200).
+fn with_l_shape(h: &mut H) -> PieceId {
+    let id = h.state_mut().doc.edit(|p| {
+        let corners = [(100.0, 100.0), (400.0, 100.0), (400.0, 200.0)]
+            .into_iter()
+            .chain([(200.0, 200.0), (200.0, 500.0), (100.0, 500.0)])
+            .map(|(x, y)| Point2::new(x, y))
+            .collect::<Vec<_>>();
+        p.add_piece(Piece::polygon(PieceId(0), "L", &corners))
+    });
+    h.run();
+    id
+}
+
+fn notice_is(h: &H, text: &str) -> bool {
+    h.state().notice.as_deref() == Some(text)
+}
+
+const OUTSIDE: &str = "Internal lines must stay inside their piece.";
+
+#[test]
+fn the_line_tool_draws_an_open_line() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    key(&mut h, Key::L);
+    assert_eq!(h.state().tool, Tool::Line);
+    click(&mut h, 150.0, 200.0);
+    click(&mut h, 300.0, 200.0);
+    key(&mut h, Key::Enter);
+    let lines = piece_of(&h, id).lines;
+    assert_eq!(lines.len(), 1);
+    assert!(!lines[0].closed);
+    close(lines[0].vertices[1].pos, Point2::new(300.0, 200.0));
+    assert_eq!(h.state().selection, Selection::Line(id, 0));
+}
+
+#[test]
+fn clicking_the_first_point_closes_a_shape_that_can_be_cut_out() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    key(&mut h, Key::L);
+    for (x, y) in [
+        (150.0, 200.0),
+        (300.0, 200.0),
+        (220.0, 350.0),
+        (150.0, 200.0),
+    ] {
+        click(&mut h, x, y);
+    }
+    assert!(piece_of(&h, id).lines[0].closed);
+    h.get_by_label("Cut-out").click();
+    h.run();
+    assert_eq!(piece_of(&h, id).lines[0].kind, LineKind::Cutout);
+}
+
+#[test]
+fn points_outside_the_piece_are_refused() {
+    let mut h = harness();
+    with_rectangle(&mut h);
+    key(&mut h, Key::L);
+    click(&mut h, 150.0, 200.0);
+    click(&mut h, 600.0, 200.0); // outside the piece
+    assert_eq!(h.state().line_draft().len(), 1);
+    assert!(h.state().notice.is_some());
+}
+
+#[test]
+fn undo_while_drawing_a_line_removes_its_last_point() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    key(&mut h, Key::L);
+    click(&mut h, 150.0, 200.0);
+    click(&mut h, 300.0, 200.0);
+    cmd(&mut h, Key::Z);
+    assert_eq!(h.state().line_draft().len(), 1);
+    assert!(piece_of(&h, id).lines.is_empty());
+}
+
+#[test]
+fn the_edit_tool_moves_lines_and_their_points_but_keeps_them_inside() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    h.state_mut().doc.edit(|p| {
+        p.piece_mut(id).unwrap().lines.push(InternalLine::open(&[
+            Point2::new(150.0, 200.0),
+            Point2::new(300.0, 200.0),
+        ]))
+    });
+    h.run();
+    drag(&mut h, (225.0, 200.0), (225.0, 250.0)); // the whole line
+    close(
+        piece_of(&h, id).lines[0].vertices[0].pos,
+        Point2::new(150.0, 250.0),
+    );
+    assert_eq!(h.state().selection, Selection::Line(id, 0));
+    drag(&mut h, (150.0, 250.0), (160.0, 260.0)); // one point
+    close(
+        piece_of(&h, id).lines[0].vertices[0].pos,
+        Point2::new(160.0, 260.0),
+    );
+    drag(&mut h, (160.0, 260.0), (700.0, 260.0)); // out of the piece: not applied
+    close(
+        piece_of(&h, id).lines[0].vertices[0].pos,
+        Point2::new(160.0, 260.0),
+    );
+}
+
+#[test]
+fn a_line_on_a_folded_piece_shows_on_both_halves() {
+    let mut h = harness();
+    let id = with_half(&mut h);
+    key(&mut h, Key::L);
+    click(&mut h, 350.0, 200.0);
+    click(&mut h, 420.0, 200.0);
+    key(&mut h, Key::Enter);
+    assert_eq!(piece_of(&h, id).lines.len(), 1);
+    let shape = geom::shape_of(h.state().doc.project(), id).unwrap();
+    assert_eq!(shape.piece.lines.len(), 2);
+}
+
+#[test]
+fn selection_of_a_removed_line_is_dropped() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    key(&mut h, Key::L);
+    click(&mut h, 150.0, 200.0);
+    click(&mut h, 300.0, 200.0);
+    key(&mut h, Key::Enter);
+    cmd(&mut h, Key::Z);
+    assert!(piece_of(&h, id).lines.is_empty());
+    assert_eq!(h.state().selection, Selection::Piece(id));
+}
+
+#[test]
+fn delete_removes_the_selected_line() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    key(&mut h, Key::L);
+    click(&mut h, 150.0, 200.0);
+    click(&mut h, 300.0, 200.0);
+    key(&mut h, Key::Enter);
+    key(&mut h, Key::Z); // edit tool
+    key(&mut h, Key::Delete);
+    assert!(piece_of(&h, id).lines.is_empty());
+}
+
+#[test]
+fn a_line_dragged_out_of_its_piece_is_held_back_and_says_why() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    with_line(
+        &mut h,
+        id,
+        InternalLine::open(&[Point2::new(150.0, 200.0), Point2::new(300.0, 200.0)]),
+    );
+    let before = piece_of(&h, id);
+    drag(&mut h, (225.0, 200.0), (225.0, 600.0)); // the whole line, up past the top edge
+    assert_eq!(piece_of(&h, id), before);
+    assert!(notice_is(&h, OUTSIDE), "{:?}", h.state().notice);
+    cmd(&mut h, Key::Z); // the held-back drag left no step: this undoes the line itself
+    assert!(piece_of(&h, id).lines.is_empty());
+}
+
+#[test]
+fn line_points_next_to_a_corner_do_not_hide_it_and_the_nearer_one_wins() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    let tol = h.state().view.mm(8.0);
+    // A line point 0.7 tol from the corner (100,100), the pointer on it: the point is nearer.
+    let near = 100.0 + 0.5 * tol;
+    with_line(
+        &mut h,
+        id,
+        InternalLine::open(&[Point2::new(near, near), Point2::new(300.0, 300.0)]),
+    );
+    click(&mut h, near, near);
+    assert_eq!(h.state().selection, Selection::Line(id, 0));
+    // Pointer on the corner: the line point is within reach too, but not nearer.
+    click(&mut h, 100.0, 100.0);
+    assert_eq!(h.state().selection, Selection::Vertex(id, 0));
+}
+
+#[test]
+fn a_line_starting_on_a_corner_leaves_the_corner_grabbable() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    with_line(
+        &mut h,
+        id,
+        InternalLine::open(&[Point2::new(100.0, 100.0), Point2::new(250.0, 250.0)]),
+    );
+    drag(&mut h, (100.0, 100.0), (90.0, 90.0)); // a tie: the piece's own point wins
+    let piece = piece_of(&h, id);
+    close(piece.vertices[0].pos, Point2::new(90.0, 90.0));
+    close(piece.lines[0].vertices[0].pos, Point2::new(100.0, 100.0));
+    assert_eq!(h.state().selection, Selection::Vertex(id, 0));
+}
+
+#[test]
+fn a_line_point_on_a_curve_handle_leaves_the_handle_grabbable() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    h.state_mut().doc.edit(|p| {
+        p.piece_mut(id).unwrap().edges[0] = Edge::Curve {
+            c1: Point2::new(200.0, 130.0),
+            c2: Point2::new(300.0, 130.0),
+        };
+    });
+    with_line(
+        &mut h,
+        id,
+        InternalLine::open(&[Point2::new(200.0, 130.0), Point2::new(250.0, 250.0)]),
+    );
+    click(&mut h, 250.0, 400.0); // select the piece, so its handles show
+    assert_eq!(h.state().selection, Selection::Piece(id));
+    click(&mut h, 200.0, 130.0);
+    assert_eq!(h.state().selection, Selection::Edge(id, 0)); // the handle, not the line point
+}
+
+#[test]
+fn a_line_on_a_twin_is_stored_on_its_piece_the_mirrored_way() {
+    // The twin shows the stored point (x, y) at (850 - x, y + 40): its offset has y ≠ 0 and
+    // the points are off centre, so a missed mirror or a flipped y sign lands somewhere else.
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    let twin = h
+        .state_mut()
+        .doc
+        .edit(|p| p.add_twin(id, "Front (mirror)".into(), Point2::new(850.0, 40.0)))
+        .unwrap();
+    h.run();
+    key(&mut h, Key::L);
+    click(&mut h, 500.0, 200.0);
+    click(&mut h, 700.0, 260.0);
+    key(&mut h, Key::Enter);
+    let line = piece_of(&h, id).lines.remove(0);
+    close(line.vertices[0].pos, Point2::new(350.0, 160.0));
+    close(line.vertices[1].pos, Point2::new(150.0, 220.0));
+    assert_eq!(h.state().selection, Selection::Line(twin, 0));
+    let shape = geom::shape_of(h.state().doc.project(), twin).unwrap();
+    close(
+        shape.piece.lines[0].vertices[0].pos,
+        Point2::new(500.0, 200.0),
+    );
+    close(
+        shape.piece.lines[0].vertices[1].pos,
+        Point2::new(700.0, 260.0),
+    );
+}
+
+#[test]
+fn dragging_a_line_on_a_twin_moves_the_stored_line_the_mirrored_way() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    let twin = h
+        .state_mut()
+        .doc
+        .edit(|p| p.add_twin(id, "Front (mirror)".into(), Point2::new(850.0, 40.0)))
+        .unwrap();
+    // Stored (350,160)–(150,220), shown on the twin at (500,200)–(700,260).
+    with_line(
+        &mut h,
+        id,
+        InternalLine::open(&[Point2::new(350.0, 160.0), Point2::new(150.0, 220.0)]),
+    );
+    drag(&mut h, (500.0, 200.0), (520.0, 230.0)); // the twin's point: right 20, up 30
+    let line = piece_of(&h, id).lines.remove(0);
+    close(line.vertices[0].pos, Point2::new(330.0, 190.0)); // stored: left 20, up 30
+    close(line.vertices[1].pos, Point2::new(150.0, 220.0));
+    assert_eq!(h.state().selection, Selection::Line(twin, 0));
+    // Now shown from (520,230) to (700,260): its middle is (610,245). Right 10, down 20.
+    drag(&mut h, (610.0, 245.0), (620.0, 225.0));
+    let line = piece_of(&h, id).lines.remove(0);
+    close(line.vertices[0].pos, Point2::new(320.0, 170.0)); // stored: left 10, down 20
+    close(line.vertices[1].pos, Point2::new(140.0, 200.0));
+    // Dragged out past the twin's right edge (x = 750), which is the stored piece's left edge.
+    drag(&mut h, (530.0, 210.0), (800.0, 210.0));
+    let held = piece_of(&h, id).lines.remove(0);
+    close(held.vertices[0].pos, Point2::new(320.0, 170.0));
+    assert!(notice_is(&h, OUTSIDE));
+    assert_eq!(
+        piece_of(&h, id).twin.map(|t| t.offset),
+        Some(Point2::new(850.0, 40.0))
+    );
+}
+
+#[test]
+fn a_line_drawn_on_the_pale_half_is_stored_mirrored_on_the_drawn_half() {
+    // The pale half (x 150..300) is not stored, and a stored line on the wrong side of the
+    // fold would make the piece invalid: it is stored as its mirror image across the fold,
+    // which the pale half shows again where the line was drawn.
+    let mut h = harness();
+    let id = with_half(&mut h);
+    key(&mut h, Key::L);
+    click(&mut h, 200.0, 200.0);
+    click(&mut h, 250.0, 300.0);
+    key(&mut h, Key::Enter);
+    assert!(h.state().notice.is_none(), "{:?}", h.state().notice);
+    let line = piece_of(&h, id).lines.remove(0);
+    close(line.vertices[0].pos, Point2::new(400.0, 200.0));
+    close(line.vertices[1].pos, Point2::new(350.0, 300.0));
+    let shape = geom::shape_of(h.state().doc.project(), id).unwrap();
+    assert_eq!(shape.piece.lines.len(), 2);
+    close(
+        shape.piece.lines[1].vertices[0].pos,
+        Point2::new(200.0, 200.0),
+    );
+    close(
+        shape.piece.lines[1].vertices[1].pos,
+        Point2::new(250.0, 300.0),
+    );
+    assert_eq!(h.state().selection, Selection::Line(id, 0));
+}
+
+#[test]
+fn the_mirror_image_of_a_line_on_a_fold_is_not_editable() {
+    let mut h = harness();
+    let id = with_half(&mut h);
+    with_line(
+        &mut h,
+        id,
+        InternalLine::open(&[Point2::new(350.0, 200.0), Point2::new(420.0, 200.0)]),
+    );
+    click(&mut h, 385.0, 200.0);
+    assert_eq!(h.state().selection, Selection::Line(id, 0)); // the stored line
+    // Its mirror image on the pale half is (250,200)–(180,200): it picks the piece, and a
+    // drag from it moves the whole piece.
+    click(&mut h, 215.0, 200.0);
+    assert_eq!(h.state().selection, Selection::Piece(id));
+    drag(&mut h, (215.0, 200.0), (215.0, 230.0));
+    let piece = piece_of(&h, id);
+    close(piece.vertices[0].pos, Point2::new(300.0, 130.0));
+    close(piece.lines[0].vertices[0].pos, Point2::new(350.0, 230.0));
+    // Nor are its points: the mirror image of the stored point (350,200), now at (350,230),
+    // is at (250,230).
+    click(&mut h, 250.0, 230.0);
+    assert_eq!(h.state().selection, Selection::Piece(id));
+    drag(&mut h, (250.0, 230.0), (250.0, 250.0));
+    let piece = piece_of(&h, id);
+    close(piece.vertices[0].pos, Point2::new(300.0, 150.0));
+    close(piece.lines[0].vertices[0].pos, Point2::new(350.0, 250.0));
+    close(piece.lines[0].vertices[1].pos, Point2::new(420.0, 250.0));
+}
+
+#[test]
+fn the_first_point_decides_the_piece() {
+    let mut h = harness();
+    let a = with_rectangle(&mut h);
+    let b = h.state_mut().doc.edit(|p| {
+        p.add_piece(Piece::rectangle(
+            PieceId(0),
+            "Back",
+            Point2::new(500.0, 100.0),
+            200.0,
+            400.0,
+        ))
+    });
+    h.run();
+    key(&mut h, Key::L);
+    click(&mut h, 150.0, 200.0);
+    click(&mut h, 600.0, 200.0); // inside the other piece
+    assert_eq!(h.state().line_draft().len(), 1);
+    assert!(notice_is(&h, OUTSIDE));
+    click(&mut h, 300.0, 300.0);
+    key(&mut h, Key::Enter);
+    assert_eq!(piece_of(&h, a).lines.len(), 1);
+    assert!(piece_of(&h, b).lines.is_empty());
+}
+
+#[test]
+fn a_line_may_start_on_the_outline_but_not_beside_it() {
+    let mut h = harness();
+    with_rectangle(&mut h);
+    key(&mut h, Key::L);
+    click(&mut h, 98.0, 300.0); // 2 mm outside the left edge
+    assert!(h.state().line_draft().is_empty());
+    assert!(notice_is(&h, OUTSIDE));
+    click(&mut h, 99.8, 300.0); // 0.2 mm outside: on the outline
+    assert_eq!(h.state().line_draft().len(), 1);
+}
+
+#[test]
+fn a_line_may_not_cut_across_a_notch_in_the_piece() {
+    // Both ends are inside the L, but the straight line between them leaves it.
+    let mut h = harness();
+    let id = with_l_shape(&mut h);
+    key(&mut h, Key::L);
+    click(&mut h, 150.0, 450.0); // up the arm
+    click(&mut h, 350.0, 150.0); // along the foot
+    assert_eq!(h.state().line_draft().len(), 2);
+    key(&mut h, Key::Enter);
+    assert!(piece_of(&h, id).lines.is_empty());
+    assert_eq!(h.state().line_draft().len(), 2, "the draft is kept");
+    assert!(notice_is(&h, OUTSIDE), "{:?}", h.state().notice);
+    // Round the corner instead, and it is fine.
+    key(&mut h, Key::Backspace);
+    click(&mut h, 150.0, 150.0);
+    click(&mut h, 350.0, 150.0);
+    key(&mut h, Key::Enter);
+    assert_eq!(piece_of(&h, id).lines.len(), 1);
+    assert_eq!(piece_of(&h, id).lines[0].vertices.len(), 3);
+}
+
+#[test]
+fn dragging_a_line_point_across_a_notch_in_the_piece_is_refused() {
+    let mut h = harness();
+    let id = with_l_shape(&mut h);
+    with_line(
+        &mut h,
+        id,
+        InternalLine::open(&[Point2::new(150.0, 450.0), Point2::new(150.0, 150.0)]),
+    );
+    // The new end (350,150) is inside the foot, but the line to it crosses the notch.
+    drag(&mut h, (150.0, 150.0), (350.0, 150.0));
+    close(
+        piece_of(&h, id).lines[0].vertices[1].pos,
+        Point2::new(150.0, 150.0),
+    );
+    assert!(notice_is(&h, OUTSIDE));
+}
+
+#[test]
+fn escape_cancels_a_line_and_backspace_removes_its_last_point() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    key(&mut h, Key::L);
+    click(&mut h, 150.0, 200.0);
+    click(&mut h, 300.0, 200.0);
+    key(&mut h, Key::Backspace);
+    assert_eq!(h.state().line_draft().len(), 1);
+    key(&mut h, Key::Escape);
+    assert!(h.state().line_draft().is_empty());
+    assert!(piece_of(&h, id).lines.is_empty());
+}
+
+#[test]
+fn a_line_needs_two_points() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    key(&mut h, Key::L);
+    click(&mut h, 150.0, 200.0);
+    key(&mut h, Key::Enter);
+    assert!(piece_of(&h, id).lines.is_empty());
+    assert_eq!(h.state().line_draft().len(), 1);
+    assert!(notice_is(
+        &h,
+        "A line needs at least 2 points, and a closed shape 3."
+    ));
+}
+
+#[test]
+fn clicking_the_last_point_again_finishes_an_open_line() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    key(&mut h, Key::L);
+    for (x, y) in [
+        (150.0, 200.0),
+        (300.0, 200.0),
+        (300.0, 350.0),
+        (300.0, 350.0),
+    ] {
+        click(&mut h, x, y);
+    }
+    let lines = piece_of(&h, id).lines;
+    assert_eq!(lines.len(), 1);
+    assert!(!lines[0].closed);
+    assert_eq!(lines[0].vertices.len(), 3);
+    assert_eq!(lines[0].edges.len(), 2);
+    assert!(h.state().line_draft().is_empty());
+}
+
+#[test]
+fn clicking_the_first_point_of_a_two_point_line_does_not_close_it() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    key(&mut h, Key::L);
+    click(&mut h, 150.0, 200.0);
+    click(&mut h, 300.0, 200.0);
+    click(&mut h, 150.0, 200.0); // a closed shape needs 3 points: nothing happens
+    assert_eq!(h.state().line_draft().len(), 2);
+    assert!(piece_of(&h, id).lines.is_empty());
+    assert!(h.state().notice.is_none(), "{:?}", h.state().notice);
+}
+
+#[test]
+fn pressing_and_dragging_makes_a_curve_point() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    key(&mut h, Key::L);
+    drag(&mut h, (150.0, 200.0), (200.0, 260.0));
+    assert!(h.state().line_draft()[0].handle.is_some());
+    click(&mut h, 350.0, 200.0);
+    key(&mut h, Key::Enter);
+    let line = piece_of(&h, id).lines.remove(0);
+    assert_eq!(line.vertices[0].kind, VertexKind::Smooth);
+    let Edge::Curve { c1, .. } = line.edges[0] else {
+        panic!("a curve: {:?}", line.edges)
+    };
+    close(c1, Point2::new(200.0, 260.0));
+    assert_eq!(line.edges.len(), 1, "an open line has no closing edge");
+}
+
+#[test]
+fn dragging_a_line_point_carries_its_curve_handles() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    let mut line = InternalLine::open(&[
+        Point2::new(150.0, 200.0),
+        Point2::new(250.0, 300.0),
+        Point2::new(350.0, 200.0),
+    ]);
+    line.edges = vec![
+        Edge::Curve {
+            c1: Point2::new(170.0, 260.0),
+            c2: Point2::new(220.0, 300.0),
+        },
+        Edge::Curve {
+            c1: Point2::new(280.0, 300.0),
+            c2: Point2::new(330.0, 260.0),
+        },
+    ];
+    with_line(&mut h, id, line);
+    drag(&mut h, (250.0, 300.0), (250.0, 320.0));
+    let line = piece_of(&h, id).lines.remove(0);
+    close(line.vertices[1].pos, Point2::new(250.0, 320.0));
+    let (Edge::Curve { c1: a1, c2: a2 }, Edge::Curve { c1: b1, c2: b2 }) =
+        (line.edges[0], line.edges[1])
+    else {
+        panic!("curves")
+    };
+    close(a2, Point2::new(220.0, 320.0)); // the handles beside the point went with it
+    close(b1, Point2::new(280.0, 320.0));
+    close(a1, Point2::new(170.0, 260.0)); // the far ones stayed
+    close(b2, Point2::new(330.0, 260.0));
+}
+
+#[test]
+fn the_line_panel_shows_the_length_and_only_a_closed_line_can_be_cut_out() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    with_line(
+        &mut h,
+        id,
+        InternalLine::open(&[Point2::new(150.0, 200.0), Point2::new(300.0, 200.0)]),
+    );
+    click(&mut h, 225.0, 200.0);
+    assert_eq!(h.state().selection, Selection::Line(id, 0));
+    h.get_by_label("Length: 15.0 cm");
+    assert!(h.get_by_label("Cut-out").accesskit_node().is_disabled());
+    assert!(!h.get_by_label("Marking").accesskit_node().is_disabled());
+    with_line(
+        &mut h,
+        id,
+        InternalLine::polygon(&[
+            Point2::new(150.0, 300.0),
+            Point2::new(250.0, 300.0),
+            Point2::new(200.0, 400.0),
+        ]),
+    );
+    click(&mut h, 200.0, 300.0); // the triangle's bottom edge
+    assert_eq!(h.state().selection, Selection::Line(id, 1));
+    assert!(!h.get_by_label("Cut-out").accesskit_node().is_disabled());
+    h.get_by_label("Cut-out").click();
+    h.run();
+    assert_eq!(piece_of(&h, id).lines[1].kind, LineKind::Cutout);
+    h.get_by_label("Marking").click();
+    h.run();
+    assert_eq!(piece_of(&h, id).lines[1].kind, LineKind::Marking);
+    h.get_by_label("Delete line").click();
+    h.run();
+    assert_eq!(piece_of(&h, id).lines.len(), 1);
+    assert_eq!(h.state().selection, Selection::Piece(id));
+}
+
+#[test]
+fn redo_waits_while_a_line_is_being_drawn() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    key(&mut h, Key::L);
+    click(&mut h, 150.0, 200.0);
+    click(&mut h, 300.0, 200.0);
+    key(&mut h, Key::Enter);
+    cmd(&mut h, Key::Z); // takes the line away
+    assert!(h.state().can_redo());
+    click(&mut h, 200.0, 300.0); // starts another line
+    assert!(h.state().can_undo() && !h.state().can_redo());
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+    h.run();
+    assert!(piece_of(&h, id).lines.is_empty());
+    key(&mut h, Key::Escape);
+    assert!(h.state().can_redo());
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+    h.run();
+    assert_eq!(piece_of(&h, id).lines.len(), 1);
+}
+
+#[test]
+fn a_line_that_sticks_out_can_be_brought_back_in_one_point_at_a_time() {
+    // Reshaping a piece can leave a line outside it. Held to "stay inside", neither end could
+    // ever move, because the other would still be out.
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    with_line(
+        &mut h,
+        id,
+        InternalLine::open(&[Point2::new(50.0, 200.0), Point2::new(450.0, 200.0)]),
+    );
+    drag(&mut h, (450.0, 200.0), (350.0, 200.0));
+    close(
+        piece_of(&h, id).lines[0].vertices[1].pos,
+        Point2::new(350.0, 200.0),
+    );
+    drag(&mut h, (50.0, 200.0), (150.0, 200.0)); // now it is all inside
+    close(
+        piece_of(&h, id).lines[0].vertices[0].pos,
+        Point2::new(150.0, 200.0),
+    );
+    assert!(h.state().notice.is_none(), "{:?}", h.state().notice);
+    drag(&mut h, (150.0, 200.0), (50.0, 200.0)); // and from here on it is held
+    close(
+        piece_of(&h, id).lines[0].vertices[0].pos,
+        Point2::new(150.0, 200.0),
+    );
+    assert!(notice_is(&h, OUTSIDE));
 }

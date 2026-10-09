@@ -5,8 +5,8 @@ use super::{PatternEditor, Selection, Tool, select_all_on_focus};
 use crate::tr;
 use egui::{Id, Key};
 use opendrape_core::{
-    Edge, MAX_ALLOWANCE_MM, Notch, NotchStyle, Piece, PieceId, Point2, Project, Side, Units,
-    VertexKind,
+    Edge, LineKind, MAX_ALLOWANCE_MM, Notch, NotchStyle, Piece, PieceId, Point2, Project, Side,
+    Units, VertexKind,
 };
 use opendrape_geom::{self as geom, Anchor};
 use std::collections::HashMap;
@@ -47,6 +47,7 @@ impl PatternEditor {
             Selection::Edge(id, i) => self.edge_properties(ui, id, i),
             Selection::Vertex(id, i) => self.vertex_properties(ui, id, i),
             Selection::Notch(id, k) => self.notch_properties(ui, id, k),
+            Selection::Line(id, l) => self.line_properties(ui, id, l),
         }
         let shown = &self.panel.shown;
         self.panel.editing.retain(|id, _| shown.contains(id));
@@ -355,6 +356,44 @@ impl PatternEditor {
         }
     }
 
+    fn line_properties(&mut self, ui: &mut egui::Ui, id: PieceId, l: usize) {
+        let Some((piece, _)) = self.doc.project().owner(id).map(|(p, s)| (p.clone(), s)) else {
+            return;
+        };
+        let Some(line) = piece.lines.get(l).cloned() else {
+            return;
+        };
+        let units = self.doc.project().units;
+        let source = piece.id;
+        ui.strong(tr!("panel-line"));
+        ui.label(tr!(
+            "panel-line-length",
+            length = units.format(geom::line_length(&line))
+        ));
+        ui.label(tr!("panel-line-kind"));
+        let mut kind = line.kind;
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut kind, LineKind::Marking, tr!("panel-line-marking"));
+            ui.add_enabled_ui(line.closed, |ui| {
+                ui.radio_value(&mut kind, LineKind::Cutout, tr!("panel-line-cutout"))
+            });
+        });
+        if kind != line.kind {
+            self.doc.edit(|p| {
+                if let Some(pc) = p.piece_mut(source)
+                    && let Some(stored) = pc.lines.get_mut(l)
+                {
+                    stored.kind = kind;
+                }
+            });
+            self.note_if_refused();
+        }
+        ui.add_space(6.0);
+        if ui.button(tr!("panel-delete-line")).clicked() {
+            self.delete_selection();
+        }
+    }
+
     /// Changes notch `k` of `source` as one undo step.
     fn edit_notch(&mut self, source: PieceId, k: usize, change: impl FnOnce(&mut Notch)) {
         self.doc.edit(|p| {
@@ -473,6 +512,8 @@ impl PatternEditor {
             Tool::Rectangle => tr!("hint-rectangle"),
             Tool::AddPoint => tr!("hint-add-point"),
             Tool::Notch => tr!("hint-notch"),
+            Tool::Line if self.canvas.line.is_empty() => tr!("hint-line-start"),
+            Tool::Line => tr!("hint-line-drawing"),
         }
     }
 }
