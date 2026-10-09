@@ -2597,6 +2597,9 @@ version = "0.1.0"
 dependencies = [
  "glam",
  "opendrape-body",
+ "opendrape-core",
+ "opendrape-geom",
+ "opendrape-mesh",
  "opendrape-sim",
  "rayon",
 ]
