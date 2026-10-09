@@ -214,6 +214,70 @@ fn seam_allowance_can_be_hidden() {
     assert!(!h.state().show_allowance);
 }
 
+/// Most shapes a frame at full zoom may hold: the dashes that show are a few hundred. Without
+/// clipping, a line kilometres long makes millions.
+const FRAME_SHAPES: usize = 3_000;
+
+#[test]
+fn a_marking_line_kilometres_long_still_draws_at_full_zoom() {
+    let _guard = watchdog(60);
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    // 800 metres of line across the pattern table: 40 million screen points at the most the
+    // table zooms in, which epaint's own dashes would take gigabytes to lay out.
+    h.state_mut().doc.edit(|p| {
+        p.piece_mut(id).unwrap().lines.push(InternalLine::open(&[
+            Point2::new(-400_000.0, 105.0),
+            Point2::new(400_000.0, 105.0),
+        ]))
+    });
+    zoom_in_on(&mut h, 250.0, 105.0);
+    h.run();
+    let shapes = h.output().shapes.len();
+    assert!(shapes > 20, "the dashes of the line show: {shapes}");
+    assert!(shapes < FRAME_SHAPES, "{shapes} shapes in a frame");
+}
+
+#[test]
+fn a_fold_line_kilometres_long_still_draws_at_full_zoom() {
+    let _guard = watchdog(60);
+    let mut h = harness();
+    let id = h.state_mut().doc.edit(|p| {
+        let mut half = Piece::rectangle(
+            PieceId(0),
+            "Tall",
+            Point2::new(300.0, -1_000_000.0),
+            150.0,
+            2_000_000.0,
+        );
+        half.fold = Some(3);
+        p.add_piece(half)
+    });
+    h.run();
+    assert!(!refused_notice(&h));
+    assert_eq!(piece_of(&h, id).fold, Some(3));
+    zoom_in_on(&mut h, 300.0, 0.0);
+    h.run();
+    let shapes = h.output().shapes.len();
+    assert!(shapes > 20, "the dashes of the fold show: {shapes}");
+    assert!(shapes < FRAME_SHAPES, "{shapes} shapes in a frame");
+}
+
+#[test]
+fn the_rubber_band_from_a_point_kilometres_away_still_draws_at_full_zoom() {
+    let _guard = watchdog(60);
+    let mut h = harness();
+    key(&mut h, Key::H);
+    click(&mut h, 150.0, 150.0); // the pen's first point
+    assert_eq!(h.state().pen().len(), 1);
+    zoom_in_on(&mut h, 900_000.0, 0.0);
+    h.hover_at(h.state().canvas_rect.center());
+    h.run();
+    let shapes = h.output().shapes.len();
+    assert!(shapes > 20, "the dashes of the band show: {shapes}");
+    assert!(shapes < FRAME_SHAPES, "{shapes} shapes in a frame");
+}
+
 #[test]
 fn everything_draws_without_trouble() {
     let mut h = harness();

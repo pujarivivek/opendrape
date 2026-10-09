@@ -11,6 +11,10 @@ use opendrape_core::{Edge, LineKind, Point2};
 use opendrape_geom as geom;
 use std::rc::Rc;
 
+/// How far (screen points) beyond the canvas a dashed line is still drawn: more than a dash,
+/// so a dash cut off at the edge of the canvas still reaches it.
+const CLIP_MARGIN: f32 = 20.0;
+
 struct Palette {
     table: Color32,
     minor: Color32,
@@ -193,11 +197,11 @@ impl PatternEditor {
             let pts = self.screen_points(rect, points.clone());
             match kind {
                 LineKind::Marking => {
-                    painter.extend(Shape::dashed_line(
+                    painter.extend(clipped_dashes(
                         &pts,
+                        rect.expand(CLIP_MARGIN),
                         Stroke::new(1.0, c.label),
-                        5.0,
-                        3.0,
+                        (5.0, 3.0),
                     ));
                 }
                 LineKind::Cutout => {
@@ -252,11 +256,11 @@ impl PatternEditor {
             self.view.to_screen(rect, near),
             self.view.to_screen(rect, far),
         );
-        painter.extend(Shape::dashed_line(
+        painter.extend(clipped_dashes(
             &[a, b],
+            rect.expand(CLIP_MARGIN),
             Stroke::new(1.5, c.ink),
-            8.0,
-            4.0,
+            (8.0, 4.0),
         ));
         let mid = a + (b - a) * 0.5;
         let across = (b - a).normalized().rot90() * 18.0;
@@ -405,11 +409,11 @@ impl PatternEditor {
             && self.canvas.length_box.is_none()
         {
             let (a, b) = (v.to_screen(rect, last.pos), v.to_screen(rect, cursor));
-            painter.extend(Shape::dashed_line(
+            painter.extend(clipped_dashes(
                 &[a, b],
+                rect.expand(CLIP_MARGIN),
                 Stroke::new(1.0, c.selected),
-                4.0,
-                3.0,
+                (4.0, 3.0),
             ));
             let text = self.doc.project().units.format(last.pos.distance(cursor));
             painter.text(
@@ -420,5 +424,322 @@ impl PatternEditor {
                 c.label,
             );
         }
+    }
+}
+
+/// The dashes of the polyline `path` (screen points) that lie inside `within`, `(dash, gap)`
+/// points long. epaint works out dashes in f32 by walking the whole line, so a line millions of
+/// points long (a very long line, zoomed right in) would take forever, or never finish once the
+/// distance walked is too large for a gap to be added to it. Only the parts inside `within` are
+/// walked, and each keeps the place it would have in the dash pattern of the whole line, so the
+/// dashes don't crawl along as the view is panned.
+fn clipped_dashes(
+    path: &[Pos2],
+    within: Rect,
+    stroke: Stroke,
+    (dash, gap): (f32, f32),
+) -> Vec<Shape> {
+    let mut shapes = Vec::new();
+    let mut run: Vec<Pos2> = Vec::new();
+    let mut run_starts_at = 0.0_f64;
+    let mut walked = 0.0_f64;
+    let flush = |run: &mut Vec<Pos2>, starts_at: f64, shapes: &mut Vec<Shape>| {
+        if run.len() >= 2 {
+            let offset = dash_offset(starts_at, dash, gap);
+            shapes.extend(Shape::dashed_line_with_offset(
+                run,
+                stroke,
+                &[dash],
+                &[gap],
+                offset,
+            ));
+        }
+        run.clear();
+    };
+    for w in path.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let length = f64::from(a.x - b.x).hypot(f64::from(a.y - b.y));
+        match clip_params(a, b, within) {
+            Some((t0, t1)) => {
+                let at = |t: f64| {
+                    if t <= 0.0 {
+                        a
+                    } else if t >= 1.0 {
+                        b
+                    } else {
+                        Pos2::new(
+                            (f64::from(a.x) + f64::from(b.x - a.x) * t) as f32,
+                            (f64::from(a.y) + f64::from(b.y - a.y) * t) as f32,
+                        )
+                    }
+                };
+                if t0 > 0.0 {
+                    // Entering from outside: a new run (the last one ended on leaving).
+                    flush(&mut run, run_starts_at, &mut shapes);
+                }
+                if run.is_empty() {
+                    run_starts_at = walked + t0 * length;
+                    run.push(at(t0));
+                }
+                let end = at(t1);
+                // Runs shorter than a thousandth of a point add nothing but a zero-length
+                // segment, which epaint cannot step along.
+                if run.last().is_some_and(|last| last.distance(end) > 1e-3) {
+                    run.push(end);
+                }
+                if t1 < 1.0 {
+                    flush(&mut run, run_starts_at, &mut shapes);
+                }
+            }
+            None => flush(&mut run, run_starts_at, &mut shapes),
+        }
+        walked += length;
+    }
+    flush(&mut run, run_starts_at, &mut shapes);
+    shapes
+}
+
+/// Where epaint should start its first dash on a piece of line that begins `walked` points
+/// along the whole line, for the pattern to carry on as it would have: a negative offset starts
+/// the dash before the piece, when it begins in the middle of one.
+fn dash_offset(walked: f64, dash: f32, gap: f32) -> f32 {
+    let period = f64::from(dash) + f64::from(gap);
+    let phase = walked.rem_euclid(period);
+    if phase == 0.0 {
+        0.0
+    } else if phase < f64::from(dash) {
+        -phase as f32
+    } else {
+        (period - phase) as f32
+    }
+}
+
+/// The part of the segment `a`–`b` inside `rect`, as the parameters `(t0, t1)` along it (0 at
+/// `a`, 1 at `b`), or `None` when it lies wholly outside. Liang–Barsky, in f64 so that
+/// coordinates in the millions don't lose their precision.
+fn clip_params(a: Pos2, b: Pos2, rect: Rect) -> Option<(f64, f64)> {
+    let (a, d) = (
+        [f64::from(a.x), f64::from(a.y)],
+        [
+            f64::from(b.x) - f64::from(a.x),
+            f64::from(b.y) - f64::from(a.y),
+        ],
+    );
+    let lo = [f64::from(rect.min.x), f64::from(rect.min.y)];
+    let hi = [f64::from(rect.max.x), f64::from(rect.max.y)];
+    let (mut t0, mut t1) = (0.0_f64, 1.0_f64);
+    for axis in 0..2 {
+        if d[axis] == 0.0 {
+            if a[axis] < lo[axis] || a[axis] > hi[axis] {
+                return None; // parallel to this side, and outside it
+            }
+            continue;
+        }
+        // Where the segment crosses the two sides of this axis, entering first.
+        let (mut enter, mut leave) = (
+            (lo[axis] - a[axis]) / d[axis],
+            (hi[axis] - a[axis]) / d[axis],
+        );
+        if enter > leave {
+            std::mem::swap(&mut enter, &mut leave);
+        }
+        t0 = t0.max(enter);
+        t1 = t1.min(leave);
+        if t0 > t1 {
+            return None;
+        }
+    }
+    Some((t0, t1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::pos2;
+
+    /// 100 × 50 points.
+    fn canvas() -> Rect {
+        Rect::from_min_max(pos2(0.0, 0.0), pos2(100.0, 50.0))
+    }
+
+    /// The segment `a`–`b` clipped to `canvas()`, as points.
+    fn clip(a: Pos2, b: Pos2) -> Option<[Pos2; 2]> {
+        clip_params(a, b, canvas()).map(|(t0, t1)| {
+            let at = |t: f64| {
+                pos2(
+                    (f64::from(a.x) + f64::from(b.x - a.x) * t) as f32,
+                    (f64::from(a.y) + f64::from(b.y - a.y) * t) as f32,
+                )
+            };
+            [at(t0), at(t1)]
+        })
+    }
+
+    fn near(a: Pos2, b: Pos2) -> bool {
+        a.distance(b) < 1e-3
+    }
+
+    #[test]
+    fn a_segment_inside_the_rectangle_is_kept_whole() {
+        assert_eq!(
+            clip_params(pos2(10.0, 10.0), pos2(90.0, 40.0), canvas()),
+            Some((0.0, 1.0))
+        );
+        // On its edge counts as inside.
+        assert_eq!(
+            clip_params(pos2(0.0, 0.0), pos2(100.0, 0.0), canvas()),
+            Some((0.0, 1.0))
+        );
+    }
+
+    #[test]
+    fn a_segment_outside_the_rectangle_is_dropped() {
+        for (a, b) in [
+            (pos2(200.0, 10.0), pos2(300.0, 40.0)),  // beside it
+            (pos2(-50.0, -10.0), pos2(-10.0, -5.0)), // beyond a corner
+            (pos2(-10.0, 70.0), pos2(30.0, 120.0)),  // below
+            (pos2(-10.0, -5.0), pos2(110.0, -5.0)),  // along the top side, outside
+            (pos2(120.0, -10.0), pos2(120.0, 90.0)), // along the right side, outside
+            (pos2(-60.0, 30.0), pos2(30.0, 90.0)),   // slants past the bottom-left corner
+        ] {
+            assert_eq!(clip_params(a, b, canvas()), None, "{a:?} {b:?}");
+            assert_eq!(clip_params(b, a, canvas()), None, "{b:?} {a:?}");
+        }
+    }
+
+    #[test]
+    fn a_segment_crossing_the_rectangle_is_cut_at_its_sides() {
+        let [a, b] = clip(pos2(-50.0, 25.0), pos2(150.0, 25.0)).unwrap();
+        assert!(
+            near(a, pos2(0.0, 25.0)) && near(b, pos2(100.0, 25.0)),
+            "{a:?} {b:?}"
+        );
+        // One end inside, one out; either way round.
+        let [a, b] = clip(pos2(40.0, 10.0), pos2(40.0, 500.0)).unwrap();
+        assert!(
+            near(a, pos2(40.0, 10.0)) && near(b, pos2(40.0, 50.0)),
+            "{a:?} {b:?}"
+        );
+        let [a, b] = clip(pos2(40.0, 500.0), pos2(40.0, 10.0)).unwrap();
+        assert!(
+            near(a, pos2(40.0, 50.0)) && near(b, pos2(40.0, 10.0)),
+            "{a:?} {b:?}"
+        );
+        // Across a corner.
+        let [a, b] = clip(pos2(-10.0, 40.0), pos2(40.0, -10.0)).unwrap();
+        assert!(
+            near(a, pos2(0.0, 30.0)) && near(b, pos2(30.0, 0.0)),
+            "{a:?} {b:?}"
+        );
+    }
+
+    #[test]
+    fn a_segment_a_billion_points_long_is_cut_to_the_rectangle() {
+        let [a, b] = clip(pos2(-1e9, 25.0), pos2(1e9, 25.0)).unwrap();
+        assert!(
+            near(a, pos2(0.0, 25.0)) && near(b, pos2(100.0, 25.0)),
+            "{a:?} {b:?}"
+        );
+        // Corner to corner of a huge square, through the rectangle's corner (0, 0).
+        let [a, b] = clip(pos2(-1e9, -1e9), pos2(1e9, 1e9)).unwrap();
+        assert!(
+            near(a, pos2(0.0, 0.0)) && near(b, pos2(50.0, 50.0)),
+            "{a:?} {b:?}"
+        );
+        // And one that misses it.
+        assert_eq!(clip_params(pos2(-1e9, 1e9), pos2(1e9, 1e9), canvas()), None);
+    }
+
+    /// The (start, end) of every dash of `shapes`.
+    fn dashes(shapes: &[Shape]) -> Vec<[Pos2; 2]> {
+        shapes
+            .iter()
+            .map(|s| match s {
+                Shape::LineSegment { points, .. } => *points,
+                other => panic!("{other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_line_a_billion_points_long_makes_only_the_dashes_that_show() {
+        let stroke = Stroke::new(1.0, Color32::BLACK);
+        let long = [pos2(-1e9, 25.0), pos2(1e9, 25.0)];
+        let shapes = clipped_dashes(&long, canvas().expand(CLIP_MARGIN), stroke, (5.0, 3.0));
+        // 140 points of line at one dash per 8: about 18 dashes.
+        assert!((10..=25).contains(&shapes.len()), "{} dashes", shapes.len());
+        for [a, b] in dashes(&shapes) {
+            for end in [a, b] {
+                assert!(canvas().expand(CLIP_MARGIN + 5.0).contains(end), "{end:?}");
+            }
+        }
+        // Nothing at all for one that never comes near.
+        let far = [pos2(-1e9, 1e9), pos2(1e9, 1e9)];
+        assert!(clipped_dashes(&far, canvas().expand(CLIP_MARGIN), stroke, (5.0, 3.0)).is_empty());
+        assert!(clipped_dashes(&[], canvas(), stroke, (5.0, 3.0)).is_empty());
+        assert!(clipped_dashes(&far[..1], canvas(), stroke, (5.0, 3.0)).is_empty());
+    }
+
+    #[test]
+    fn the_dashes_that_show_are_those_of_the_whole_line() {
+        // Clipping must not move the dashes: they stay where epaint puts them on the whole line,
+        // whether the line begins inside a dash or inside a gap, and across its vertices.
+        let stroke = Stroke::new(1.0, Color32::BLACK);
+        let within = canvas().expand(CLIP_MARGIN);
+        for start in [-1003.0, -1006.5, -1000.0, -1004.9] {
+            let path = [
+                pos2(start, 25.0),
+                pos2(-400.0, 25.0),
+                pos2(-3.5, 25.0),
+                pos2(60.0, 25.0),
+                pos2(1200.0, 25.0),
+            ];
+            let whole = dashes(&Shape::dashed_line(&path, stroke, 5.0, 3.0));
+            let clipped = dashes(&clipped_dashes(&path, within, stroke, (5.0, 3.0)));
+            // Dashes that start well inside the clip rectangle (a cut one is not the same).
+            let inner = |all: &[[Pos2; 2]]| -> Vec<f32> {
+                all.iter()
+                    .filter(|[a, b]| a.x > -10.0 && b.x < 110.0)
+                    .map(|[a, _]| a.x)
+                    .collect()
+            };
+            let (want, got) = (inner(&whole), inner(&clipped));
+            assert!(want.len() > 10, "{start}: {want:?}");
+            assert_eq!(want.len(), got.len(), "{start}: {want:?} vs {got:?}");
+            for (w, g) in want.iter().zip(&got) {
+                assert!((w - g).abs() < 1e-2, "{start}: {w} vs {g}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_line_that_leaves_and_comes_back_is_drawn_in_both_parts() {
+        let stroke = Stroke::new(1.0, Color32::BLACK);
+        let within = canvas().expand(CLIP_MARGIN);
+        // Down the middle, out of the left side, and back in lower down.
+        let path = [
+            pos2(50.0, 0.0),
+            pos2(50.0, 40.0),
+            pos2(-900.0, 40.0),
+            pos2(-900.0, 45.0),
+            pos2(60.0, 45.0),
+        ];
+        let shapes = clipped_dashes(&path, within, stroke, (5.0, 3.0));
+        let d = dashes(&shapes);
+        assert!(
+            d.iter()
+                .any(|[a, _]| (a.x - 50.0).abs() < 1e-3 && a.y < 40.0)
+        );
+        assert!(
+            d.iter()
+                .any(|[a, _]| (a.y - 45.0).abs() < 1e-3 && a.x > 0.0)
+        );
+        // None of it in the long way round, past the margin (and a dash's overshoot).
+        let reach = within.expand(6.0);
+        assert!(
+            d.iter()
+                .all(|[a, b]| reach.contains(*a) && reach.contains(*b)),
+            "{d:?}"
+        );
     }
 }

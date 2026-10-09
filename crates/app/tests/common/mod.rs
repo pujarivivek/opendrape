@@ -136,3 +136,28 @@ pub fn refused_notice(h: &H) -> bool {
         .as_deref()
         .is_some_and(|n| n.contains("can't be made"))
 }
+
+/// Ends the whole test run, rather than hanging it for good, if the test that holds the
+/// returned sender (until the end of the test) is not done within `seconds`.
+pub fn watchdog(seconds: u64) -> std::sync::mpsc::Sender<()> {
+    use std::sync::mpsc::{RecvTimeoutError, channel};
+    let (done, wait) = channel::<()>();
+    std::thread::spawn(move || {
+        if wait.recv_timeout(std::time::Duration::from_secs(seconds))
+            == Err(RecvTimeoutError::Timeout)
+        {
+            eprintln!("a test hung for {seconds} s: aborting");
+            std::process::abort();
+        }
+    });
+    done
+}
+
+/// Zooms right in (the most the pattern table allows) with pattern point (x, y) mm in the
+/// middle of the canvas.
+pub fn zoom_in_on(h: &mut H, x: f64, y: f64) {
+    let ed = h.state_mut();
+    let zoom = 50.0;
+    ed.view.zoom = zoom;
+    ed.view.pan = ed.canvas_rect.size() * 0.5 - vec2((x * zoom) as f32, (-y * zoom) as f32);
+}
