@@ -24,6 +24,12 @@ impl Cli {
         }
         cli
     }
+
+    /// Whether someone may be there to answer a dialog. Not in `--smoke-test` runs: on a CI
+    /// machine a dialog waits for a click forever.
+    pub fn interactive(&self) -> bool {
+        !self.smoke_test
+    }
 }
 
 #[cfg(test)]
@@ -44,6 +50,13 @@ mod tests {
             }
         );
         assert_eq!(parse(&["--gpu=safe"]).gpu, Some(GpuChoice::Software));
+    }
+
+    #[test]
+    fn a_smoke_test_never_waits_for_someone_to_click_a_dialog() {
+        // On a CI machine nobody is there to press OK: the run would hang until it timed out.
+        assert!(!parse(&["--smoke-test"]).interactive());
+        assert!(parse(&["--gpu=gl"]).interactive());
     }
 
     #[test]

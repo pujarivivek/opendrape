@@ -40,6 +40,10 @@ impl OpenDrapeApp {
     pub fn new(cc: &eframe::CreationContext<'_>, startup: Startup, shared: SharedState) -> Self {
         let render_state = cc.wgpu_render_state.as_ref();
         let info = render_state.map(|rs| rs.adapter.get_info());
+        crate::startup_log::stage(format_args!(
+            "window open, graphics: {:?}",
+            info.as_ref().map(|i| (&i.name, i.device_type, i.backend))
+        ));
         Self {
             viewport: render_state.map(Viewport::new),
             diagnostics: Diagnostics::collect(info.as_ref(), startup.decision),
@@ -68,7 +72,15 @@ impl OpenDrapeApp {
     /// their first present, so wait until [`CONFIRM_AFTER_FRAMES`] frames have completed.
     /// (Counted with egui's frame number: `ui()` can run more than once per frame.)
     fn confirm_first_frame(&mut self, ctx: &egui::Context) {
-        if self.shared.first_frame_drawn.get() || self.viewport_frames() == 0 {
+        if self.shared.first_frame_drawn.get() {
+            return;
+        }
+        crate::startup_log::stage(format_args!(
+            "frame {}, 3D frames drawn: {}",
+            ctx.cumulative_frame_nr(),
+            self.viewport_frames()
+        ));
+        if self.viewport_frames() == 0 {
             return;
         }
         if ctx.cumulative_frame_nr() < CONFIRM_AFTER_FRAMES {

@@ -8,14 +8,19 @@ pub fn native_options(choice: GpuChoice) -> eframe::NativeOptions {
     let software = choice == GpuChoice::Software;
     setup.native_adapter_selector = Some(Arc::new(
         move |adapters: &[wgpu::Adapter], _surface: Option<&wgpu::Surface<'_>>| {
-            let found: Vec<_> = adapters
+            let infos: Vec<_> = adapters.iter().map(wgpu::Adapter::get_info).collect();
+            let found: Vec<_> = infos.iter().map(|i| (i.device_type, i.backend)).collect();
+            let listed: Vec<_> = infos
                 .iter()
-                .map(|a| {
-                    let info = a.get_info();
-                    (info.device_type, info.backend)
-                })
+                .map(|i| (&i.name, i.device_type, i.backend))
                 .collect();
-            pick_adapter(&found, software)
+            crate::startup_log::stage(format_args!("graphics adapters: {listed:?}"));
+            let picked = pick_adapter(&found, software);
+            crate::startup_log::stage(format_args!(
+                "picked for {choice:?}: {:?}",
+                picked.map(|i| &infos[i].name)
+            ));
+            picked
                 .map(|i| adapters[i].clone())
                 .ok_or_else(|| format!("no graphics adapter for {choice:?}"))
         },
@@ -42,32 +47,40 @@ pub fn native_options(choice: GpuChoice) -> eframe::NativeOptions {
     options
 }
 
-/// Tell the user the graphics could not start (dialog on Windows/macOS, stderr everywhere).
-pub fn show_startup_error(details: &str) {
+/// Tell the user the graphics could not start: stderr always, plus a dialog when `dialog`.
+pub fn show_startup_error(details: &str, dialog: bool) {
     let body = crate::tr!("startup-failed", error = details.to_owned());
     eprintln!("{body}");
-    #[cfg(any(windows, target_os = "macos"))]
-    {
-        let _ = rfd::MessageDialog::new()
-            .set_title(crate::tr!("app-name"))
-            .set_description(body)
-            .set_level(rfd::MessageLevel::Error)
-            .show();
+    if dialog {
+        message_dialog(&body, true);
     }
 }
 
-/// An informational message before the window opens (dialog on Windows/macOS, stderr everywhere).
-pub fn show_notice(text: &str) {
+/// An informational message before the window opens: stderr always, plus a dialog when `dialog`.
+pub fn show_notice(text: &str, dialog: bool) {
     eprintln!("{text}");
-    #[cfg(any(windows, target_os = "macos"))]
-    {
-        let _ = rfd::MessageDialog::new()
-            .set_title(crate::tr!("app-name"))
-            .set_description(text)
-            .set_level(rfd::MessageLevel::Info)
-            .show();
+    if dialog {
+        message_dialog(text, false);
     }
 }
+
+/// Blocks until the user presses OK.
+#[cfg(any(windows, target_os = "macos"))]
+fn message_dialog(text: &str, error: bool) {
+    let _ = rfd::MessageDialog::new()
+        .set_title(crate::tr!("app-name"))
+        .set_description(text)
+        .set_level(if error {
+            rfd::MessageLevel::Error
+        } else {
+            rfd::MessageLevel::Info
+        })
+        .show();
+}
+
+/// No dialog library on Linux: stderr only.
+#[cfg(not(any(windows, target_os = "macos")))]
+fn message_dialog(_text: &str, _error: bool) {}
 
 #[cfg(test)]
 mod tests {

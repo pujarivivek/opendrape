@@ -30,6 +30,8 @@ jobs:
       - name: Smoke test (opens a window, draws one 3D frame, quits)
         run: target/universal-apple-darwin/release/OpenDrape.app/Contents/MacOS/opendrape --smoke-test
         timeout-minutes: 2
+        env:
+          OPENDRAPE_STARTUP_LOG: "1"
       - uses: actions/upload-artifact@v4
         with:
           name: macos
@@ -50,12 +52,24 @@ jobs:
           else echo "suffix=nightly-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"; fi
       - run: ./scripts/package-windows.ps1 "${{ steps.name.outputs.suffix }}"
         shell: pwsh
-      - name: Smoke test (best effort, CI desktops may not allow windows)
+      - name: Smoke test (software rendering; best effort until it has passed on CI)
         continue-on-error: true
-        timeout-minutes: 2
+        timeout-minutes: 3
         shell: pwsh
+        env:
+          OPENDRAPE_STARTUP_LOG: "1"
         run: |
-          $p = Start-Process target/release/opendrape.exe -ArgumentList '--smoke-test' -PassThru -Wait
+          # The runner has no GPU, so Auto would fail by design: draw with WARP instead. The
+          # release exe has no console, so its stderr (the start-up log) goes to a file.
+          $err = Join-Path $env:RUNNER_TEMP smoke-stderr.txt
+          $out = Join-Path $env:RUNNER_TEMP smoke-stdout.txt
+          $p = Start-Process target/release/opendrape.exe -ArgumentList '--smoke-test', '--gpu=software' `
+            -PassThru -RedirectStandardError $err -RedirectStandardOutput $out
+          $null = $p.Handle # otherwise ExitCode stays empty
+          $exited = $p.WaitForExit(90000)
+          if (-not $exited) { $p.Kill(); $p.WaitForExit() }
+          Get-Content $err, $out
+          if (-not $exited) { "still running after 90 s: killed"; exit 1 }
           "exit code: $($p.ExitCode)"
           exit $p.ExitCode
       - uses: actions/upload-artifact@v4

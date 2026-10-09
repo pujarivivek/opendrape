@@ -6,6 +6,8 @@ pub mod diagnostics;
 pub mod gpu;
 #[doc(hidden)]
 pub mod i18n;
+pub mod smoke_test;
+pub mod startup_log;
 mod viewport;
 
 pub use app::{OpenDrapeApp, Shared, SharedState, Startup};
