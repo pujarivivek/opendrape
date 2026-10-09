@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/app", "crates/render", "crates/body", "crates/sim", "crates/testkit", "xtask"]
+members = ["crates/app", "crates/render", "crates/body", "crates/sim", "crates/testkit", "crates/core", "xtask"]
 
 [workspace.package]
 version = "0.1.0"
@@ -15,6 +15,9 @@ opendrape-render = { path = "crates/render" }
 opendrape-body = { path = "crates/body" }
 opendrape-sim = { path = "crates/sim" }
 opendrape-testkit = { path = "crates/testkit" }
+opendrape-core = { path = "crates/core" }
+opendrape-geom = { path = "crates/geom" }
+opendrape-io = { path = "crates/io" }
 parry3d = "=0.31.1"
 rayon = "1.12"
 crossbeam-channel = "0.5"
@@ -36,6 +39,9 @@ i18n-embed = { version = "0.16", features = ["fluent-system"] }
 i18n-embed-fl = "0.10"
 rust-embed = "8"
 tempfile = "3"
+kurbo = "0.13.1"
+earcut = "0.4.11"
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
