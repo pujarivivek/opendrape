@@ -18,7 +18,7 @@ use opendrape_core::{PieceId, Placement, Units};
 /// Shift snaps a turn to steps of this many degrees.
 pub const SNAP_DEG: f64 = 15.0;
 
-/// A turn smaller than this many radians (a millionth of a millionth of a degree) is no turn.
+/// A turn smaller than this many radians (a billionth: 6e-8 of a degree) is no turn.
 const NO_TURN: f64 = 1e-9;
 
 /// What a gizmo drag has done so far.
