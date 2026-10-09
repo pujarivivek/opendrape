@@ -364,8 +364,12 @@ impl OpenDrapeApp {
         action
     }
 
-    /// ⌘N, ⌘O, ⌘S, ⇧⌘S, ⌘Q (Ctrl on Windows), unless a text field is being typed in.
+    /// ⌘N, ⌘O, ⌘S, ⇧⌘S, ⌘Q (Ctrl on Windows). While a text field is being typed in, only ⌘Q
+    /// works: it means nothing to a text field, and quitting must always be possible.
     fn file_shortcut(&self, ctx: &egui::Context) -> Option<FileAction> {
+        if ctx.input_mut(|i| i.consume_shortcut(&QUIT)) {
+            return Some(FileAction::Quit);
+        }
         if ctx.text_edit_focused() {
             return None;
         }
@@ -375,7 +379,6 @@ impl OpenDrapeApp {
             (SAVE, FileAction::Save),
             (NEW, FileAction::New),
             (OPEN, FileAction::Open),
-            (QUIT, FileAction::Quit),
         ]
         .into_iter()
         .find(|(shortcut, _)| ctx.input_mut(|i| i.consume_shortcut(shortcut)))

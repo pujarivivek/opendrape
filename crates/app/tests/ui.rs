@@ -732,3 +732,24 @@ fn the_pattern_ignores_keys_while_an_error_is_shown() {
     h.run();
     assert_eq!(pieces(&h), 0);
 }
+
+#[test]
+fn cmd_q_works_while_a_text_field_has_focus() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    add_piece(&mut h);
+    h.state_mut().editor_mut().selection = Selection::Piece(PieceId(1));
+    h.run();
+    h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Name")
+        .click();
+    h.run();
+    assert!(
+        h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Name")
+            .is_focused()
+    );
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Q);
+    h.run();
+    h.get_by_label("Save your changes?");
+    assert!(!h.state().is_closing());
+}
