@@ -2,7 +2,9 @@
 
 **Date:** 2026-10-09.
 
-**Status:** approved by the user 2026-10-09 ("lets go"). Five points were corrected on 2026-10-10 after the planning probe disproved them; they are marked *(probe)*.
+**Status:**
+- Approved in conversation, section by section, and as a written document.
+- Implemented on branch `m4a-sew-and-drape`. The plan's Evidence section records where the evidence refined the spec: the Place at… radius, the angle and seam-gap gates, the centre-back seam, and the arrow drag.
 
 **Builds on:**
 - M2b (pattern details), merged and published as `2f4b7cc`.
