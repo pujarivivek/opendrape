@@ -895,6 +895,59 @@ fn a_drag_that_nets_to_nothing_changes_nothing_and_makes_no_undo_step() {
 }
 
 #[test]
+fn a_ring_dragged_out_and_back_to_the_start_in_several_moves_changes_nothing() {
+    // Added up move by move, a ring's turn comes back to a speck of rounding (1e-17 radian),
+    // not to exactly nothing: that speck must not become a placement, or an undo step. Seen
+    // at a grazing angle, and from the corner of the room, for every ring.
+    let moves = [
+        (13.0, -7.0),
+        (-9.0, 11.0),
+        (16.0, 4.0),
+        (-17.0, -11.0),
+        (5.0, 12.0),
+        (-12.0, 9.0),
+        (7.0, -14.0),
+    ];
+    let mut checked = 0;
+    for corner in [false, true] {
+        for axis in 0..3 {
+            let (mut doc, id, sel) = one_piece();
+            let twin = doc
+                .edit(|p| p.add_twin(id, "Front (mirror)".into(), Point2::new(700.0, 0.0)))
+                .unwrap();
+            let mut cache = SceneCache::default();
+            let mut arranger = Arranger::default();
+            let cam = if corner {
+                diagonal_camera(position(&doc, id, &mut cache))
+            } else {
+                camera()
+            };
+            let before = doc.project().clone();
+            let g = gizmo_in(&cam, &doc, &mut cache, &sel);
+            let (from, _, _) = on_ring(&g, &cam, axis, 0.0);
+            let scene = cache.scene(doc.project(), SHOULDER);
+            assert!(arranger.press(&cam, &scene, &sel, &mut doc, from));
+            for (dx, dy) in moves {
+                arranger.drag_to(&cam, &mut doc, from + DVec2::new(dx, dy), false);
+            }
+            assert!(doc.project().placement_of(id).is_some(), "it did turn");
+            arranger.drag_to(&cam, &mut doc, from, false);
+            arranger.release(&mut doc);
+            assert_eq!(
+                *doc.project(),
+                before,
+                "ring {axis}, {}: back where it began",
+                if corner { "from the corner" } else { "grazing" }
+            );
+            assert_eq!(doc.project().placement_of(twin), None, "the twin follows");
+            assert!(doc.undo(), "the twin is the last step in the history");
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 6);
+}
+
+#[test]
 fn a_piece_that_had_its_own_place_gets_it_back_when_a_drag_nets_to_nothing() {
     let cam = camera();
     let (mut doc, id, sel) = one_piece();

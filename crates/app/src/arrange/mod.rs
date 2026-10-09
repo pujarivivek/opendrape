@@ -18,6 +18,9 @@ use opendrape_core::{PieceId, Placement, Units};
 /// Shift snaps a turn to steps of this many degrees.
 pub const SNAP_DEG: f64 = 15.0;
 
+/// A turn smaller than this many radians (a millionth of a millionth of a degree) is no turn.
+const NO_TURN: f64 = 1e-9;
+
 /// What a gizmo drag has done so far.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Moved {
@@ -154,9 +157,9 @@ impl Arranger {
     /// A move the maths can't answer (None), or one that would put the piece where no placement
     /// may be (not a number, or beyond [`opendrape_core::MAX_PLACEMENT_M`] of the form), leaves
     /// the piece where it last was valid, and the readout with it. A move that brings the piece
-    /// back to where the drag found it gives it back what it had stored before (nothing, for a
-    /// piece that takes its place from elsewhere), so a drag that nets to nothing changes
-    /// nothing and makes no undo step.
+    /// back to where the drag found it (a turn to within a billionth of a radian of none) gives
+    /// it back what it had stored before (nothing, for a piece that takes its place from
+    /// elsewhere), so a drag that nets to nothing changes nothing and makes no undo step.
     ///
     /// Returns true the first time in a drag that the project refused the piece's new place: the
     /// caller shows the refusal notice then (once per drag, as the pattern table does).
@@ -224,7 +227,9 @@ impl Arranger {
         let nothing = match moved {
             Moved::Along(_, m) => m == 0.0,
             Moved::Across(v) => v == DVec3::ZERO,
-            Moved::Turned(a) => a == 0.0,
+            // A ring's turn is added up move by move, so out and back through several points
+            // leaves a speck of rounding (1e-17 rad), not exactly nothing.
+            Moved::Turned(a) => a.abs() < NO_TURN,
         };
         if nothing {
             placement = o; // not "o, give or take the last bit of a normalised turn"
