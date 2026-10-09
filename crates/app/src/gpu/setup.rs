@@ -27,7 +27,11 @@ pub fn native_options(choice: GpuChoice) -> eframe::NativeOptions {
         .with_title("OpenDrape")
         .with_app_id("org.opendrape.OpenDrape")
         .with_inner_size([1200.0, 800.0])
-        .with_min_inner_size([640.0, 480.0]);
+        .with_min_inner_size([640.0, 480.0])
+        .with_icon(
+            eframe::icon_data::from_png_bytes(include_bytes!("../../../../assets/icon@2x.png"))
+                .unwrap_or_default(),
+        );
     options
 }
 
