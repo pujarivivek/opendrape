@@ -188,8 +188,9 @@ These are the inputs most likely to bite a student that the spec's own tests don
 3. **Place at… where the form is uneven or missing:** the centre line between the legs, the seat, a piece above the head. Expected: the piece ends up clear of the form, never inside it, never with a NaN. Tests:
    - Task 4: `with_no_form_in_reach_place_at_uses_a_fallback_curve`, `place_at_wraps_a_piece_round_the_form_at_its_height`;
    - Task 10: `place_at_front_wraps_the_piece_round_the_form_as_one_step` (no corner inside the real body).
-4. **A gizmo handle seen end-on** (an arrow pointing at the viewer, a ring seen edge-on). Expected: no wild jumps. The arrow can't be grabbed, and an edge-on ring turns with the pointer round the centre. Tests:
-   - Task 4: `an_arrow_pointing_at_the_viewer_cannot_be_dragged`, `an_edge_on_ring_turns_with_the_pointer_round_the_centre`.
+4. **A gizmo handle seen end-on** (an arrow pointing at the viewer, a ring seen edge-on). Expected: no wild jumps. The arrow can't be grabbed, and a ring seen at a grazing angle (|cos| between the view and its axis under 0.5, as the y ring is in the app's default and view-button cameras) turns with the pointer's movement across it divided by its on-screen radius, so it neither races nor flips (not with the pointer's angle round the centre, as first planned). Tests:
+   - Task 4: `an_arrow_pointing_at_the_viewer_cannot_be_dragged`, `a_ring_seen_edge_on_turns_with_the_pointer_across_its_axis`;
+   - final fix wave: `a_ring_seen_at_a_grazing_angle_turns_steadily_in_every_view_the_app_gives`, `a_pointer_going_along_a_grazing_ring_through_its_centre_does_not_make_it_flip` (the real app's cameras).
 5. **Undo, redo or a deleted piece taking away what the Sew tool or the seam selection points at.** Expected: the selection and a half-made seam are dropped quietly; no panic in painting, the panel or Delete. Tests:
    - Task 5: `two_clicks_make_a_seam_whose_starts_meet` (undo), `undo_and_deletion_drop_a_seam_selection_and_a_half_made_seam`.
 

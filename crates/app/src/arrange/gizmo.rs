@@ -151,17 +151,27 @@ pub fn plane_drag(cam: &ScreenCamera, centre: DVec3, from: DVec2, to: DVec2) -> 
     Some(hit(to)? - hit(from)?)
 }
 
-/// Below this |cos| between the view direction and a ring's axis, the ring is seen edge-on.
-pub const EDGE_ON: f64 = 0.15;
+/// Below this |cos| between the view direction and a ring's axis, the ring is seen at a
+/// grazing angle (more than 60° from face-on, a flat sliver of an ellipse): see [`ring_angle`].
+pub const GRAZING: f64 = 0.5;
 
-/// Radians turned about unit `axis` through `centre` when the pointer goes `from` → `to`, in
-/// (−π, π]. A drag that goes round further than half a turn has to be added up from the angles
-/// of its successive moves, each from the last pointer position to the next (as
-/// `Arranger::drag_to` does), not measured from where it began.
-/// Seen at an angle, the pointer's rays meet the ring's plane and the angle between the two
-/// hits is exact. Seen nearly edge-on (decided from the view direction at the centre, so the
-/// method never changes during a drag), the angle the pointer turns round the centre on screen
-/// is used. None when a ray misses the plane: keep the last angle.
+/// Radians turned about unit `axis` through `centre` when the pointer goes `from` → `to`. A drag
+/// that goes round further than half a turn has to be added up from the angles of its successive
+/// moves, each from the last pointer position to the next (as `Arranger::drag_to` does), not
+/// measured from where it began.
+///
+/// Seen nearly face-on (|cos| between the view direction and the axis at least [`GRAZING`]), the
+/// pointer's rays meet the ring's plane and the angle between the two hits is exact, in
+/// (−π, π]. None when a ray misses the plane: keep the last angle.
+///
+/// Seen at a grazing angle the ring is a thin ellipse, and any angle measured round its centre
+/// races, or flips by half a turn when the pointer crosses it. There the ring turns with the
+/// pointer's movement along the screen direction the nearest side of the ring travels in, which
+/// is across the ring's projected axis, divided by the ring's on-screen radius: a steady rate
+/// in degrees per point. Movement along the axis, or anywhere else, turns it by nothing. Both
+/// ways agree about which way is positive (the way the nearest side of the ring goes when it
+/// is turned right-handedly about `axis`). The way is decided from the view direction at the
+/// centre, so it never changes during a drag.
 pub fn ring_angle(
     cam: &ScreenCamera,
     centre: DVec3,
@@ -170,34 +180,44 @@ pub fn ring_angle(
     to: DVec2,
 ) -> Option<f64> {
     let view = (centre - cam.eye).normalize_or(cam.forward);
-    if view.dot(axis).abs() >= EDGE_ON {
-        let hit = |s: DVec2| {
-            let (o, r) = cam.ray(s);
-            let denom = r.dot(axis);
-            if denom.abs() < 1e-9 {
-                return None;
-            }
-            let t = (centre - o).dot(axis) / denom;
-            (t > 0.0)
-                .then(|| o + r * t - centre)
-                .filter(|v| v.length() > 1e-9)
-        };
-        let (a, b) = (hit(from)?, hit(to)?);
-        return Some(a.cross(b).dot(axis).atan2(a.dot(b)));
+    if view.dot(axis).abs() < GRAZING {
+        return grazing_angle(cam, centre, axis, view, from, to);
     }
-    let c = cam.project(centre)?;
-    let (a, b) = (from - c, to - c);
-    if a.length() < 1e-9 || b.length() < 1e-9 {
-        return None;
-    }
-    // Screen y points down, so negate to count anticlockwise as positive; a ring whose axis
-    // points away from the viewer turns the other way.
-    let screen = -(a.perp_dot(b)).atan2(a.dot(b));
-    Some(if axis.dot(cam.eye - centre) >= 0.0 {
-        screen
-    } else {
-        -screen
-    })
+    let hit = |s: DVec2| {
+        let (o, r) = cam.ray(s);
+        let denom = r.dot(axis);
+        if denom.abs() < 1e-9 {
+            return None;
+        }
+        let t = (centre - o).dot(axis) / denom;
+        (t > 0.0)
+            .then(|| o + r * t - centre)
+            .filter(|v| v.length() > 1e-9)
+    };
+    let (a, b) = (hit(from)?, hit(to)?);
+    Some(a.cross(b).dot(axis).atan2(a.dot(b)))
+}
+
+/// [`ring_angle`] for a ring seen at a grazing angle, `view` being the unit direction from the
+/// eye to `centre`.
+fn grazing_angle(
+    cam: &ScreenCamera,
+    centre: DVec3,
+    axis: DVec3,
+    view: DVec3,
+    from: DVec2,
+    to: DVec2,
+) -> Option<f64> {
+    // The point of the ring nearest the eye, and the way it goes when the ring is turned
+    // right-handedly about `axis`. (`near` is not short: the axis is at least 60° from `view`.)
+    let near = (-view - axis * (-view).dot(axis)).try_normalize()?;
+    let heading = axis.cross(near);
+    // That way, and the ring's radius, on screen.
+    let origin = cam.project(centre)?;
+    let radius = RING_PT * cam.metres_per_point(centre);
+    let along = cam.project(centre + heading * radius)? - origin;
+    let radius_pt = along.length();
+    (radius_pt > 1e-6).then(|| (to - from).dot(along) / (radius_pt * radius_pt))
 }
 
 /// `radians` to the nearest multiple of `step_deg` degrees.
@@ -521,12 +541,12 @@ mod tests {
     #[test]
     fn ring_drags_turn_the_dragged_angle_from_every_side() {
         let centre = DVec3::new(-0.05, 0.9, 0.3);
-        let (mut checked, mut edge_on) = (0, 0);
+        let (mut checked, mut grazing) = (0, 0);
         for c in cameras() {
             let cam = ScreenCamera::new(&c, DVec2::ZERO, DVec2::new(800.0, 600.0));
             for axis in AXES {
-                if (centre - cam.eye()).normalize().dot(axis).abs() < EDGE_ON {
-                    edge_on += 1;
+                if (centre - cam.eye()).normalize().dot(axis).abs() < GRAZING {
+                    grazing += 1;
                     continue;
                 }
                 let (u, v) = axis.any_orthonormal_pair();
@@ -544,14 +564,29 @@ mod tests {
             }
         }
         assert!(
-            checked > 900 && edge_on > 0,
-            "{checked} checked, {edge_on} edge-on"
+            checked > 500 && grazing > 200,
+            "{checked} checked, {grazing} rings seen at a grazing angle"
         );
     }
 
+    /// The point of the ring about `axis` nearest the eye (on a circle, the point towards the
+    /// eye), and the screen direction (unit) it travels in when the ring is turned
+    /// right-handedly: worked out from the ring's geometry, not from anything `ring_angle` does.
+    fn nearest_point_and_heading(cam: &ScreenCamera, centre: DVec3, axis: usize) -> (DVec2, DVec2) {
+        let radius = Gizmo::new(cam, centre).size * RING_PT / ARROW_PT;
+        let to_eye = cam.eye() - centre;
+        let in_plane = to_eye - AXES[axis] * to_eye.dot(AXES[axis]);
+        let nearest = centre + in_plane.normalize() * radius;
+        let velocity = AXES[axis].cross(nearest - centre).normalize();
+        let at = cam.project(nearest).unwrap();
+        let heading = (cam.project(nearest + velocity * 0.001).unwrap() - at).normalize();
+        (at, heading)
+    }
+
     #[test]
-    fn an_edge_on_ring_turns_with_the_pointer_round_the_centre() {
-        // Seen from the front, the z ring faces the viewer and the y ring is edge-on.
+    fn a_ring_seen_edge_on_turns_with_the_pointer_across_its_axis() {
+        // Seen from the front, the y ring (axis up) and the x ring (axis across) are edge-on,
+        // and the z ring faces the viewer.
         let c = OrbitCamera {
             target: Vec3::new(0.0, 1.0, 0.0),
             yaw: 0.0,
@@ -562,13 +597,77 @@ mod tests {
         let cam = ScreenCamera::new(&c, DVec2::ZERO, DVec2::new(800.0, 600.0));
         let centre = DVec3::new(0.0, 1.0, 0.0);
         let s = cam.project(centre).unwrap();
+        let turn = |axis: DVec3, from: DVec2, by: DVec2| {
+            ring_angle(&cam, centre, axis, from, from + by).unwrap()
+        };
+        // 30 points across a ring of 60 points radius is half a radian, wherever the pointer
+        // is: at the middle of the ring, or beside it. The nearest side of the y ring goes right
+        // when the ring turns right-handedly about +y.
+        for from in [s, s + DVec2::new(40.0, 8.0), s + DVec2::new(-55.0, -3.0)] {
+            assert!((turn(DVec3::Y, from, DVec2::new(30.0, 0.0)) - 0.5).abs() < 1e-9);
+            assert!((turn(DVec3::Y, from, DVec2::new(-30.0, 0.0)) + 0.5).abs() < 1e-9);
+            // Along the axis, the pointer turns nothing.
+            assert!(turn(DVec3::Y, from, DVec2::new(0.0, -40.0)).abs() < 1e-9);
+            // The x ring's nearest side goes down on screen for a positive turn about +x.
+            assert!((turn(DVec3::X, from, DVec2::new(0.0, 30.0)) - 0.5).abs() < 1e-9);
+            assert!(turn(DVec3::X, from, DVec2::new(30.0, 0.0)).abs() < 1e-9);
+        }
+        // The z ring faces the viewer: right to up is a quarter turn anticlockwise as the
+        // viewer sees it, +90° about +z.
         let (right, up) = (s + DVec2::new(50.0, 0.0), s + DVec2::new(0.0, -50.0));
-        // Right to up is a quarter turn anticlockwise as the viewer sees it: +90° about +z.
         let z = ring_angle(&cam, centre, DVec3::Z, right, up).unwrap();
         assert!((z - std::f64::consts::FRAC_PI_2).abs() < 1e-6, "{z}");
-        let y = ring_angle(&cam, centre, DVec3::Y, right, up).unwrap();
-        assert!((y.abs() - std::f64::consts::FRAC_PI_2).abs() < 1e-6, "{y}");
         assert!((snap_angle(0.3, 15.0) - 15f64.to_radians()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_grazing_ring_turns_at_one_steady_rate_wherever_the_pointer_is() {
+        // The old rule measured the angle round the centre on screen, which races near the
+        // centre and flips by half a turn across it. This one cannot: the same two points of
+        // pointer movement turn the ring by the same angle at every place, the centre included.
+        let centre = DVec3::new(-0.05, 0.9, 0.3);
+        let (mut cases, mut places) = (0, 0);
+        for c in cameras() {
+            let cam = ScreenCamera::new(&c, DVec2::new(10.0, 40.0), DVec2::new(800.0, 600.0));
+            let view = (centre - cam.eye()).normalize();
+            for (k, axis) in AXES.into_iter().enumerate() {
+                if view.dot(axis).abs() >= GRAZING {
+                    continue;
+                }
+                let (_, heading) = nearest_point_and_heading(&cam, centre, k);
+                let origin = cam.project(centre).unwrap();
+                let mut rates = Vec::new();
+                for dx in -4..=4 {
+                    for dy in -3..=3 {
+                        let from = origin + DVec2::new(f64::from(dx), f64::from(dy)) * 30.0;
+                        rates.push(
+                            ring_angle(&cam, centre, axis, from, from + heading * 2.0).unwrap(),
+                        );
+                        // Across it, nearly nothing (perspective bends "across" a few degrees).
+                        let aside =
+                            ring_angle(&cam, centre, axis, from, from + heading.perp() * 2.0)
+                                .unwrap();
+                        assert!(aside.abs() < 0.2 * rates[0].abs(), "{aside} across");
+                        places += 1;
+                    }
+                }
+                // The same everywhere, and about 2 points of a 60 point radius (perspective
+                // makes the radius a little more or less).
+                for rate in &rates {
+                    assert!((rate - rates[0]).abs() < 1e-9, "{rate} vs {}", rates[0]);
+                }
+                assert!(
+                    (rates[0] * RING_PT / 2.0 - 1.0).abs() < 0.08,
+                    "{}° for 2 points",
+                    rates[0].to_degrees()
+                );
+                cases += 1;
+            }
+        }
+        assert!(
+            cases > 200 && places > 12000,
+            "{cases} rings, {places} places"
+        );
     }
 
     /// A view of (0, 1, 0) from the direction `eye` (unit), and the point looked at.
@@ -585,54 +684,48 @@ mod tests {
     }
 
     #[test]
-    fn an_edge_on_ring_turns_the_way_the_exact_method_does_just_outside_the_limit() {
-        // Anticlockwise on screen, a quarter turn about the centre, 50 points out. Seen from
-        // the axis's positive side (the axis towards the viewer) that is a positive turn about
-        // it, and from the other side a negative one: for every axis, from above and below,
-        // 0.14 (read from the pointer's angle on screen) and 0.16 (read exactly from the ring's
-        // plane) from edge-on must agree on the sign, and the edge-on one is a true quarter.
+    fn the_two_ways_of_turning_a_ring_agree_at_the_switch() {
+        // Take hold of the side of the ring nearest the eye and pull it along the way it goes
+        // for a right-handed turn: that is a positive turn, on either side of the switch, from
+        // above and from below, for every axis. Pulled the other way it is a negative one. The
+        // two ways give about the same angle too (the exact one reads a straight pull as the
+        // arctangent of its length over the radius, the grazing one as the length over it).
         let mut cases = 0;
         for (k, axis) in AXES.iter().enumerate() {
             for towards in [1.0, -1.0] {
-                let mut signs = Vec::new();
-                for cos in [0.14, 0.16] {
-                    let side = [DVec3::Z, DVec3::Z, DVec3::X][k];
+                let side = [DVec3::Z, DVec3::Z, DVec3::X][k];
+                let mut angles = Vec::new();
+                for cos in [GRAZING - 0.02, GRAZING + 0.02] {
                     let eye =
                         (*axis * towards * cos + side * (1.0_f64 - cos * cos).sqrt()).normalize();
                     let (cam, centre) = looking_from(eye);
-                    let c = cam.project(centre).unwrap();
-                    let turned = ring_angle(
-                        &cam,
-                        centre,
-                        *axis,
-                        c + DVec2::new(50.0, 0.0),
-                        c + DVec2::new(0.0, -50.0),
-                    )
-                    .unwrap_or_else(|| panic!("axis {k}, {towards}, {cos}"));
-                    assert!(turned.abs() < std::f64::consts::PI, "{turned}");
-                    assert_eq!(
-                        turned.signum(),
-                        towards,
-                        "axis {k} {} the viewer, {cos} from edge-on: {turned}",
-                        if towards > 0.0 {
-                            "towards"
-                        } else {
-                            "away from"
-                        }
-                    );
-                    if cos < EDGE_ON {
-                        assert!(
-                            (turned.abs() - std::f64::consts::FRAC_PI_2).abs() < 1e-6,
-                            "{turned}"
+                    let (at, heading) = nearest_point_and_heading(&cam, centre, k);
+                    for (pull, sign) in [(20.0, 1.0), (-20.0, -1.0)] {
+                        let turned = ring_angle(&cam, centre, *axis, at, at + heading * pull)
+                            .unwrap_or_else(|| panic!("axis {k}, {towards}, {cos}"));
+                        assert_eq!(
+                            turned.signum(),
+                            sign,
+                            "axis {k} {} the viewer, {cos}, pulled {pull}: {turned}",
+                            if towards > 0.0 {
+                                "towards"
+                            } else {
+                                "away from"
+                            }
                         );
+                        if pull > 0.0 {
+                            angles.push(turned);
+                        }
+                        cases += 1;
                     }
-                    signs.push(turned.signum());
-                    cases += 1;
                 }
-                assert_eq!(signs[0], signs[1]);
+                assert!(
+                    (angles[0] / angles[1] - 1.0).abs() < 0.15,
+                    "axis {k}, {towards}: {angles:?} either side of the switch"
+                );
             }
         }
-        assert_eq!(cases, 12);
+        assert_eq!(cases, 24);
     }
 
     #[test]

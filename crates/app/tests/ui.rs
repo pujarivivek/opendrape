@@ -1421,7 +1421,7 @@ fn right_clicking_a_piece_in_3d_offers_place_at() {
 // tested without a window in `tests/arrange.rs`.
 
 use glam::DVec2;
-use opendrape::arrange::gizmo::{AXES, Gizmo};
+use opendrape::arrange::gizmo::{AXES, GRAZING, Gizmo, Handle, ring_angle};
 
 fn screen(p: DVec2) -> egui::Pos2 {
     egui::pos2(p.x as f32, p.y as f32)
@@ -1790,4 +1790,176 @@ fn a_gizmo_drag_still_held_when_play_is_pressed_ends_where_it_is() {
     h.state_mut().editor_mut().undo();
     assert_eq!(own_place(&h), None);
     assert_eq!(pieces(&h), 1);
+}
+
+// The rings in the views the student gets without touching the camera: as the app opens, and
+// from each of the four view buttons, with the piece where it starts and lower down.
+
+/// Where in the app a ring was tried.
+#[derive(Clone, Copy, Debug)]
+struct Where {
+    view: &'static str,
+    lower: bool,
+    axis: usize,
+}
+
+/// Calls `try_ring` for every ring seen at a grazing angle in every one of those views.
+fn in_each_view(mut try_ring: impl FnMut(&mut App, Where)) -> Vec<Where> {
+    let dir = tempfile::tempdir().unwrap();
+    let mut tried = Vec::new();
+    for lower in [false, true] {
+        let mut h = harness(dir.path(), SharedState::default());
+        h.run();
+        piece_with_gizmo(&mut h);
+        if lower {
+            // Wrapped round the form at the front, and lowered to the hips.
+            h.state_mut()
+                .editor_mut()
+                .place_at(PieceId(1), opendrape_mesh::place::PlaceAt::Front);
+            h.state_mut().editor_mut().doc.edit(|p| {
+                let mut at = p.placement_of(PieceId(1)).expect("placed");
+                at.position[1] = 0.8;
+                p.set_placement(PieceId(1), Some(at));
+            });
+            h.run();
+        }
+        for view in ["Default", "Front", "Back", "Left side", "Right side"] {
+            if view != "Default" {
+                h.get_by_label(view).click();
+                h.run();
+            }
+            let cam = h.state().view_camera().expect("the 3D view was drawn");
+            let scene = h.state_mut().arranged_scene();
+            let centre =
+                glam::DVec3::from_array(scene.panel(PieceId(1)).unwrap().placement.position);
+            let looking = (centre - cam.eye()).normalize();
+            for (axis, direction) in AXES.into_iter().enumerate() {
+                if looking.dot(direction).abs() < GRAZING {
+                    let at = Where { view, lower, axis };
+                    try_ring(&mut h, at);
+                    tried.push(at);
+                }
+            }
+        }
+    }
+    tried
+}
+
+/// The screen direction across ring `axis` of the piece's gizmo: square to the ring's axis.
+fn across_the_ring(
+    cam: &opendrape::arrange::ScreenCamera,
+    centre: glam::DVec3,
+    axis: usize,
+) -> DVec2 {
+    let along = cam.project(centre + AXES[axis] * 0.01).unwrap() - cam.project(centre).unwrap();
+    along.normalize().perp()
+}
+
+/// Takes hold of the selected piece's ring about `axis`, pulls the pointer 60 points across it
+/// in steps of 2 (`way` is 1 or -1), and gives up the drag. The turn (radians, about `axis`)
+/// after each step.
+fn pull_ring(h: &mut App, axis: usize, way: f64) -> Vec<f64> {
+    let cam = h.state().view_camera().expect("the 3D view was drawn");
+    let scene = h.state_mut().arranged_scene();
+    let selection = Selection::Piece(PieceId(1));
+    let g = opendrape::arrange::Arranger::gizmo(&cam, &scene, &selection).expect("a gizmo");
+    let before = scene.panel(PieceId(1)).unwrap().placement;
+    let grab = g
+        .ring(axis)
+        .into_iter()
+        .filter_map(|p| cam.project(p))
+        .find(|p| g.hit(&cam, *p) == Some(Handle::Turn(axis)))
+        .expect("a point that grabs the ring");
+    let across = across_the_ring(&cam, g.centre, axis) * way;
+    let doc = &mut h.state_mut().editor_mut().doc;
+    let mut arranger = opendrape::arrange::Arranger::default();
+    assert!(arranger.press(&cam, &scene, &selection, doc, grab));
+    let mut turns = Vec::new();
+    for step in 1..=30 {
+        arranger.drag_to(&cam, doc, grab + across * (2.0 * f64::from(step)), false);
+        let now = doc.project().placement_of(PieceId(1)).unwrap_or(before);
+        let q = glam::DQuat::from_array(now.rotation)
+            * glam::DQuat::from_array(before.rotation).inverse();
+        turns.push(2.0 * q.xyz().dot(AXES[axis]).atan2(q.w));
+    }
+    arranger.cancel(doc);
+    turns
+}
+
+#[test]
+fn a_ring_seen_at_a_grazing_angle_turns_steadily_in_every_view_the_app_gives() {
+    let tried = in_each_view(|h, at| {
+        let (forward, backward) = (pull_ring(h, at.axis, 1.0), pull_ring(h, at.axis, -1.0));
+        for (way, turns) in [(1.0, &forward), (-1.0, &backward)] {
+            let mut last = 0.0;
+            for (step, turned) in turns.iter().enumerate() {
+                let by = (turned - last).to_degrees();
+                assert!(
+                    by.abs() <= 4.0,
+                    "{at:?}: step {step} of a 2 point pull turned {by}°"
+                );
+                assert!(
+                    by * way * forward.last().unwrap().signum() >= 0.0,
+                    "{at:?}: back and forth"
+                );
+                last = *turned;
+            }
+            let total = turns.last().unwrap().to_degrees().abs();
+            assert!(
+                (30.0..=90.0).contains(&total),
+                "{at:?}: a 60 point pull turned {total}°"
+            );
+        }
+        assert!(
+            forward.last().unwrap() * backward.last().unwrap() < 0.0,
+            "{at:?}: the other way is the other way round"
+        );
+    });
+    // The y ring, which turns a piece about the form, in every view and both heights; and the x
+    // ring, which is edge-on from the front.
+    for lower in [false, true] {
+        for view in ["Default", "Front", "Back", "Left side", "Right side"] {
+            assert!(
+                tried
+                    .iter()
+                    .any(|t| t.axis == 1 && t.view == view && t.lower == lower),
+                "the y ring in the {view} view (lower: {lower})"
+            );
+        }
+        assert!(
+            tried
+                .iter()
+                .any(|t| t.axis == 0 && t.view == "Front" && t.lower == lower)
+        );
+    }
+}
+
+#[test]
+fn a_pointer_going_along_a_grazing_ring_through_its_centre_does_not_make_it_flip() {
+    let tried = in_each_view(|h, at| {
+        let cam = h.state().view_camera().expect("the 3D view was drawn");
+        let scene = h.state_mut().arranged_scene();
+        let centre = glam::DVec3::from_array(scene.panel(PieceId(1)).unwrap().placement.position);
+        let (origin, across) = (
+            cam.project(centre).unwrap(),
+            across_the_ring(&cam, centre, at.axis),
+        );
+        // From one end of the ring, through the middle, to the other end, 2 points at a time.
+        let mut last = origin - across * 60.0;
+        let mut total = 0.0;
+        for step in -29..=30 {
+            let to = origin + across * (2.0 * f64::from(step));
+            let by = ring_angle(&cam, centre, AXES[at.axis], last, to)
+                .unwrap_or_else(|| panic!("{at:?}: no angle at step {step}"));
+            assert!(
+                by.to_degrees().abs() <= 10.0,
+                "{at:?}: step {step} turned {by}"
+            );
+            total += by;
+            last = to;
+        }
+        assert!(total.to_degrees().abs() > 60.0, "{at:?}: {total} in all");
+    });
+    // At least the y rings (five views, two heights), and the x rings from the front and back.
+    assert!(tried.len() >= 14, "{} rings", tried.len());
 }

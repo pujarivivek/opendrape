@@ -23,6 +23,21 @@ fn camera() -> ScreenCamera {
     ScreenCamera::new(&orbit, DVec2::new(0.0, 30.0), DVec2::new(700.0, 600.0))
 }
 
+/// A view of `at` from the corner of the room: every axis is 54.7° from the line of sight, so
+/// every ring is seen from well off edge-on, where it is turned by where the pointer is on the
+/// ring's own plane. (In `camera()` the y ring is seen at a grazing angle, and turns with the
+/// pointer's movement across it instead.)
+fn diagonal_camera(at: DVec3) -> ScreenCamera {
+    let orbit = OrbitCamera {
+        target: at.as_vec3(),
+        yaw: std::f32::consts::FRAC_PI_4,
+        pitch: (1.0_f32 / 3.0_f32.sqrt()).asin(),
+        distance: 2.6,
+        fov_y: 35f32.to_radians(),
+    };
+    ScreenCamera::new(&orbit, DVec2::new(0.0, 30.0), DVec2::new(700.0, 600.0))
+}
+
 /// A document with one 300 × 400 mm piece, selected.
 fn one_piece() -> (Document, PieceId, Selection) {
     let mut doc = Document::default();
@@ -44,8 +59,12 @@ fn position(doc: &Document, id: PieceId, cache: &mut SceneCache) -> DVec3 {
 }
 
 fn gizmo(doc: &Document, cache: &mut SceneCache, sel: &Selection) -> Gizmo {
+    gizmo_in(&camera(), doc, cache, sel)
+}
+
+fn gizmo_in(cam: &ScreenCamera, doc: &Document, cache: &mut SceneCache, sel: &Selection) -> Gizmo {
     let scene = cache.scene(doc.project(), SHOULDER);
-    Arranger::gizmo(&camera(), &scene, sel).expect("a selected piece has a gizmo")
+    Arranger::gizmo(cam, &scene, sel).expect("a selected piece has a gizmo")
 }
 
 /// Presses on `from`, moves to `to`, releases (screen points).
@@ -58,13 +77,25 @@ fn drag(
     to: DVec2,
     shift: bool,
 ) -> bool {
-    let cam = camera();
+    drag_in(&camera(), arranger, doc, cache, sel, (from, to), shift)
+}
+
+/// [`drag`] as seen through `cam`.
+fn drag_in(
+    cam: &ScreenCamera,
+    arranger: &mut Arranger,
+    doc: &mut Document,
+    cache: &mut SceneCache,
+    sel: &Selection,
+    (from, to): (DVec2, DVec2),
+    shift: bool,
+) -> bool {
     let scene = cache.scene(doc.project(), SHOULDER);
-    if !arranger.press(&cam, &scene, sel, doc, from) {
+    if !arranger.press(cam, &scene, sel, doc, from) {
         return false;
     }
-    arranger.drag_to(&cam, doc, from.lerp(to, 0.5), shift);
-    arranger.drag_to(&cam, doc, to, shift);
+    arranger.drag_to(cam, doc, from.lerp(to, 0.5), shift);
+    arranger.drag_to(cam, doc, to, shift);
     arranger.release(doc);
     true
 }
@@ -107,11 +138,11 @@ fn dragging_an_arrow_moves_the_piece_along_it_as_one_undo_step() {
 
 #[test]
 fn dragging_a_ring_turns_the_piece_and_shift_snaps_to_15_degrees() {
-    let (mut doc, _, sel) = one_piece();
+    let (mut doc, id, sel) = one_piece();
     let mut cache = SceneCache::default();
     let mut arranger = Arranger::default();
-    let g = gizmo(&doc, &mut cache, &sel);
-    let cam = camera();
+    let cam = diagonal_camera(position(&doc, id, &mut cache));
+    let g = gizmo_in(&cam, &doc, &mut cache, &sel);
     // A point of the y ring that grabs it, and the point 40° further round.
     let (u, v) = AXES[1].any_orthonormal_pair();
     let r = g.size * RING_PT / ARROW_PT;
@@ -121,17 +152,17 @@ fn dragging_a_ring_turns_the_piece_and_shift_snaps_to_15_degrees() {
         .find(|a| g.hit(&cam, cam.project(on_ring(*a)).unwrap()) == Some(Handle::Turn(1)))
         .expect("a point that grabs the y ring");
     let turn = 40f64.to_radians();
-    let (from, to) = (
+    let pull = (
         cam.project(on_ring(a0)).unwrap(),
         cam.project(on_ring(a0 + turn)).unwrap(),
     );
-    assert!(drag(
+    assert!(drag_in(
+        &cam,
         &mut arranger,
         &mut doc,
         &mut cache,
         &sel,
-        from,
-        to,
+        pull,
         false
     ));
     let q = DQuat::from_array(doc.project().pieces[0].placement.unwrap().rotation);
@@ -141,13 +172,13 @@ fn dragging_a_ring_turns_the_piece_and_shift_snaps_to_15_degrees() {
         "{axis} {angle}"
     );
     doc.undo();
-    assert!(drag(
+    assert!(drag_in(
+        &cam,
         &mut arranger,
         &mut doc,
         &mut cache,
         &sel,
-        from,
-        to,
+        pull,
         true
     ));
     let q = DQuat::from_array(doc.project().pieces[0].placement.unwrap().rotation);
@@ -155,6 +186,79 @@ fn dragging_a_ring_turns_the_piece_and_shift_snaps_to_15_degrees() {
         (q.to_axis_angle().1 - 45f64.to_radians()).abs() < 1e-6,
         "snapped to 45°"
     );
+}
+
+#[test]
+fn a_ring_seen_at_a_grazing_angle_turns_with_the_pointer_across_it_and_shift_snaps() {
+    // In this view the y ring is a thin sliver: it turns by 1 radian for every ring-radius
+    // (60 points) the pointer goes across it, wherever on or beside the ring that is.
+    let (mut doc, _, sel) = one_piece();
+    let mut cache = SceneCache::default();
+    let mut arranger = Arranger::default();
+    let cam = camera();
+    let g = gizmo(&doc, &mut cache, &sel);
+    let centre = cam.project(g.centre).unwrap();
+    // The side of the ring nearest the eye goes this way on screen, for a positive turn.
+    let near = (cam.eye() - g.centre).normalize();
+    let near = (near - DVec3::Y * near.y).normalize() * (g.size * RING_PT / ARROW_PT);
+    let heading = (cam
+        .project(g.centre + near + DVec3::Y.cross(near).normalize() * 0.001)
+        .unwrap()
+        - cam.project(g.centre + near).unwrap())
+    .normalize();
+    let (u, v) = AXES[1].any_orthonormal_pair();
+    let on_ring = |a: f64| g.centre + (u * a.cos() + v * a.sin()) * (g.size * RING_PT / ARROW_PT);
+    let grab = (0..36)
+        .map(|k| {
+            cam.project(on_ring(f64::from(k) * 10f64.to_radians()))
+                .unwrap()
+        })
+        .find(|p| g.hit(&cam, *p) == Some(Handle::Turn(1)))
+        .expect("a point that grabs the y ring");
+    assert!(grab.distance(centre) > 20.0, "grabbed away from the middle");
+    let turned = |doc: &Document| {
+        let q = DQuat::from_array(doc.project().pieces[0].placement.unwrap().rotation);
+        2.0 * q.y.atan2(q.w)
+    };
+    assert!(drag(
+        &mut arranger,
+        &mut doc,
+        &mut cache,
+        &sel,
+        grab,
+        grab + heading * 30.0,
+        false
+    ));
+    // 30 points of 60: half a radian, a little off for perspective.
+    assert!(
+        (turned(&doc) - 0.5).abs() < 0.04,
+        "{}°",
+        turned(&doc).to_degrees()
+    );
+    doc.undo();
+    // The other way is the other way round; along the ring's axis is no turn at all.
+    assert!(drag(
+        &mut arranger,
+        &mut doc,
+        &mut cache,
+        &sel,
+        grab,
+        grab - heading * 30.0,
+        false
+    ));
+    assert!((turned(&doc) + 0.5).abs() < 0.04);
+    doc.undo();
+    // Shift: half a radian is 28.6°, which snaps to 30°.
+    assert!(drag(
+        &mut arranger,
+        &mut doc,
+        &mut cache,
+        &sel,
+        grab,
+        grab + heading * 30.0,
+        true
+    ));
+    assert!((turned(&doc) - 30f64.to_radians()).abs() < 1e-6);
 }
 
 #[test]
@@ -303,11 +407,11 @@ fn the_handle_under_the_pointer_is_noted_for_drawing() {
 
 #[test]
 fn dragging_a_ring_further_round_than_half_a_turn_keeps_turning() {
-    let (mut doc, _, sel) = one_piece();
+    let (mut doc, id, sel) = one_piece();
     let mut cache = SceneCache::default();
     let mut arranger = Arranger::default();
-    let g = gizmo(&doc, &mut cache, &sel);
-    let cam = camera();
+    let cam = diagonal_camera(position(&doc, id, &mut cache));
+    let g = gizmo_in(&cam, &doc, &mut cache, &sel);
     let (u, v) = AXES[1].any_orthonormal_pair();
     let r = g.size * RING_PT / ARROW_PT;
     let on_ring = |a: f64| g.centre + (u * a.cos() + v * a.sin()) * r;
@@ -482,20 +586,22 @@ fn every_arrow_moves_the_piece_along_its_own_axis_and_every_ring_turns_it_about_
             "arrow {axis}: {start} → {moved}"
         );
     }
+    // The rings, from the corner of the room (see `diagonal_camera`).
     for (axis, along) in AXES.into_iter().enumerate() {
-        let (mut doc, _, sel) = one_piece();
+        let (mut doc, id, sel) = one_piece();
         let mut cache = SceneCache::default();
         let mut arranger = Arranger::default();
-        let g = gizmo(&doc, &mut cache, &sel);
+        let cam = diagonal_camera(position(&doc, id, &mut cache));
+        let g = gizmo_in(&cam, &doc, &mut cache, &sel);
         let turn = 40f64.to_radians();
         let (from, to, about) = on_ring(&g, &cam, axis, turn);
-        assert!(drag(
+        assert!(drag_in(
+            &cam,
             &mut arranger,
             &mut doc,
             &mut cache,
             &sel,
-            from,
-            to,
+            (from, to),
             false
         ));
         let q = DQuat::from_array(doc.project().pieces[0].placement.unwrap().rotation);

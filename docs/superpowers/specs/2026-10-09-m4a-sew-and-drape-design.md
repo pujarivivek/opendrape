@@ -220,7 +220,7 @@ The app turns this into a `sim::Cloth` with `ClothBuilder::add_panel` (with `fla
 - **Moving:**
   - Arrows for x (red), y (green) and z (blue) move along that world axis. Pointer movement is projected onto the axis's on-screen direction, and that point is mapped back onto the 3D axis exactly. *(probe: converting at the gizmo's depth was up to 35% off for long drags close up.)*
   - A centre square moves the piece in the camera's view plane.
-- **Rotating:** rings around x, y and z rotate about the piece's centre. Hold Shift to snap to 15°.
+- **Rotating:** rings around x, y and z rotate about the piece's centre. Hold Shift to snap to 15°. A ring seen at a grazing angle (its axis more than 60° from the line of sight, as the y ring is in the default view) turns with the pointer's movement across it, divided by the ring's on-screen radius, a steady number of degrees per point that cannot race or flip, while a ring seen nearly face-on turns with the pointer's angle in the ring's own plane.
 - **Feedback:**
   - The handle under the pointer is highlighted.
   - While dragging, a readout shows the move or angle in the user's units ("12 cm up", "45°").
