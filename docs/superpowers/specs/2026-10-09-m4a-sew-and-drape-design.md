@@ -31,7 +31,7 @@ M4b adds what a T-shirt needs.
 2. Sew the side seams and the centre back with the Sew tool. The mirrored seams appear automatically. *(probe: a skirt with an open back slides off the form.)*
 3. In 3D, right-click the front → **Place at front**, the back panel → **Place at back**, then adjust with the gizmo.
 4. Press **Play**. The seams close and the skirt settles on the form with no fabric poking through.
-5. Save, reopen: the seams and the arrangement are back. Undo steps back through the gizmo moves.
+5. Undo steps back through the gizmo moves. Save, reopen: the seams and the arrangement are back (a reopened file starts a fresh undo history, so there is nothing to undo until the next edit).
 
 ## Scope
 

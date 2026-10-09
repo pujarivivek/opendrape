@@ -33,9 +33,9 @@ and the T-shirt come in M4b.
 - [ ] Click the front in 3D: it turns orange, and it is selected in the pattern window too.
       Drag the green arrow down until the top of the skirt is at the waist; the label says
       how far ("27.0 cm down"). Drag a ring to turn the piece; hold **Shift** for 15° steps.
-      **Cmd+Z** undoes a whole drag. Clicking an arrow or a ring leaves the piece selected.
-      Press **Esc** in the middle of a drag: the piece jumps back and the drag is not an undo
-      step.
+      **Cmd+Z** undoes a whole drag; press it again to step back through your gizmo moves, one
+      drag at a time. Clicking an arrow or a ring leaves the piece selected. Press **Esc** in
+      the middle of a drag: the piece jumps back and the drag is not an undo step.
 - [ ] Do the same for the back (its mirror follows it).
 - [ ] Press **Play**. The arrows and rings go at once. The seams pull shut and the skirt
       settles on the body, with nothing poking through. "Press Reset to move pieces." shows
@@ -45,7 +45,8 @@ and the T-shirt come in M4b.
 - [ ] In **Properties**, under **3D placement**, type **75** in **Position Y**: the piece
       moves to 75 cm up.
 - [ ] **File → Save As…**, quit, reopen and **File → Open…**: the seams and the arrangement
-      are back. **Cmd+Z** steps back through your gizmo moves.
+      are back. (A reopened file starts with a fresh undo history, so **Cmd+Z** has nothing to
+      undo until you change something.)
 - [ ] Your M2b files still open, with no seams yet.
 - [ ] Draw a piece with the pen whose outline crosses itself (a figure of eight), and press
       **Play**: a note names it ("… couldn't be made into fabric: its outline crosses
@@ -58,6 +59,8 @@ and the T-shirt come in M4b.
 - Changing the pattern while it drapes returns to arranging. Live updates come in M4b.
 - Pieces you never place hang in front of the body, and fall to the floor when you press
   **Play**.
+- A cut-out drawn as a half on the fold line is left out of the fabric: the piece is made
+  whole there, and a note says so when you press **Play**.
 
 If anything looks wrong, take a screenshot, then choose Help → About OpenDrape and
 click **Copy diagnostics**.
