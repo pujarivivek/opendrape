@@ -45,8 +45,9 @@ the body yet: sewing them on comes in M3.
 
 ## Known limits in this build
 
-- Quitting from the Dock (right-click the OpenDrape icon → Quit) does not ask
-  about unsaved changes yet. Use Cmd+Q or File → Quit OpenDrape instead.
+- Quitting from the Dock (right-click the OpenDrape icon → Quit) still can't ask about
+  unsaved changes, but since M2b OpenDrape keeps a recovery copy and offers to restore it
+  next time (see the M2b checklist).
 - Cmd+H (hide OpenDrape) does not work in this build.
 
 If anything looks wrong, take a screenshot, then choose Help → About OpenDrape and
