@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/app", "crates/render", "crates/body", "crates/sim", "crates/testkit", "crates/core", "crates/geom", "crates/io", "crates/mesh", "xtask"]
+members = ["crates/app", "crates/render", "crates/body", "crates/sim", "crates/testkit", "crates/core", "crates/geom", "crates/io", "crates/mesh", "crates/drape", "xtask"]
 
 [workspace.package]
 version = "0.1.0"
@@ -19,6 +19,7 @@ opendrape-core = { path = "crates/core" }
 opendrape-geom = { path = "crates/geom" }
 opendrape-io = { path = "crates/io" }
 opendrape-mesh = { path = "crates/mesh" }
+opendrape-drape = { path = "crates/drape" }
 parry3d = "=0.31.1"
 rayon = "1.12"
 crossbeam-channel = "0.5"

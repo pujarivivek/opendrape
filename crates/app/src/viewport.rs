@@ -1,8 +1,8 @@
 use crate::arrange::{ArrangedScene, ScreenCamera};
 use crate::sim_runner::SimFrame;
-use crate::stage::Stage;
 use glam::DVec2;
 use opendrape_core::PieceId;
+use opendrape_drape::Stage;
 use opendrape_render::{GpuMesh, MeshRenderer, OrbitCamera, RenderTarget, target_size};
 use std::rc::Rc;
 use std::sync::Arc;

@@ -1,0 +1,20 @@
+[package]
+name = "opendrape-drape"
+description = "OpenDrape: the form garments drape on, and turning a project into cloth on it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+opendrape-body.workspace = true
+opendrape-core.workspace = true
+opendrape-geom.workspace = true
+opendrape-mesh.workspace = true
+opendrape-sim.workspace = true
+glam.workspace = true
+
+[lints]
+workspace = true

@@ -3,30 +3,17 @@
 //! project; the thread builds the fabric (meshing takes a moment) and the cloth, then steps
 //! the solver. Reset drops the drape. The UI only reads the latest frame.
 
-use crate::stage::Stage;
 use arc_swap::ArcSwapOption;
 use crossbeam_channel::{Receiver, Sender, unbounded};
-use glam::{DVec2, DVec3, Vec3};
-use opendrape_core::{PieceId, Point2, Project};
-use opendrape_geom as geom;
-use opendrape_mesh::{MeshNote, MeshParams, place};
-use opendrape_sim::{ClothBuilder, Panel, Params, Solver};
+use glam::Vec3;
+use opendrape_core::Project;
+use opendrape_drape::Stage;
+pub use opendrape_drape::{DENSITY_KG_M2, DrapeNote, build_drape};
+use opendrape_sim::Solver;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-
-/// Fabric weight (kg/m²): one light cotton until fabrics arrive.
-pub const DENSITY_KG_M2: f64 = 0.15;
-
-/// Something the student should know about the drape.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum DrapeNote {
-    /// From making the fabric (see [`MeshNote`]).
-    Mesh(MeshNote),
-    /// Part of this piece starts inside the form.
-    StartsInside(PieceId),
-}
 
 /// One published simulation frame.
 #[derive(Debug)]
@@ -197,50 +184,6 @@ impl Drape {
     }
 }
 
-/// The fabric and cloth for `project` on `stage`: every shape that could be meshed, at its
-/// placement, sewn by its seams; and the notes about it.
-pub fn build_drape(project: &Project, stage: &Stage) -> (Solver, Vec<DrapeNote>) {
-    let mesh = opendrape_mesh::build(project, &MeshParams::default());
-    let shapes = geom::shapes(project);
-    let layout = place::layout(&shapes);
-    let mut notes: Vec<DrapeNote> = mesh.notes.iter().map(|n| DrapeNote::Mesh(*n)).collect();
-    let mut builder = ClothBuilder::new(DENSITY_KG_M2);
-    let mut ids = Vec::with_capacity(mesh.panels.len());
-    for panel in &mesh.panels {
-        let shape = shapes
-            .iter()
-            .find(|s| s.id == panel.shape)
-            .expect("every panel comes from a shape");
-        let placement = place::effective(project, shape, &layout, stage.shoulder_y());
-        let positions: Vec<DVec3> = panel
-            .flat
-            .iter()
-            .map(|f| {
-                place::apply(
-                    &placement,
-                    panel.centre,
-                    Point2::new(f[0] * 1000.0, f[1] * 1000.0),
-                )
-            })
-            .collect();
-        if positions.iter().any(|p| stage.signed_distance(*p) < 0.0) {
-            notes.push(DrapeNote::StartsInside(panel.shape));
-        }
-        ids.push(builder.add_panel(
-            &Panel {
-                positions,
-                flat: Some(panel.flat.iter().map(|f| DVec2::from_array(*f)).collect()),
-                triangles: panel.triangles.clone(),
-            },
-            1.0,
-        ));
-    }
-    for &((pa, a), (pb, b)) in &mesh.stitches {
-        builder.stitch((ids[pa], a), (ids[pb], b));
-    }
-    (Solver::new(builder.build(), Params::default()), notes)
-}
-
 fn run(stage: &Stage, rx: &Receiver<Command>, status: &Status, on_frame: &dyn Fn()) {
     let mut drape: Option<Drape> = None;
     let mut seq = 0;
@@ -336,7 +279,8 @@ fn run(stage: &Stage, rx: &Receiver<Command>, status: &Status, on_frame: &dyn Fn
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opendrape_core::{Half, Piece, Placement, SeamSide};
+    use opendrape_core::{Half, Piece, PieceId, Placement, Point2, SeamSide};
+    use opendrape_mesh::MeshParams;
 
     fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {
         let start = Instant::now();
@@ -443,32 +387,6 @@ mod tests {
         assert!(r.latest().is_none() && !r.is_draping() && !r.is_playing());
         r.play(two_panels());
         assert!(!r.went_wrong(), "a new Play starts afresh");
-    }
-
-    #[test]
-    fn notes_name_pieces_that_start_inside_or_could_not_be_made() {
-        let mut pr = Project::new();
-        let mut inside = Piece::rectangle(PieceId(0), "Front", Point2::new(0.0, 0.0), 100.0, 100.0);
-        inside.placement = Some(Placement::at([0.0, 1.0, 0.0]));
-        let inside = pr.add_piece(inside);
-        let bow = pr.add_piece(Piece::polygon(
-            PieceId(0),
-            "Bow",
-            &[
-                Point2::new(0.0, 0.0),
-                Point2::new(100.0, 100.0),
-                Point2::new(100.0, 0.0),
-                Point2::new(0.0, 100.0),
-            ],
-        ));
-        let (_, notes) = build_drape(&pr, &Stage::shared());
-        assert_eq!(
-            notes,
-            vec![
-                DrapeNote::Mesh(MeshNote::CrossesItself(bow)),
-                DrapeNote::StartsInside(inside)
-            ]
-        );
     }
 
     #[test]

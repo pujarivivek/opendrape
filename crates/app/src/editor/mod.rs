@@ -18,10 +18,10 @@ pub use document::{Document, UNDO_LIMIT};
 pub use placing::DEFAULT_SHOULDER_M;
 pub use view::View;
 
-use crate::stage::Stage;
 use crate::tr;
 use egui::{Key, KeyboardShortcut, Modifiers};
 use opendrape_core::{PieceId, Point2, Project, SeamId, Units};
+use opendrape_drape::Stage;
 use opendrape_geom as geom;
 use std::path::PathBuf;
 use std::sync::Arc;

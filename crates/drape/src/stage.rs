@@ -1,10 +1,11 @@
-//! The form garments drape on, behind one small boundary: what the 3D view draws, what the
-//! solver collides with (with a floor), the centre line, the floor's height, and how far the
-//! form's surface is from its centre line. Today it wraps the MakeHuman body; the dress forms
-//! swap in behind the same methods.
+//! The form garments drape on, behind one small boundary: what the 3D view draws (plain
+//! positions and triangles), what the solver collides with (with a floor), the centre line, the
+//! floor's height, and how far the form's surface is from its centre line. No GPU code lives
+//! here, so the app and the tests share it.
 //!
 //! The stage's frame is the form's frame: metres, y up from the floor, the form faces +z and
 //! its left is +x, and its centre line is x = 0, z = 0 (the body is moved there when loaded).
+//! The shoulders are at 0.82 × the form's height.
 
 use glam::{DVec3, Vec3};
 use opendrape_body::BodyMesh;
@@ -12,8 +13,9 @@ use opendrape_sim::{BodyCollider, Collider, Plane};
 use std::sync::{Arc, OnceLock};
 
 /// Shoulder height as a share of standing height (the usual proportion of an adult body).
-const SHOULDER_SHARE: f64 = 0.82;
+pub const SHOULDER_SHARE: f64 = 0.82;
 
+/// The form, its frame and its collider. Dress forms (Track B) swap the body here.
 pub struct Stage {
     positions: Vec<Vec3>,
     triangles: Vec<[u32; 3]>,
@@ -47,10 +49,6 @@ impl Stage {
     /// The form's triangles, to draw.
     pub fn render_mesh(&self) -> (&[Vec3], &[[u32; 3]]) {
         (&self.positions, &self.triangles)
-    }
-
-    pub fn collider(&self) -> &BodyCollider {
-        &self.collider
     }
 
     /// The form and the floor, for the solver.
@@ -170,11 +168,19 @@ mod tests {
             "{}",
             stage.shoulder_y()
         );
+        let height = positions.iter().map(|p| f64::from(p.y)).fold(0.0, f64::max);
+        assert!(
+            (stage.shoulder_y() - 0.82 * height).abs() < 1e-6,
+            "shoulders at 0.82 of the height"
+        );
         assert!(
             stage.signed_distance(DVec3::new(0.0, 1.0, 0.0)) < 0.0,
             "inside at the waist"
         );
         assert_eq!((stage.centre_line(), stage.floor_y()), ((0.0, 0.0), 0.0));
+        // The stage's own signed distance is the form's alone: below the floor is not inside it
+        // (the dress forms' compound collider counts the floor, and this must not).
+        assert!(stage.signed_distance(DVec3::new(2.0, -0.1, 2.0)) > 0.0);
     }
 
     #[test]
@@ -240,5 +246,75 @@ mod tests {
                 "resting on the floor: {p}"
             );
         }
+    }
+
+    /// A closed box as a form.
+    fn slab(lo: Vec3, hi: Vec3) -> BodyCollider {
+        let p = [
+            [lo.x, lo.y, lo.z],
+            [hi.x, lo.y, lo.z],
+            [hi.x, hi.y, lo.z],
+            [lo.x, hi.y, lo.z],
+            [lo.x, lo.y, hi.z],
+            [hi.x, lo.y, hi.z],
+            [hi.x, hi.y, hi.z],
+            [lo.x, hi.y, hi.z],
+        ]
+        .map(Vec3::from_array);
+        let t = [
+            [0, 3, 2],
+            [0, 2, 1],
+            [4, 5, 6],
+            [4, 6, 7],
+            [0, 4, 7],
+            [0, 7, 3],
+            [1, 2, 6],
+            [1, 6, 5],
+            [0, 1, 5],
+            [0, 5, 4],
+            [3, 7, 6],
+            [3, 6, 2],
+        ];
+        BodyCollider::new(&p, &t).expect("a closed box")
+    }
+
+    #[test]
+    fn a_particle_takes_the_nearest_way_out_of_the_form_and_the_floor() {
+        let margin = 0.05;
+        // A form that reaches 1 cm below the floor.
+        let body = slab(Vec3::new(-0.5, -0.01, -0.5), Vec3::new(0.5, 1.0, 0.5));
+        let both = BodyAndFloor {
+            body: &body,
+            floor: 0.0,
+        };
+        let plane = |both: &BodyAndFloor, p: DVec3| both.contact_planes(&[p], margin)[0].unwrap();
+        // Inside the form and above the floor: out through the form (down, 1.4 cm), though the
+        // floor is nearer (0.4 cm) it is not something the particle is inside.
+        let inside = plane(&both, DVec3::new(0.0, 0.004, 0.0));
+        assert!(
+            inside.normal.abs_diff_eq(DVec3::NEG_Y, 1e-6) && (inside.point.y + 0.01).abs() < 1e-6,
+            "the form's plane, not the floor's: {inside:?}"
+        );
+        // Outside both, within the margin: the nearer surface wins either way.
+        let by_the_floor = plane(&both, DVec3::new(0.52, 0.01, 0.0));
+        assert_eq!(
+            by_the_floor.normal,
+            DVec3::Y,
+            "1 cm from the floor, 2 from the form"
+        );
+        let by_the_form = plane(&both, DVec3::new(0.505, 0.03, 0.0));
+        assert!(
+            by_the_form.normal.abs_diff_eq(DVec3::X, 1e-6),
+            "0.5 cm from the form, 3 from the floor: {:?}",
+            by_the_form.normal
+        );
+        // Inside both: the smaller depth wins. 1 cm below the floor is 49 cm inside a big form.
+        let deep = slab(Vec3::splat(-0.5), Vec3::splat(0.5));
+        let both = BodyAndFloor {
+            body: &deep,
+            floor: 0.0,
+        };
+        let shallow = plane(&both, DVec3::new(0.0, -0.01, 0.0));
+        assert_eq!(shallow.normal, DVec3::Y, "up through the floor");
     }
 }

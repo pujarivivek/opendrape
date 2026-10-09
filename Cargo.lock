@@ -2508,8 +2508,8 @@ dependencies = [
  "glam",
  "i18n-embed",
  "i18n-embed-fl",
- "opendrape-body",
  "opendrape-core",
+ "opendrape-drape",
  "opendrape-geom",
  "opendrape-io",
  "opendrape-mesh",
@@ -2539,6 +2539,18 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "opendrape-drape"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "opendrape-body",
+ "opendrape-core",
+ "opendrape-geom",
+ "opendrape-mesh",
+ "opendrape-sim",
 ]
 
 [[package]]
