@@ -33,9 +33,11 @@ and the T-shirt come in M4b.
 - [ ] Click the front in 3D: it turns orange, and it is selected in the pattern window too.
       Drag the green arrow down until the top of the skirt is at the waist; the label says
       how far ("27.0 cm down"). Drag a ring to turn the piece; hold **Shift** for 15° steps.
-      **Cmd+Z** undoes a whole drag; press it again to step back through your gizmo moves, one
-      drag at a time. Clicking an arrow or a ring leaves the piece selected. Press **Esc** in
-      the middle of a drag: the piece jumps back and the drag is not an undo step.
+      Press **Cmd+Z** once: the turn is undone, a whole drag at a time, and the skirt stays at
+      the waist. Further presses undo your earlier moves, the move to the waist too;
+      **Cmd+Shift+Z** (Redo) brings a move back. Leave the skirt at the waist for the steps
+      below. Clicking an arrow or a ring leaves the piece selected. Press **Esc** in the middle
+      of a drag: the piece jumps back and the drag is not an undo step.
 - [ ] Do the same for the back (its mirror follows it).
 - [ ] Press **Play**. The arrows and rings go at once. The seams pull shut and the skirt
       settles on the body, with nothing poking through. "Press Reset to move pieces." shows
