@@ -891,6 +891,9 @@ fn note_text(note: &DrapeNote, project: &Project) -> String {
         DrapeNote::Mesh(MeshNote::Coarser { .. }) => tr!("note-coarser"),
         DrapeNote::Mesh(MeshNote::CrossesItself(id)) => tr!("note-crosses-itself", name = name(id)),
         DrapeNote::Mesh(MeshNote::Unmeshable(id)) => tr!("note-unmeshable", name = name(id)),
+        DrapeNote::Mesh(MeshNote::CutoutLeftOut(id)) => {
+            tr!("note-cutout-left-out", name = name(id))
+        }
         DrapeNote::Mesh(MeshNote::LengthsDiffer { seam, by_mm }) => tr!(
             "note-lengths-differ",
             number = seam.0,
@@ -962,6 +965,47 @@ impl eframe::App for OpenDrapeApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use opendrape_core::{Piece, Point2, SeamId};
+
+    #[test]
+    fn every_drape_note_reads_as_a_sentence_naming_the_piece() {
+        let mut project = Project::new();
+        let id = project.add_piece(Piece::rectangle(
+            PieceId(0),
+            "Front",
+            Point2::new(0.0, 0.0),
+            10.0,
+            10.0,
+        ));
+        let text = |note: DrapeNote| note_text(&note, &project);
+        assert_eq!(
+            text(DrapeNote::Mesh(MeshNote::CutoutLeftOut(id))),
+            "A cut-out in Front touches its outline or another cut-out, or lies outside the piece, so it was left out."
+        );
+        assert_eq!(
+            text(DrapeNote::Mesh(MeshNote::CrossesItself(id))),
+            "Front couldn't be made into fabric: its outline crosses itself."
+        );
+        assert_eq!(
+            text(DrapeNote::Mesh(MeshNote::Unmeshable(id))),
+            "Front couldn't be made into fabric."
+        );
+        assert_eq!(
+            text(DrapeNote::StartsInside(id)),
+            "Front starts inside the form; move it out first."
+        );
+        assert_eq!(
+            text(DrapeNote::Mesh(MeshNote::Coarser { edge_mm: 15.0 })),
+            "Large pattern: using coarser fabric"
+        );
+        assert!(
+            text(DrapeNote::Mesh(MeshNote::LengthsDiffer {
+                seam: SeamId(3),
+                by_mm: 36.0
+            }))
+            .starts_with("Seam 3: the sides' lengths differ by ")
+        );
+    }
 
     #[test]
     fn project_extension_is_added_once() {

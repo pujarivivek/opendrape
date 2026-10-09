@@ -25,6 +25,9 @@ pub struct Triangulated {
     /// Anticlockwise triangles (indices into `points`) covering the inside of the outline and
     /// none of its holes.
     pub triangles: Vec<[u32; 3]>,
+    /// False when refinement ran out of the points it was allowed to add, so some triangles
+    /// may still be too big or too thin.
+    pub refinement_complete: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,7 +43,7 @@ pub enum TriangulateError {
 
 /// Triangulates the area inside `outline` and outside every hole (closed loops; the first
 /// point is not repeated; either winding), aiming at edges `h` long. Refinement adds at most
-/// `max_added` points.
+/// `max_added` points (the result says if that was too few).
 pub fn triangulate(
     outline: &[[f64; 2]],
     holes: &[Vec<[f64; 2]>],
@@ -95,6 +98,7 @@ pub fn triangulate(
         .exclude_outer_faces(true)
         .with_max_additional_vertices(max_added);
     let result = cdt.refine(params);
+    let refinement_complete = result.refinement_complete;
     let outside: std::collections::HashSet<_> = result.excluded_faces.into_iter().collect();
     let mut used = vec![false; cdt.num_vertices()];
     let mut faces = Vec::new();
@@ -120,7 +124,11 @@ pub fn triangulate(
         }
     }
     let triangles = faces.iter().map(|t| t.map(|k| new_index[k])).collect();
-    Ok(Triangulated { points, triangles })
+    Ok(Triangulated {
+        points,
+        triangles,
+        refinement_complete,
+    })
 }
 
 #[cfg(test)]
@@ -222,6 +230,21 @@ mod tests {
             triangulate(&square, &[across], 12.0, 1000),
             Err(TriangulateError::CrossesItself)
         );
+    }
+
+    #[test]
+    fn refinement_says_when_it_ran_out_of_points() {
+        let square = sampled(
+            &[[0.0, 0.0], [400.0, 0.0], [400.0, 400.0], [0.0, 400.0]],
+            12.0,
+        );
+        let enough = triangulate(&square, &[], 12.0, 100_000).unwrap();
+        assert!(enough.refinement_complete);
+        // A 400 mm square needs well over 200 more points than the 132 round its edge.
+        let short = triangulate(&square, &[], 12.0, 50).unwrap();
+        assert!(!short.refinement_complete);
+        assert!(short.points.len() <= square.len() + 50);
+        assert!(short.points.len() < enough.points.len());
     }
 
     #[test]
