@@ -171,6 +171,7 @@ Each milestone ends with a **GitHub Release** (installers + portable ZIP) and a 
 ## Status
 
 - **M0 Foundations: complete (2026-10-09).** Public repo https://github.com/pujarivivek/opendrape, CI green on Linux/Windows/macOS, nightly installers published. Windows start-up on real hardware still to be confirmed by a tester.
+- **M1 Drape spike: complete (2026-10-09).** CC0 MakeHuman body; XPBD cloth with seams that close and weld; exact per-frame body collision; skirt and fitted-tube scenes with Play/Pause/Reset and auto-pause when settled. Release bench on an M4 Max: skirt 4,700 particles, 14 ms/frame, 0.00 mm penetration, strain p99 7.5%; fitted tube 1,440 particles, 4.3 ms/frame, 0.00 mm, strain p99 3.1%. The CI smoke test confirmed the Windows exe starts (WARP).
 
 ## On approval: next steps
 1. `git init` in `/Users/vivekpuajri/Developer/vibe-clo3d`, delete the stray `firebase-debug.log`, and save this plan as `docs/specs/2026-10-09-opendrape-design.md`.
