@@ -140,10 +140,13 @@ impl PatternEditor {
         let selected = self.selection.piece() == Some(d.shape.id);
         let ink = if selected { c.selected } else { c.ink };
         let width = if selected { 2.0 } else { 1.5 };
-        if self.show_allowance && !d.cut.is_empty() {
-            painter.add(self.mesh(rect, &d.cut, &d.cut_fill, c.band));
+        if self.show_allowance
+            && let Some(cut) = d.cut()
+            && !cut.points.is_empty()
+        {
+            painter.add(self.mesh(rect, &cut.points, &cut.fill, c.band));
             painter.add(Shape::closed_line(
-                self.screen_points(rect, d.cut.clone()),
+                self.screen_points(rect, cut.points.clone()),
                 Stroke::new(1.0, c.cut),
             ));
         }
@@ -180,7 +183,7 @@ impl PatternEditor {
                 painter.circle_filled(v.to_screen(rect, vertex.pos), 3.0, ink);
             }
         }
-        for [a, b] in &d.notches {
+        for [a, b] in d.notches(self.show_allowance) {
             painter.line_segment(
                 [v.to_screen(rect, *a), v.to_screen(rect, *b)],
                 Stroke::new(1.5, ink),
@@ -275,7 +278,7 @@ impl PatternEditor {
     fn paint_lengths(&self, painter: &Painter, rect: Rect, d: &Drawn, c: &Palette) {
         let piece = &d.shape.piece;
         let units = self.doc.project().units;
-        for label in &d.labels {
+        for label in d.labels() {
             let band = if self.show_allowance {
                 piece.edge_allowance(label.edge) * self.view.zoom
             } else {
@@ -323,8 +326,13 @@ impl PatternEditor {
                 painter.circle_stroke(p, 5.5, Stroke::new(1.5, c.table));
             }
             Selection::Notch(_, k) => {
-                if k < piece.notches.len() {
-                    for [a, b] in geom::notch_marks(piece, &piece.notches[k]) {
+                if let Some(notch) = piece.notches.get(k) {
+                    let marks = if self.show_allowance {
+                        geom::notch_marks(piece, notch)
+                    } else {
+                        geom::notch_marks_on_stitching(piece, notch)
+                    };
+                    for [a, b] in marks {
                         painter.line_segment(
                             [v.to_screen(rect, a), v.to_screen(rect, b)],
                             Stroke::new(3.0, c.selected),

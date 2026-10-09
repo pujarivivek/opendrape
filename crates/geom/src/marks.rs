@@ -52,8 +52,44 @@ fn along(piece: &Piece, edge: usize, distance: f64) -> (Point2, Point2) {
 /// The short lines that draw `notch`: on the cut line and pointing inwards (on the stitching
 /// line when the edge has no allowance), one line per mark for a slit and two for a V.
 pub fn notch_marks(piece: &Piece, notch: &Notch) -> Vec<[Point2; 2]> {
+    marks_of(piece, notch, is_counter_clockwise(piece), true)
+}
+
+/// [`notch_marks`] for every notch of `piece` in order, working out which way the outline
+/// winds once instead of once per notch (that takes a pass over the whole outline).
+pub fn all_notch_marks(piece: &Piece) -> Vec<Vec<[Point2; 2]>> {
     let ccw = is_counter_clockwise(piece);
-    let w = piece.edge_allowance(notch.edge);
+    piece
+        .notches
+        .iter()
+        .map(|n| marks_of(piece, n, ccw, true))
+        .collect()
+}
+
+/// The lines that draw `notch` while the seam allowance is not shown: as for an edge with no
+/// allowance, on the stitching line and [`NOTCH_DEPTH_MM`] deep, pointing in.
+pub fn notch_marks_on_stitching(piece: &Piece, notch: &Notch) -> Vec<[Point2; 2]> {
+    marks_of(piece, notch, is_counter_clockwise(piece), false)
+}
+
+/// [`notch_marks_on_stitching`] for every notch of `piece` in order, winding worked out once.
+pub fn all_notch_marks_on_stitching(piece: &Piece) -> Vec<Vec<[Point2; 2]>> {
+    let ccw = is_counter_clockwise(piece);
+    piece
+        .notches
+        .iter()
+        .map(|n| marks_of(piece, n, ccw, false))
+        .collect()
+}
+
+/// The marks of one notch, given which way the outline winds; `on_cut_line` false puts them
+/// on the stitching line, as for no allowance.
+fn marks_of(piece: &Piece, notch: &Notch, ccw: bool, on_cut_line: bool) -> Vec<[Point2; 2]> {
+    let w = if on_cut_line {
+        piece.edge_allowance(notch.edge)
+    } else {
+        0.0
+    };
     let depth = if w > 0.0 {
         NOTCH_DEPTH_MM.min(0.6 * w)
     } else {
@@ -210,6 +246,79 @@ mod tests {
         let m = notch_marks(&s, &Notch::new(0, 40.0));
         close(m[0][0], p(40.0, 0.0));
         close(m[0][1], p(40.0, 5.0));
+    }
+
+    #[test]
+    fn all_the_notches_at_once_are_the_ones_given_one_at_a_time() {
+        let mut ccw = square();
+        ccw.set_curved(1, true);
+        ccw.set_handle(1, opendrape_core::HandleEnd::Start, p(140.0, 20.0));
+        ccw.edge_props[0].allowance = Some(4.0);
+        ccw.notches = vec![
+            Notch::new(0, 40.0),
+            Notch {
+                marks: 3,
+                ..Notch::new(1, 30.0)
+            },
+            Notch {
+                style: NotchStyle::V,
+                marks: 2,
+                ..Notch::new(2, 60.0)
+            },
+            Notch::new(3, 10.0),
+        ];
+        let cw = ccw.reflected(p(300.0, 0.0));
+        assert!(is_counter_clockwise(&ccw) && !is_counter_clockwise(&cw));
+        for piece in [ccw, cw] {
+            let all = all_notch_marks(&piece);
+            let flat = all_notch_marks_on_stitching(&piece);
+            assert_eq!((all.len(), flat.len()), (4, 4));
+            for (k, notch) in piece.notches.iter().enumerate() {
+                assert_eq!(all[k], notch_marks(&piece, notch), "notch {k}");
+                assert_eq!(
+                    flat[k],
+                    notch_marks_on_stitching(&piece, notch),
+                    "notch {k} on the stitching"
+                );
+            }
+        }
+        assert!(all_notch_marks(&square()).is_empty());
+    }
+
+    #[test]
+    fn without_the_allowance_a_notch_sits_on_the_stitching_line_five_deep() {
+        // 10 mm of allowance all round; edge 0 has 4 mm of its own.
+        let mut s = square();
+        s.edge_props[0].allowance = Some(4.0);
+        s.notches = vec![Notch::new(0, 40.0), Notch::new(1, 40.0)];
+        for notch in &s.notches {
+            let on_cut = notch_marks(&s, notch);
+            let on_seam = notch_marks_on_stitching(&s, notch);
+            assert_ne!(on_cut, on_seam);
+            let [a, b] = on_seam[0];
+            assert!(((a - b).length() - NOTCH_DEPTH_MM).abs() < 1e-9);
+            assert!(
+                crate::nearest_edge(&s, a).unwrap().2 < 1e-9,
+                "starts on the outline"
+            );
+            assert!(crate::contains(&s, b), "points in");
+        }
+        close(
+            notch_marks_on_stitching(&s, &s.notches[0])[0][0],
+            p(40.0, 0.0),
+        );
+        close(
+            notch_marks_on_stitching(&s, &s.notches[0])[0][1],
+            p(40.0, 5.0),
+        );
+        close(
+            notch_marks_on_stitching(&s, &s.notches[1])[0][0],
+            p(100.0, 40.0),
+        );
+        close(
+            notch_marks_on_stitching(&s, &s.notches[1])[0][1],
+            p(95.0, 40.0),
+        );
     }
 
     #[test]

@@ -289,8 +289,9 @@ pub enum Side {
 /// further only comes from a corrupt or hostile file, and would overwhelm the curve maths.
 pub const MAX_COORDINATE_MM: f64 = 1_000_000.0;
 
-/// Most points one piece may have. Real pattern pieces have a few dozen; the limit keeps a
-/// corrupt or hostile file from making the window take minutes to draw one piece.
+/// Most points one piece may have, counting its outline points, its internal-line points and
+/// its notches. Real pattern pieces have a few dozen; the limit keeps a corrupt or hostile
+/// file from making the window take minutes to draw one piece.
 pub const MAX_VERTICES_PER_PIECE: usize = 2_000;
 
 /// Longest piece name, in characters.
@@ -421,9 +422,11 @@ impl Piece {
             self.allowance
         })
     }
-    /// Outline points plus internal-line points: what the size limits count.
+    /// Outline points plus internal-line points plus notches: what the size limits count.
     pub fn point_count(&self) -> usize {
-        self.vertices.len() + self.lines.iter().map(|l| l.vertices.len()).sum::<usize>()
+        self.vertices.len()
+            + self.lines.iter().map(|l| l.vertices.len()).sum::<usize>()
+            + self.notches.len()
     }
     /// The piece reflected left to right (x → `offset.x` − x) and moved up by `offset.y`.
     /// Vertex order and edge directions stay, so edge indices and notch distances still apply;
@@ -591,8 +594,9 @@ impl Piece {
         true
     }
     /// Everything [`crate::Project::check`] needs of one piece:
-    /// - 3 to [`MAX_VERTICES_PER_PIECE`] points (outline plus internal lines), one edge and one
-    ///   set of edge properties per vertex, a name of at most [`MAX_NAME_CHARS`] characters;
+    /// - 3 to [`MAX_VERTICES_PER_PIECE`] points (outline, internal-line points and notches),
+    ///   one edge and one set of edge properties per vertex, a name of at most
+    ///   [`MAX_NAME_CHARS`] characters;
     /// - only finite numbers, every point within [`MAX_COORDINATE_MM`] of the origin;
     /// - allowances within 0..=[`MAX_ALLOWANCE_MM`], notches on real edges with 1–3 marks,
     ///   well-formed internal lines;
@@ -1054,6 +1058,26 @@ mod tests {
         s.lines[0].vertices.push(Vertex::corner(p(90.0, 50.0)));
         s.lines[0].edges.push(Edge::Line);
         assert_eq!(s.check(), Err(ModelError::TooManyPoints(PieceId(1))));
+    }
+
+    #[test]
+    fn notches_count_toward_the_limit() {
+        let mut s = square();
+        s.notches = (0..MAX_VERTICES_PER_PIECE - 4)
+            .map(|k| Notch::new(0, k as f64 * 0.01))
+            .collect();
+        assert_eq!(s.point_count(), MAX_VERTICES_PER_PIECE);
+        assert_eq!(s.check(), Ok(()));
+        s.notches.push(Notch::new(0, 50.0));
+        assert_eq!(s.check(), Err(ModelError::TooManyPoints(PieceId(1))));
+        // Outline, internal-line points and notches are added up together.
+        let mut mixed = square();
+        mixed.lines = vec![InternalLine::open(&[p(10.0, 10.0), p(20.0, 20.0)])];
+        mixed.notches = vec![Notch::new(0, 10.0); MAX_VERTICES_PER_PIECE - 6];
+        assert_eq!(mixed.point_count(), MAX_VERTICES_PER_PIECE);
+        assert_eq!(mixed.check(), Ok(()));
+        mixed.notches.push(Notch::new(1, 10.0));
+        assert_eq!(mixed.check(), Err(ModelError::TooManyPoints(PieceId(1))));
     }
 
     #[test]

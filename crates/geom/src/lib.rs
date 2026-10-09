@@ -12,8 +12,9 @@ mod marks;
 mod shapes;
 pub use allowance::cut_line;
 pub use marks::{
-    NOTCH_DEPTH_MM, NOTCH_SPACING_MM, distance_along, edge_label_anchor, edge_label_anchors,
-    is_counter_clockwise, line_length, line_points, nearest_line, notch_marks, point_at_distance,
+    NOTCH_DEPTH_MM, NOTCH_SPACING_MM, all_notch_marks, all_notch_marks_on_stitching,
+    distance_along, edge_label_anchor, edge_label_anchors, is_counter_clockwise, line_length,
+    line_points, nearest_line, notch_marks, notch_marks_on_stitching, point_at_distance,
 };
 pub use shapes::{ON_OUTLINE_MM, Shape, ShapeKind, shape_of, shapes, unfolded};
 

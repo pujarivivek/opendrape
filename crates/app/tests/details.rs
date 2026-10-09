@@ -813,6 +813,57 @@ fn clicking_a_twins_notch_mark_selects_it_on_the_twin() {
     assert_eq!(h.state().selection, Selection::Notch(id, 0));
 }
 
+#[test]
+fn with_the_allowance_hidden_a_notch_is_picked_on_the_stitching_line() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    // 75 mm along the bottom edge: the mark is on the cut line (y = 90..95) while the
+    // allowance is shown, and on the stitching line (y = 100..105) when it is hidden.
+    h.state_mut()
+        .doc
+        .edit(|p| p.piece_mut(id).unwrap().notches.push(Notch::new(0, 75.0)));
+    h.state_mut().fit();
+    h.run();
+    let zoom = h.state().view.zoom;
+    assert!(zoom > 1.0, "a pick reaches under 8 mm: {zoom}");
+    click(&mut h, 175.0, 104.0); // 9 mm from the cut-line mark: only the edge
+    assert_eq!(h.state().selection, Selection::Edge(id, 0));
+    click(&mut h, 175.0, 92.0);
+    assert_eq!(h.state().selection, Selection::Notch(id, 0));
+    h.get_by_label("Show seam allowance").click();
+    h.run();
+    assert!(!h.state().show_allowance);
+    click(&mut h, 175.0, 92.0); // where the mark was drawn before
+    assert_eq!(h.state().selection, Selection::None);
+    click(&mut h, 175.0, 104.0); // near the tip of the 5 mm mark
+    assert_eq!(h.state().selection, Selection::Notch(id, 0));
+    // The selected mark draws on the stitching line too, and showing the allowance again
+    // brings the cut-line mark back.
+    h.run();
+    h.get_by_label("Show seam allowance").click();
+    h.run();
+    click(&mut h, 175.0, 92.0);
+    assert_eq!(h.state().selection, Selection::Notch(id, 0));
+}
+
+#[test]
+fn a_notch_past_the_points_limit_is_refused() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    // 4 outline points and 1,996 notches: exactly at the limit of 2,000.
+    h.state_mut().doc.edit(|p| {
+        p.piece_mut(id).unwrap().notches = (0..1_996)
+            .map(|k| Notch::new(0, 1.0 + f64::from(k % 200)))
+            .collect();
+    });
+    h.run();
+    assert_eq!(piece_of(&h, id).notches.len(), 1_996);
+    key(&mut h, Key::N);
+    click(&mut h, 350.0, 101.0);
+    assert_eq!(piece_of(&h, id).notches.len(), 1_996);
+    assert!(refused_notice(&h), "{:?}", h.state().notice);
+}
+
 /// The 300 mm rectangle with no seam allowance and a notch right on its first corner (100,100),
 /// where the mark runs from the corner 5 mm up into the piece.
 fn corner_notch_without_allowance(h: &mut H) -> PieceId {

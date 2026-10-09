@@ -9,8 +9,8 @@ pub const SCHEMA_VERSION: u32 = 2;
 /// Most pieces a project may hold.
 pub const MAX_PIECES: usize = 500;
 
-/// Most points a project may hold across all its pieces, so that drawing and simulating it
-/// stays fast whatever a file contains.
+/// Most points a project may hold across all its pieces (outline points, internal-line points
+/// and notches), so that drawing and simulating it stays fast whatever a file contains.
 pub const MAX_TOTAL_VERTICES: usize = 20_000;
 
 /// Highest value the piece id counter may reach. Far above anything a student draws; it only
@@ -185,8 +185,9 @@ impl Project {
     pub fn next_piece_name(&self, prefix: &str) -> String {
         format!("{prefix} {}", self.next_piece_id)
     }
-    /// At most [`MAX_PIECES`] pieces and [`MAX_TOTAL_VERTICES`] points in all (a twin counts
-    /// as a piece with its own points), every piece valid, ids (pieces' and twins') unique and
+    /// At most [`MAX_PIECES`] pieces and [`MAX_TOTAL_VERTICES`] points in all (outline and
+    /// internal-line points and notches; a twin counts as a piece with its own points), every
+    /// piece valid, ids (pieces' and twins') unique and
     /// below the id counter, and the counter itself at most [`MAX_PIECE_ID`].
     pub fn check(&self) -> Result<(), ModelError> {
         let shapes = self.pieces.len() + self.pieces.iter().filter(|p| p.twin.is_some()).count();
@@ -291,6 +292,31 @@ mod tests {
         }
         assert_eq!(heavy.check(), Ok(()), "exactly at the limit");
         heavy.add_piece(tri());
+        assert_eq!(heavy.check(), Err(ModelError::TooManyPointsInProject));
+    }
+
+    #[test]
+    fn notches_count_toward_the_project_total() {
+        let mut heavy = Project::new();
+        // A piece with 1,997 notches has 2,000 points, a twin doubles that.
+        let mut notched = tri();
+        notched.notches = vec![crate::Notch::new(0, 1.0); MAX_VERTICES_PER_PIECE - 3];
+        for _ in 0..MAX_TOTAL_VERTICES / MAX_VERTICES_PER_PIECE {
+            heavy.add_piece(notched.clone());
+        }
+        assert_eq!(heavy.check(), Ok(()), "exactly at the limit");
+        let id = heavy.add_piece(tri());
+        assert_eq!(heavy.check(), Err(ModelError::TooManyPointsInProject));
+        heavy.remove_piece(id);
+        let first = heavy.pieces[0].id;
+        heavy.pieces[0].notches.truncate(500);
+        assert_eq!(heavy.check(), Ok(()));
+        // A twin has the notches too: 9 pieces of 2,000 points, and one of 503 counted twice.
+        heavy
+            .add_twin(first, "Twin".into(), Point2::new(100.0, 0.0))
+            .unwrap();
+        assert_eq!(heavy.check(), Ok(()), "503 more points still fit");
+        heavy.pieces[0].notches = vec![crate::Notch::new(0, 1.0); MAX_VERTICES_PER_PIECE - 3];
         assert_eq!(heavy.check(), Err(ModelError::TooManyPointsInProject));
     }
 

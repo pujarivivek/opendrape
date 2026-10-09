@@ -224,7 +224,9 @@ impl PatternEditor {
             }
         }
         self.selection = self.selection.validated(self.doc.project());
-        let drawn = self.cache.shapes(self.doc.project(), self.view.zoom);
+        let drawn = self
+            .cache
+            .shapes(self.doc.project(), self.view.zoom, self.show_allowance);
         self.paint(&painter, rect, ui.visuals().dark_mode, &drawn);
     }
 
@@ -698,7 +700,9 @@ impl PatternEditor {
 
     /// The notch mark nearest to `w` within `tol` mm, with its distance: the topmost shape's
     /// first on a tie. A shape shows a notch's marks as the stored piece has them, and a
-    /// fold's pale half repeats the stored notches after them, in order.
+    /// fold's pale half repeats the stored notches after them, in order. The marks are where
+    /// they are drawn: on the cut line while the seam allowance is shown, on the stitching
+    /// line when it is hidden.
     fn notch_at(&self, shapes: &[geom::Shape], w: Point2, tol: f64) -> Option<(Hit, f64)> {
         let mut best: Option<(Hit, f64)> = None;
         for s in shapes.iter().rev() {
@@ -707,12 +711,20 @@ impl PatternEditor {
                 .project()
                 .owner(s.id)
                 .map_or(0, |(p, _)| p.notches.len());
-            for (j, notch) in s.piece.notches.iter().enumerate() {
-                let d = geom::notch_marks(&s.piece, notch)
+            if stored == 0 {
+                continue;
+            }
+            let marks = if self.show_allowance {
+                geom::all_notch_marks(&s.piece)
+            } else {
+                geom::all_notch_marks_on_stitching(&s.piece)
+            };
+            for (j, notch) in marks.iter().enumerate() {
+                let d = notch
                     .iter()
                     .map(|[a, b]| segment_distance(w, *a, *b))
                     .fold(f64::INFINITY, f64::min);
-                if d <= tol && stored > 0 && best.is_none_or(|(_, b)| d < b) {
+                if d <= tol && best.is_none_or(|(_, b)| d < b) {
                     best = Some((Hit::Notch(s.id, j % stored), d));
                 }
             }
