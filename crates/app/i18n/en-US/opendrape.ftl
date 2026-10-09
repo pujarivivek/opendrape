@@ -122,7 +122,7 @@ panel-break-pair = Break pair
 panel-twin-of = Mirror image of { $name }
 twin-name = { $name } (mirror)
 notice-bad-allowance = The seam allowance must be between 0 and { $max }.
-notice-fold-refused = The fold line must be a straight edge with no notches on it, and the whole piece (with its lines) on one side of it.
+notice-fold-refused = The fold line must be a straight edge with no notches or seams on it, and the whole piece (with its lines) on one side of it.
 
 tool-notch = Notch
 tool-notch-tip = Add notches: marks that show where pieces line up when they are sewn.

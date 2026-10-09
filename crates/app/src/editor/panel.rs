@@ -428,22 +428,19 @@ impl PatternEditor {
         self.note_if_refused();
     }
 
+    /// The whole piece replaces the half; its seams stay sewn (see `Project::unfold_piece`).
     fn unfold(&mut self, source: PieceId) {
         self.doc.edit(|p| {
-            if let Some(pc) = p.piece_mut(source) {
-                let full = geom::unfolded(pc);
-                *pc = full;
+            if let Some(full) = p.piece(source).map(geom::unfolded) {
+                p.unfold_piece(source, full);
             }
         });
         self.note_if_refused();
     }
 
+    /// Seams on the pale half go with it (see `Project::remove_fold`).
     fn remove_fold(&mut self, source: PieceId) {
-        self.doc.edit(|p| {
-            if let Some(pc) = p.piece_mut(source) {
-                pc.fold = None;
-            }
-        });
+        self.doc.edit(|p| p.remove_fold(source));
         self.note_if_refused();
     }
 

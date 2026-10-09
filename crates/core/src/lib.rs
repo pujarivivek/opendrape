@@ -4,6 +4,7 @@
 
 mod piece;
 mod project;
+mod seam;
 mod units;
 
 pub use piece::{
@@ -14,4 +15,5 @@ pub use piece::{
 pub use project::{
     MAX_PIECE_ID, MAX_PIECES, MAX_TOTAL_VERTICES, ModelError, Project, SCHEMA_VERSION,
 };
+pub use seam::{Half, MAX_SEAMS, Seam, SeamId, SeamSide};
 pub use units::Units;

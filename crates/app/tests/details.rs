@@ -437,7 +437,7 @@ fn a_fold_that_would_cross_the_piece_is_refused() {
     assert!(notice_is(&h, FOLD_REFUSED), "{:?}", h.state().notice);
 }
 
-const FOLD_REFUSED: &str = "The fold line must be a straight edge with no notches on it, and the whole piece (with its lines) on one side of it.";
+const FOLD_REFUSED: &str = "The fold line must be a straight edge with no notches or seams on it, and the whole piece (with its lines) on one side of it.";
 
 #[test]
 fn a_fold_on_an_edge_with_a_notch_is_refused_with_the_same_message() {

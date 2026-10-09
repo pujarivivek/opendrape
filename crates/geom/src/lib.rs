@@ -5,10 +5,11 @@ use kurbo::{
     BezPath, CubicBez, Line, ParamCurve, ParamCurveArclen, ParamCurveNearest, PathEl, PathSeg,
     Point, Shape as _,
 };
-use opendrape_core::{Edge, Piece, Point2, Vertex};
+use opendrape_core::{Edge, Piece, PieceId, Point2, Project, Vertex};
 
 mod allowance;
 mod marks;
+mod seams;
 mod shapes;
 pub use allowance::cut_line;
 pub use marks::{
@@ -16,6 +17,7 @@ pub use marks::{
     distance_along, edge_label_anchor, edge_label_anchors, is_counter_clockwise, line_length,
     line_points, nearest_line, notch_marks, notch_marks_on_stitching, point_at_distance,
 };
+pub use seams::{side_edges, side_length, side_points};
 pub use shapes::{ON_OUTLINE_MM, Shape, ShapeKind, shape_of, shapes, unfolded};
 
 /// Accuracy (mm) of curve lengths and nearest-point searches.
@@ -253,6 +255,28 @@ pub fn remove_vertex(piece: &mut Piece, i: usize) -> bool {
     }
     let prev_len = edge_length(piece, piece.prev(i));
     piece.remove_vertex(i, prev_len)
+}
+
+/// [`split_edge`] on stored piece `id` of `project`, keeping its seams sewn: a side on the
+/// split edge covers both parts (see `Project::seams_after_split`).
+pub fn split_edge_in(project: &mut Project, id: PieceId, i: usize, t: f64) -> Option<usize> {
+    let v = split_edge(project.piece_mut(id)?, i, t)?;
+    project.seams_after_split(id, i);
+    Some(v)
+}
+
+/// [`remove_vertex`] on stored piece `id` of `project`, keeping its seams valid (see
+/// `Project::seams_after_removal`).
+pub fn remove_vertex_in(project: &mut Project, id: PieceId, i: usize) -> bool {
+    let Some(piece) = project.piece_mut(id) else {
+        return false;
+    };
+    let n = piece.len();
+    if !remove_vertex(piece, i) {
+        return false;
+    }
+    project.seams_after_removal(id, i, n);
+    true
 }
 
 /// Changes edge `i` to `length` mm, keeping its `anchor` end fixed. A straight edge keeps its
@@ -530,5 +554,29 @@ mod tests {
             assert!(!set_edge_length(&mut s, 0, bad, Anchor::Start), "{bad}");
             assert_eq!(s, square());
         }
+    }
+
+    #[test]
+    fn edits_in_a_project_keep_its_seams() {
+        let mut pr = Project::new();
+        let a = pr.add_piece(square());
+        let b = pr.add_piece(square());
+        let side = |shape, first_edge, edges| {
+            opendrape_core::SeamSide::new(
+                shape,
+                opendrape_core::Half::Drawn,
+                first_edge,
+                edges,
+                true,
+            )
+        };
+        let seam = pr.add_seam(side(a, 1, 1), side(b, 3, 1));
+        assert_eq!(split_edge_in(&mut pr, a, 1, 0.5), Some(2));
+        assert_eq!(pr.seam(seam).unwrap().a, side(a, 1, 2));
+        assert_eq!(split_edge_in(&mut pr, PieceId(9), 0, 0.5), None);
+        assert!(remove_vertex_in(&mut pr, a, 2));
+        assert_eq!(pr.seam(seam).unwrap().a, side(a, 1, 1));
+        assert_eq!(pr.check(), Ok(()));
+        assert!(!remove_vertex_in(&mut pr, PieceId(9), 0));
     }
 }

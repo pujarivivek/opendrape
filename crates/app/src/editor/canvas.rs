@@ -814,8 +814,8 @@ impl PatternEditor {
             }
             Selection::Vertex(id, i) => {
                 let removed = self.doc.edit(|p| {
-                    p.owner_mut(id)
-                        .is_some_and(|(piece, _)| geom::remove_vertex(piece, i))
+                    let source = p.owner(id).map(|(piece, _)| piece.id);
+                    source.is_some_and(|source| geom::remove_vertex_in(p, source, i))
                 });
                 if self.note_if_refused() {
                     // The notice says why.
@@ -868,10 +868,7 @@ impl PatternEditor {
             && let Some((shape, source, i, t, _)) = nearest_edge(self.doc.project(), at, tol)
         {
             // A twin keeps its edges' direction, so `t` is the same on the stored piece.
-            let split = self.doc.edit(|p| {
-                p.piece_mut(source)
-                    .and_then(|piece| geom::split_edge(piece, i, t))
-            });
+            let split = self.doc.edit(|p| geom::split_edge_in(p, source, i, t));
             if !self.note_if_refused() {
                 match split {
                     Some(v) => self.selection = Selection::Vertex(shape, v),
