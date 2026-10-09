@@ -87,10 +87,20 @@ fn largest_abs(p: Point) -> f64 {
     p.x.abs().max(p.y.abs())
 }
 
+/// A single curved edge is never flattened finer than its control polygon's length divided by
+/// this, so one edge is at most a few hundred points whatever tolerance is asked for.
+const EDGE_TOLERANCE_DIVISOR: f64 = 4096.0;
+
+/// Points along `path`, for drawing and hit-testing: within `tolerance` mm of the true curve
+/// for any ordinary pattern. The tolerance is floored in two ways so that a corrupt or hostile
+/// file cannot make this slow or flood memory, because the point count grows with the square
+/// root of size over tolerance:
+/// - relative to the whole path's extent (one ten-millionth of its largest coordinate), and
+/// - per curved edge, to 1/4096 of that edge's control-polygon length.
+///
+/// The second floor is far below anything a student draws (a 1 m edge is still accurate to
+/// 0.25 mm), so real patterns come out as accurate as `tolerance` asks.
 fn flatten(path: &BezPath, tolerance: f64) -> Vec<Point2> {
-    // The point count grows with the square root of size over tolerance, so a huge coordinate
-    // (from a corrupt file) at a fixed tolerance would flood memory. Flooring the tolerance
-    // relative to the path's size bounds the count for any finite input.
     let extent = path.elements().iter().fold(1.0_f64, |m, el| match *el {
         PathEl::MoveTo(p) | PathEl::LineTo(p) => m.max(largest_abs(p)),
         PathEl::QuadTo(p1, p2) => m.max(largest_abs(p1)).max(largest_abs(p2)),
@@ -102,16 +112,48 @@ fn flatten(path: &BezPath, tolerance: f64) -> Vec<Point2> {
     });
     let tolerance = tolerance.max(extent * 1e-7);
     let mut out = Vec::new();
-    kurbo::flatten(path.iter(), tolerance, |el| {
-        if let PathEl::MoveTo(p) | PathEl::LineTo(p) = el {
-            out.push(cp(p));
+    let mut from = Point::ORIGIN;
+    for el in path.elements() {
+        match *el {
+            PathEl::MoveTo(p) | PathEl::LineTo(p) => {
+                out.push(cp(p));
+                from = p;
+            }
+            PathEl::QuadTo(p1, p2) => {
+                let tol = tolerance.max(control_length(&[from, p1, p2]) / EDGE_TOLERANCE_DIVISOR);
+                flatten_one(from, *el, tol, &mut out);
+                from = p2;
+            }
+            PathEl::CurveTo(p1, p2, p3) => {
+                let tol =
+                    tolerance.max(control_length(&[from, p1, p2, p3]) / EDGE_TOLERANCE_DIVISOR);
+                flatten_one(from, *el, tol, &mut out);
+                from = p3;
+            }
+            PathEl::ClosePath => {}
         }
-    });
+    }
     out
 }
 
+/// Length of the polyline through `points`: an upper bound on the length of the curve they
+/// control.
+fn control_length(points: &[Point]) -> f64 {
+    points.windows(2).map(|w| w[0].distance(w[1])).sum()
+}
+
+/// Flattens one curve element that starts at `from`, appending every point after `from`.
+fn flatten_one(from: Point, el: PathEl, tolerance: f64, out: &mut Vec<Point2>) {
+    kurbo::flatten([PathEl::MoveTo(from), el], tolerance, |flat| {
+        if let PathEl::LineTo(p) = flat {
+            out.push(cp(p));
+        }
+    });
+}
+
 /// The outline as points no further than `tolerance` mm from the true curve (closed; the first
-/// point is not repeated at the end).
+/// point is not repeated at the end). Only for pieces far larger than any real pattern is the
+/// tolerance coarser than asked: see `flatten`.
 pub fn outline_points(piece: &Piece, tolerance: f64) -> Vec<Point2> {
     let mut pts = flatten(&bez_path(piece), tolerance);
     if pts.len() > 1 && pts.first() == pts.last() {
@@ -120,7 +162,8 @@ pub fn outline_points(piece: &Piece, tolerance: f64) -> Vec<Point2> {
     pts
 }
 
-/// Edge `i` as points within `tolerance` mm, from its start to its end.
+/// Edge `i` as points within `tolerance` mm, from its start to its end. A very long edge may
+/// be flattened more coarsely than asked, to keep its point count bounded: see `flatten`.
 pub fn edge_points(piece: &Piece, i: usize, tolerance: f64) -> Vec<Point2> {
     let mut path = BezPath::new();
     let seg = edge_seg(piece, i);
@@ -296,6 +339,40 @@ mod tests {
         s.set_handle(0, opendrape_core::HandleEnd::Start, p(3e11, -2e11));
         let pts = outline_points(&s, 0.001);
         assert!(pts.len() < 100_000, "{} points", pts.len());
+    }
+
+    #[test]
+    fn one_long_curvy_edge_flattens_to_a_bounded_number_of_points() {
+        // A hostile file can make a single edge kilometres long and wildly curved. Asking for
+        // a tiny tolerance must not turn that one edge into thousands of points: a file of
+        // such edges would otherwise take minutes to draw.
+        let mut s = square();
+        s.set_curved(0, true);
+        s.set_handle(0, opendrape_core::HandleEnd::Start, p(900_000.0, 900_000.0));
+        s.set_handle(0, opendrape_core::HandleEnd::End, p(-900_000.0, 900_000.0));
+        assert_eq!(s.check(), Ok(()));
+        let edge = edge_points(&s, 0, 0.001);
+        assert!(edge.len() > 8, "still a curve: {} points", edge.len());
+        assert!(edge.len() < 500, "{} points", edge.len());
+        let outline = outline_points(&s, 0.001);
+        assert!(outline.len() < 500, "{} points", outline.len());
+    }
+
+    #[test]
+    fn a_small_edge_keeps_the_accuracy_asked_for() {
+        // The per-edge floor must not coarsen ordinary edges: a 10 cm curve at 0.01 mm is
+        // well above L / 4096.
+        let mut s = square();
+        s.set_curved(0, true);
+        s.set_handle(0, opendrape_core::HandleEnd::Start, p(30.0, -40.0));
+        let fine = edge_points(&s, 0, 0.01);
+        let coarse = edge_points(&s, 0, 1.0);
+        assert!(
+            fine.len() > coarse.len() * 3,
+            "{} vs {}",
+            fine.len(),
+            coarse.len()
+        );
     }
 
     #[test]

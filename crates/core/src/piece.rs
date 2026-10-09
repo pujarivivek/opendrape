@@ -107,6 +107,13 @@ pub enum HandleEnd {
 /// further only comes from a corrupt or hostile file, and would overwhelm the curve maths.
 pub const MAX_COORDINATE_MM: f64 = 1_000_000.0;
 
+/// Most points one piece may have. Real pattern pieces have a few dozen; the limit keeps a
+/// corrupt or hostile file from making the window take minutes to draw one piece.
+pub const MAX_VERTICES_PER_PIECE: usize = 2_000;
+
+/// Longest piece name, in characters.
+pub const MAX_NAME_CHARS: usize = 200;
+
 /// One closed pattern piece.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Piece {
@@ -269,9 +276,16 @@ impl Piece {
         self.edges.remove(i);
         true
     }
-    /// At least 3 vertices, one edge per vertex, only finite numbers, and every point within
+    /// 3 to [`MAX_VERTICES_PER_PIECE`] vertices, one edge per vertex, a name of at most
+    /// [`MAX_NAME_CHARS`] characters, only finite numbers, and every point within
     /// [`MAX_COORDINATE_MM`] of the origin.
     pub fn check(&self) -> Result<(), ModelError> {
+        if self.vertices.len() > MAX_VERTICES_PER_PIECE {
+            return Err(ModelError::TooManyPoints(self.id));
+        }
+        if self.name.chars().count() > MAX_NAME_CHARS {
+            return Err(ModelError::NameTooLong(self.id));
+        }
         if self.vertices.len() < 3 {
             return Err(ModelError::TooFewVertices(self.id));
         }
@@ -447,6 +461,32 @@ mod tests {
         far_handle.set_curved(0, true);
         far_handle.set_handle(0, HandleEnd::Start, p(-2e6, 0.0));
         assert_eq!(far_handle.check(), Err(ModelError::OutOfRange(PieceId(1))));
+    }
+
+    #[test]
+    fn check_rejects_oversized_pieces() {
+        let ring = |n: usize| {
+            let corners: Vec<Point2> = (0..n)
+                .map(|k| {
+                    let a = k as f64 / n as f64 * std::f64::consts::TAU;
+                    p(1000.0 * a.cos(), 1000.0 * a.sin())
+                })
+                .collect();
+            Piece::polygon(PieceId(1), "Ring", &corners)
+        };
+        assert_eq!(ring(MAX_VERTICES_PER_PIECE).check(), Ok(()));
+        assert_eq!(
+            ring(MAX_VERTICES_PER_PIECE + 1).check(),
+            Err(ModelError::TooManyPoints(PieceId(1)))
+        );
+        let mut named = square();
+        named.name = "n".repeat(MAX_NAME_CHARS);
+        assert_eq!(named.check(), Ok(()));
+        named.name.push('n');
+        assert_eq!(named.check(), Err(ModelError::NameTooLong(PieceId(1))));
+        // Characters, not bytes: 200 two-byte letters are fine.
+        named.name = "é".repeat(MAX_NAME_CHARS);
+        assert_eq!(named.check(), Ok(()));
     }
 
     #[test]

@@ -237,6 +237,27 @@ mod tests {
     }
 
     #[test]
+    fn refuses_a_piece_with_too_many_points() {
+        // A file well under the size cap can still hold a piece that would take minutes to draw.
+        let n = 3_000;
+        let corners: Vec<Point2> = (0..n)
+            .map(|k| {
+                let a = f64::from(k) / f64::from(n) * std::f64::consts::TAU;
+                Point2::new(500.0 * a.cos(), 500.0 * a.sin())
+            })
+            .collect();
+        let mut bad = Project::new();
+        bad.add_piece(Piece::polygon(PieceId(0), "Ring", &corners));
+        let json = serde_json::to_string(&bad).unwrap();
+        assert!(json.len() < 1024 * 1024, "far below the size cap");
+        let Err(err) = from_bytes(&zip_with("project.json", &json)) else {
+            panic!("a 3000-point piece was accepted");
+        };
+        assert!(matches!(err, OdpError::Invalid(_)), "{err}");
+        assert!(err.to_string().contains("too many points"), "{err}");
+    }
+
+    #[test]
     fn saves_atomically_and_loads_back() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("skirt.odp");
