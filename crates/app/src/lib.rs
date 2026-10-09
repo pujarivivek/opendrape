@@ -12,6 +12,7 @@ pub mod i18n;
 pub mod recovery;
 pub mod sim_runner;
 pub mod smoke_test;
+pub mod stage;
 pub mod startup_log;
 mod viewport;
 

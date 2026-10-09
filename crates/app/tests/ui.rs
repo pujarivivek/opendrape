@@ -6,8 +6,8 @@ use opendrape::editor::{Selection, Tool};
 use opendrape::gpu::{Decision, GpuChoice, GpuState, Reason, StateStore};
 use opendrape::{FileDialogs, OpenDrapeApp, Recovery, Shared, SharedState, Startup};
 use opendrape_core::{
-    Edge, EdgeProps, InternalLine, LineKind, Notch, NotchStyle, Piece, PieceId, Point2, Project,
-    Vertex,
+    Edge, EdgeProps, Half, InternalLine, LineKind, Notch, NotchStyle, Piece, PieceId, Point2,
+    Project, SeamSide, Vertex,
 };
 use std::{path::Path, rc::Rc};
 
@@ -30,7 +30,6 @@ fn harness_with(
         previous: GpuState::default(),
         store: StateStore::new(Some(config_dir)),
         smoke_test: false,
-        autoplay: false,
         file_dialogs,
         recovery: Recovery::new(None),
     };
@@ -117,7 +116,6 @@ fn tiny_window_does_not_crash() {
         previous: GpuState::default(),
         store: StateStore::new(Some(dir.path())),
         smoke_test: false,
-        autoplay: false,
         file_dialogs: FileDialogs::always_cancel(),
         recovery: Recovery::new(None),
     };
@@ -144,7 +142,6 @@ fn crash_marker_is_cleared_only_after_frames_were_presented() {
         previous: GpuState::default(),
         store: StateStore::new(Some(dir.path())),
         smoke_test: false,
-        autoplay: false,
         file_dialogs: FileDialogs::always_cancel(),
         recovery: Recovery::new(None),
     };
@@ -187,45 +184,113 @@ fn wait_until(
 // While the simulation plays it keeps requesting repaints, so these tests step explicitly
 // (`run_steps`, `wait_until`) instead of `run()`, which waits for the UI to settle.
 
-#[test]
-fn the_skirt_drapes_and_can_be_paused() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut h = harness(dir.path(), SharedState::default()); // starts paused (autoplay: false)
-    h.run();
-    h.get_by_label("A-line skirt");
-    h.get_by_label("Play").click();
-    h.run_steps(2);
-    wait_until(&mut h, "the simulation to advance", |a| {
-        a.sim_frame().is_some_and(|f| f.time > 0.05)
+/// Two rectangles sewn along one side, drawn in the pattern window.
+fn add_sewn_pieces(h: &mut App) {
+    h.state_mut().editor_mut().doc.edit(|p| {
+        let a = p.add_piece(Piece::rectangle(
+            PieceId(0),
+            "Front",
+            Point2::new(0.0, 0.0),
+            200.0,
+            300.0,
+        ));
+        let b = p.add_piece(Piece::rectangle(
+            PieceId(0),
+            "Back",
+            Point2::new(300.0, 0.0),
+            200.0,
+            300.0,
+        ));
+        p.add_seam(
+            SeamSide::new(a, Half::Drawn, 1, 1, true),
+            SeamSide::new(b, Half::Drawn, 3, 1, false),
+        );
     });
-    h.get_by_label("Pause").click();
-    h.run_steps(3);
-    h.get_by_label("Play");
+    h.run();
 }
 
 #[test]
-fn reset_and_garment_switch_reload_the_scene() {
+fn play_drapes_the_pattern_and_reset_returns_to_arranging() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    add_sewn_pieces(&mut h);
+    assert!(
+        h.state().sim_frame().is_none() && !h.state().is_draping(),
+        "arranging"
+    );
+    h.get_by_label("Play").click();
+    h.run_steps(2);
+    wait_until(&mut h, "the drape to advance", |a| {
+        a.sim_frame().is_some_and(|f| f.time > 0.05)
+    });
+    h.get_by_label("Press Reset to move pieces.");
+    h.get_by_label("Pause").click();
+    h.run_steps(3);
+    h.get_by_label("Play");
+    h.get_by_label("Reset").click();
+    h.run_steps(2);
+    wait_until(&mut h, "arranging again", |a| a.sim_frame().is_none());
+    assert!(!h.state().is_draping());
+    assert!(h.query_by_label("Press Reset to move pieces.").is_none());
+}
+
+#[test]
+fn editing_the_pattern_while_draped_returns_to_arranging() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    add_sewn_pieces(&mut h);
+    h.get_by_label("Play").click();
+    h.run_steps(2);
+    wait_until(&mut h, "the drape", |a| a.sim_frame().is_some());
+    h.state_mut()
+        .editor_mut()
+        .doc
+        .edit(|p| p.pieces[0].name = "Front left".into());
+    h.run_steps(2);
+    wait_until(&mut h, "arranging again", |a| a.sim_frame().is_none());
+    assert!(!h.state().is_draping());
+}
+
+#[test]
+fn a_piece_that_cannot_be_made_into_fabric_is_named() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    h.state_mut().editor_mut().doc.edit(|p| {
+        p.add_piece(Piece::polygon(
+            PieceId(0),
+            "Front",
+            &[
+                Point2::new(0.0, 0.0),
+                Point2::new(200.0, 200.0),
+                Point2::new(200.0, 0.0),
+                Point2::new(0.0, 200.0),
+            ],
+        ))
+    });
+    h.run();
+    h.get_by_label("Play").click();
+    h.run_steps(2);
+    wait_until(&mut h, "the drape", |a| a.sim_frame().is_some());
+    h.run_steps(1);
+    h.get_by_label("Front couldn't be made into fabric: its outline crosses itself.");
+}
+
+#[test]
+fn play_with_nothing_drawn_shows_just_the_form() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = harness(dir.path(), SharedState::default());
     h.run();
     h.get_by_label("Play").click();
     h.run_steps(2);
-    wait_until(&mut h, "time > 0.1", |a| {
-        a.sim_frame().is_some_and(|f| f.time > 0.1)
-    });
-    h.get_by_label("Pause").click();
-    h.run_steps(2);
+    wait_until(&mut h, "the empty drape", |a| a.sim_frame().is_some());
+    h.run_steps(3);
+    assert!(h.state().sim_frame().unwrap().positions.is_empty());
     h.get_by_label("Reset").click();
     h.run_steps(2);
-    wait_until(&mut h, "time back to 0", |a| {
-        a.sim_frame().is_some_and(|f| f.time == 0.0)
-    });
-    h.get_by_label("Fitted tube (collision test)").click();
-    h.run_steps(2);
-    wait_until(&mut h, "the tube", |a| {
-        a.sim_frame()
-            .is_some_and(|f| f.positions.len() == opendrape_testkit::garments::BODICE_PARTICLES)
-    });
+    wait_until(&mut h, "arranging again", |a| a.sim_frame().is_none());
 }
 
 #[test]
@@ -924,7 +989,6 @@ fn harness_recovering_with(
         previous: GpuState::default(),
         store: StateStore::new(Some(config_dir)),
         smoke_test: false,
-        autoplay: false,
         file_dialogs,
         recovery: Recovery::new(Some(recovery_dir)),
     };

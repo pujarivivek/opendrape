@@ -1,4 +1,5 @@
 use crate::sim_runner::SimFrame;
+use crate::stage::Stage;
 use opendrape_render::{GpuMesh, MeshRenderer, OrbitCamera, RenderTarget, target_size};
 use std::sync::Arc;
 
@@ -23,12 +24,12 @@ pub struct Viewport {
 }
 
 impl Viewport {
-    pub fn new(rs: &egui_wgpu::RenderState) -> Self {
+    pub fn new(rs: &egui_wgpu::RenderState, stage: &Stage) -> Self {
         let renderer = MeshRenderer::new(&rs.device);
-        let b = opendrape_testkit::garments::body();
-        let body = renderer.create_mesh(&rs.device, &rs.queue, &b.positions, &b.triangles, SKIN);
+        let (positions, triangles) = stage.render_mesh();
+        let body = renderer.create_mesh(&rs.device, &rs.queue, positions, triangles, SKIN);
         let camera = OrbitCamera {
-            target: glam::Vec3::new(0.0, 0.95, 0.02),
+            target: glam::Vec3::new(0.0, 0.95, 0.0),
             yaw: 0.5,
             pitch: 0.12,
             distance: 2.6,
@@ -50,8 +51,9 @@ impl Viewport {
         let Some((w, h)) = target_size(size.x, size.y, ui.pixels_per_point(), max_dim) else {
             return; // minimised or collapsed: nothing to draw
         };
-        if let Some(f) = frame {
-            self.sync_cloth(rs, f);
+        match frame {
+            Some(f) => self.sync_cloth(rs, f),
+            None => self.cloth = None,
         }
         self.ensure_target(rs, w, h);
         let (target, texture_id) = self.target.as_ref().expect("ensure_target sets it");

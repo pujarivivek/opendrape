@@ -28,8 +28,6 @@ graphics-starting-over = Last time, OpenDrape could not start its 3D graphics in
 toolbar-play = Play
 toolbar-pause = Pause
 toolbar-reset = Reset
-garment-skirt = A-line skirt
-garment-bodice-proxy = Fitted tube (collision test)
 overlay-stats = { $fps } fps · simulation { $ms } ms per step · { $points } points
 overlay-stats-paused = simulation { $ms } ms per step · { $points } points
 
@@ -172,3 +170,11 @@ panel-seam-side = Side { $side }: { $length }
 panel-seam-differ = Lengths differ by { $difference }
 panel-seam-flip = Flip
 panel-delete-seam = Delete seam
+
+hint-draping = Press Reset to move pieces.
+note-coarser = Large pattern: using coarser fabric
+note-crosses-itself = { $name } couldn't be made into fabric: its outline crosses itself.
+note-unmeshable = { $name } couldn't be made into fabric.
+note-lengths-differ = Seam { $number }: the sides' lengths differ by { $difference }; the longer one gathers as ease.
+note-starts-inside = { $name } starts inside the form; move it out first.
+note-went-wrong = The drape went wrong and was reset. Check for seams that pull pieces through the form.

@@ -60,7 +60,6 @@ fn main() -> ExitCode {
         previous,
         store: store.clone(),
         smoke_test: cli.smoke_test,
-        autoplay: true,
         file_dialogs: opendrape::FileDialogs::Native,
         // A second copy of OpenDrape keeps no recovery file, so the two never overwrite each other's.
         recovery: if another_instance_running {

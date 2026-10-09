@@ -1,40 +1,67 @@
-//! Runs the cloth simulation on its own thread so the window stays responsive even when a
-//! slow computer simulates slower than real time. The UI only reads the latest frame.
+//! Drapes the student's garment on its own thread, so the window stays responsive even when a
+//! slow computer simulates slower than real time. Play hands the thread a snapshot of the
+//! project; the thread builds the fabric (meshing takes a moment) and the cloth, then steps
+//! the solver. Reset drops the drape. The UI only reads the latest frame.
 
-use arc_swap::ArcSwap;
+use crate::stage::Stage;
+use arc_swap::ArcSwapOption;
 use crossbeam_channel::{Receiver, Sender, unbounded};
-use glam::Vec3;
-use opendrape_testkit::garments::{Garment, Scene};
+use glam::{DVec2, DVec3, Vec3};
+use opendrape_core::{PieceId, Point2, Project};
+use opendrape_geom as geom;
+use opendrape_mesh::{MeshNote, MeshParams, place};
+use opendrape_sim::{ClothBuilder, Panel, Params, Solver};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+/// Fabric weight (kg/m²): one light cotton until fabrics arrive.
+pub const DENSITY_KG_M2: f64 = 0.15;
+
+/// Something the student should know about the drape.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DrapeNote {
+    /// From making the fabric (see [`MeshNote`]).
+    Mesh(MeshNote),
+    /// Part of this piece starts inside the form.
+    StartsInside(PieceId),
+}
+
 /// One published simulation frame.
 #[derive(Debug)]
 pub struct SimFrame {
-    /// Increases with every published frame, across resets.
+    /// Increases with every published frame, across drapes.
     pub seq: u64,
-    /// Simulated seconds since the scene started.
+    /// Simulated seconds since Play.
     pub time: f64,
     pub positions: Vec<Vec3>,
     /// Shared until the topology changes (seams weld), so the renderer can skip re-uploads.
     pub triangles: Arc<Vec<[u32; 3]>>,
     /// Wall-clock milliseconds the last step took.
     pub step_ms: f64,
+    /// What making this drape found.
+    pub notes: Arc<Vec<DrapeNote>>,
 }
 
 enum Command {
-    Reset(Garment),
+    Play(Arc<Project>),
+    Reset,
     Wake,
     Shutdown,
+    /// Tests: treat the next step as having gone wrong.
+    #[cfg(test)]
+    Spoil,
 }
 
 pub struct SimRunner {
     tx: Sender<Command>,
-    latest: Arc<ArcSwap<SimFrame>>,
+    latest: Arc<ArcSwapOption<SimFrame>>,
+    /// From Play until Reset (or until the drape goes wrong): the 3D view shows the drape.
+    draping: Arc<AtomicBool>,
     playing: Arc<AtomicBool>,
     idle: Arc<AtomicBool>,
+    went_wrong: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -43,45 +70,87 @@ pub struct SimRunner {
 const SETTLED_ENERGY: f64 = 1e-6;
 const SETTLE_FRAMES: u32 = 60;
 
+struct Status {
+    latest: Arc<ArcSwapOption<SimFrame>>,
+    draping: Arc<AtomicBool>,
+    playing: Arc<AtomicBool>,
+    idle: Arc<AtomicBool>,
+    went_wrong: Arc<AtomicBool>,
+}
+
 impl SimRunner {
-    pub fn start(garment: Garment, playing: bool, on_frame: impl Fn() + Send + 'static) -> Self {
+    /// Starts the simulation thread, with nothing to drape. `on_frame` runs after every
+    /// published frame (the app asks for a repaint).
+    pub fn start(stage: Arc<Stage>, on_frame: impl Fn() + Send + 'static) -> Self {
         let (tx, rx) = unbounded();
-        let scene = Scene::new(garment);
-        let mut publisher = Publisher::new(&scene, 0);
-        let latest = Arc::new(ArcSwap::from_pointee(publisher.frame(&scene, 0.0)));
-        let playing = Arc::new(AtomicBool::new(playing));
-        let idle = Arc::new(AtomicBool::new(false));
-        let thread = {
-            let (latest, playing, idle) = (latest.clone(), playing.clone(), idle.clone());
-            std::thread::Builder::new()
-                .name("opendrape-sim".into())
-                .spawn(move || run(scene, publisher, &rx, &latest, &playing, &idle, &on_frame))
-                .expect("spawn the simulation thread")
+        let status = Status {
+            latest: Arc::new(ArcSwapOption::empty()),
+            draping: Arc::new(AtomicBool::new(false)),
+            playing: Arc::new(AtomicBool::new(false)),
+            idle: Arc::new(AtomicBool::new(false)),
+            went_wrong: Arc::new(AtomicBool::new(false)),
         };
+        let (latest, draping, playing, idle, went_wrong) = (
+            status.latest.clone(),
+            status.draping.clone(),
+            status.playing.clone(),
+            status.idle.clone(),
+            status.went_wrong.clone(),
+        );
+        let thread = std::thread::Builder::new()
+            .name("opendrape-sim".into())
+            .spawn(move || run(&stage, &rx, &status, &on_frame))
+            .expect("spawn the simulation thread");
         Self {
             tx,
             latest,
+            draping,
             playing,
             idle,
+            went_wrong,
             thread: Some(thread),
         }
     }
-    pub fn latest(&self) -> Arc<SimFrame> {
+    /// Drapes `project`: the fabric is made on the simulation thread, then it runs.
+    pub fn play(&self, project: Arc<Project>) {
+        self.went_wrong.store(false, Ordering::Relaxed);
+        self.draping.store(true, Ordering::Relaxed);
+        self.playing.store(true, Ordering::Relaxed);
+        let _ = self.tx.send(Command::Play(project));
+    }
+    /// Back to arranging: the drape is dropped.
+    pub fn reset(&self) {
+        self.draping.store(false, Ordering::Relaxed);
+        self.playing.store(false, Ordering::Relaxed);
+        let _ = self.tx.send(Command::Reset);
+    }
+    /// The latest frame of the drape; None while arranging (and while the fabric is made).
+    pub fn latest(&self) -> Option<Arc<SimFrame>> {
         self.latest.load_full()
+    }
+    /// Between Play and Reset.
+    pub fn is_draping(&self) -> bool {
+        self.draping.load(Ordering::Relaxed)
     }
     pub fn is_playing(&self) -> bool {
         self.playing.load(Ordering::Relaxed)
     }
-    /// True while the worker is paused and waiting: no step is in flight.
+    /// True while the worker waits for a command: no step is in flight.
     pub fn is_idle(&self) -> bool {
         self.idle.load(Ordering::Acquire)
     }
+    /// Pauses or resumes the drape.
     pub fn set_playing(&self, playing: bool) {
         self.playing.store(playing, Ordering::Relaxed);
         let _ = self.tx.send(Command::Wake);
     }
-    pub fn reset(&self, garment: Garment) {
-        let _ = self.tx.send(Command::Reset(garment));
+    /// Whether the last drape went wrong (a number stopped being finite) and was dropped.
+    pub fn went_wrong(&self) -> bool {
+        self.went_wrong.load(Ordering::Relaxed)
+    }
+    #[cfg(test)]
+    fn spoil(&self) {
+        let _ = self.tx.send(Command::Spoil);
     }
 }
 
@@ -94,91 +163,164 @@ impl Drop for SimRunner {
     }
 }
 
-struct Publisher {
-    seq: u64,
+/// A drape in progress.
+struct Drape {
+    solver: Solver,
+    notes: Arc<Vec<DrapeNote>>,
     topology: u64,
     triangles: Arc<Vec<[u32; 3]>>,
 }
 
-impl Publisher {
-    fn new(scene: &Scene, seq: u64) -> Self {
-        let c = scene.solver.cloth();
-        Self {
-            seq,
-            topology: c.topology_version(),
-            triangles: Arc::new(c.triangles().to_vec()),
-        }
-    }
-    fn frame(&mut self, scene: &Scene, step_ms: f64) -> SimFrame {
-        let c = scene.solver.cloth();
+impl Drape {
+    fn frame(&mut self, seq: u64, step_ms: f64) -> SimFrame {
+        let c = self.solver.cloth();
         if c.topology_version() != self.topology {
             self.topology = c.topology_version();
             self.triangles = Arc::new(c.triangles().to_vec());
         }
-        self.seq += 1;
         SimFrame {
-            seq: self.seq,
-            time: scene.solver.time(),
+            seq,
+            time: self.solver.time(),
             positions: c.positions().iter().map(|p| p.as_vec3()).collect(),
             triangles: self.triangles.clone(),
             step_ms,
+            notes: self.notes.clone(),
         }
+    }
+    /// Every live particle is a finite number.
+    fn is_finite(&self) -> bool {
+        let c = self.solver.cloth();
+        c.positions()
+            .iter()
+            .enumerate()
+            .all(|(i, p)| !c.is_alive(i) || p.is_finite())
     }
 }
 
-fn run(
-    mut scene: Scene,
-    mut publisher: Publisher,
-    rx: &Receiver<Command>,
-    latest: &ArcSwap<SimFrame>,
-    playing: &AtomicBool,
-    idle: &AtomicBool,
-    on_frame: &dyn Fn(),
-) {
+/// The fabric and cloth for `project` on `stage`: every shape that could be meshed, at its
+/// placement, sewn by its seams; and the notes about it.
+pub fn build_drape(project: &Project, stage: &Stage) -> (Solver, Vec<DrapeNote>) {
+    let mesh = opendrape_mesh::build(project, &MeshParams::default());
+    let shapes = geom::shapes(project);
+    let layout = place::layout(&shapes);
+    let mut notes: Vec<DrapeNote> = mesh.notes.iter().map(|n| DrapeNote::Mesh(*n)).collect();
+    let mut builder = ClothBuilder::new(DENSITY_KG_M2);
+    let mut ids = Vec::with_capacity(mesh.panels.len());
+    for panel in &mesh.panels {
+        let shape = shapes
+            .iter()
+            .find(|s| s.id == panel.shape)
+            .expect("every panel comes from a shape");
+        let placement = place::effective(project, shape, &layout, stage.shoulder_y());
+        let positions: Vec<DVec3> = panel
+            .flat
+            .iter()
+            .map(|f| {
+                place::apply(
+                    &placement,
+                    panel.centre,
+                    Point2::new(f[0] * 1000.0, f[1] * 1000.0),
+                )
+            })
+            .collect();
+        if positions.iter().any(|p| stage.signed_distance(*p) < 0.0) {
+            notes.push(DrapeNote::StartsInside(panel.shape));
+        }
+        ids.push(builder.add_panel(
+            &Panel {
+                positions,
+                flat: Some(panel.flat.iter().map(|f| DVec2::from_array(*f)).collect()),
+                triangles: panel.triangles.clone(),
+            },
+            1.0,
+        ));
+    }
+    for &((pa, a), (pb, b)) in &mesh.stitches {
+        builder.stitch((ids[pa], a), (ids[pb], b));
+    }
+    (Solver::new(builder.build(), Params::default()), notes)
+}
+
+fn run(stage: &Stage, rx: &Receiver<Command>, status: &Status, on_frame: &dyn Fn()) {
+    let mut drape: Option<Drape> = None;
+    let mut seq = 0;
     let mut next = Instant::now();
     let mut settled_frames = 0;
+    let mut spoiled = false;
     loop {
-        // Paused: sleep until a command arrives. Playing: just look.
-        let cmd = if playing.load(Ordering::Relaxed) {
+        // Draping and playing: just look for a command. Otherwise sleep until one arrives.
+        let busy = drape.is_some() && status.playing.load(Ordering::Relaxed);
+        let cmd = if busy {
             rx.try_recv().ok()
         } else {
-            idle.store(true, Ordering::Release);
+            status.idle.store(true, Ordering::Release);
             let cmd = rx.recv().unwrap_or(Command::Shutdown);
-            idle.store(false, Ordering::Release);
+            status.idle.store(false, Ordering::Release);
             Some(cmd)
         };
         match cmd {
             Some(Command::Shutdown) => return,
-            Some(Command::Reset(g)) => {
-                scene = Scene::new(g);
+            Some(Command::Play(project)) => {
+                let (solver, notes) = build_drape(&project, stage);
+                let c = solver.cloth();
+                let mut d = Drape {
+                    topology: c.topology_version(),
+                    triangles: Arc::new(c.triangles().to_vec()),
+                    solver,
+                    notes: Arc::new(notes),
+                };
+                seq += 1;
+                status.latest.store(Some(Arc::new(d.frame(seq, 0.0))));
+                drape = Some(d);
                 settled_frames = 0;
-                publisher = Publisher::new(&scene, publisher.seq);
-                latest.store(Arc::new(publisher.frame(&scene, 0.0)));
                 on_frame();
                 next = Instant::now();
+                continue;
+            }
+            Some(Command::Reset) => {
+                drape = None;
+                status.latest.store(None);
+                on_frame();
                 continue;
             }
             Some(Command::Wake) => {
                 next = Instant::now();
                 continue;
             }
+            #[cfg(test)]
+            Some(Command::Spoil) => {
+                spoiled = true;
+                continue;
+            }
             None => {}
         }
+        let Some(d) = &mut drape else { continue };
         let started = Instant::now();
-        scene.step();
-        let cloth = scene.solver.cloth();
+        let collider = stage.drape_collider();
+        d.solver.step(Some(&collider));
+        if std::mem::take(&mut spoiled) || !d.is_finite() {
+            // Something pulled the cloth apart: drop the drape and say so.
+            drape = None;
+            status.latest.store(None);
+            status.draping.store(false, Ordering::Relaxed);
+            status.playing.store(false, Ordering::Relaxed);
+            status.went_wrong.store(true, Ordering::Relaxed);
+            on_frame();
+            continue;
+        }
+        let cloth = d.solver.cloth();
         settled_frames = if !cloth.has_open_stitches() && cloth.kinetic_energy() < SETTLED_ENERGY {
             settled_frames + 1
         } else {
             0
         };
         if settled_frames >= SETTLE_FRAMES {
-            playing.store(false, Ordering::Relaxed);
+            status.playing.store(false, Ordering::Relaxed);
             settled_frames = 0;
         }
-        latest.store(Arc::new(
-            publisher.frame(&scene, started.elapsed().as_secs_f64() * 1000.0),
-        ));
+        seq += 1;
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        status.latest.store(Some(Arc::new(d.frame(seq, ms))));
         on_frame();
         // Real time at most; a slow computer simply runs slower.
         next += Duration::from_secs_f64(opendrape_sim::FRAME_DT);
@@ -194,7 +336,7 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opendrape_testkit::garments::{BODICE_PARTICLES, SKIRT_PARTICLES};
+    use opendrape_core::{Half, Piece, Placement, SeamSide};
 
     fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {
         let start = Instant::now();
@@ -207,51 +349,144 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_simulation_runs_without_the_window_drawing() {
-        let r = SimRunner::start(Garment::Skirt, true, || {});
-        assert_eq!(r.latest().positions.len(), SKIRT_PARTICLES);
-        wait_for("simulated time to advance", || r.latest().time > 0.1);
+    /// Two 200 × 300 mm panels sewn along one side, hanging in front of the form.
+    fn two_panels() -> Arc<Project> {
+        let mut pr = Project::new();
+        let a = pr.add_piece(Piece::rectangle(
+            PieceId(0),
+            "A",
+            Point2::new(0.0, 0.0),
+            200.0,
+            300.0,
+        ));
+        let b = pr.add_piece(Piece::rectangle(
+            PieceId(0),
+            "B",
+            Point2::new(300.0, 0.0),
+            200.0,
+            300.0,
+        ));
+        pr.add_seam(
+            SeamSide::new(a, Half::Drawn, 1, 1, true),
+            SeamSide::new(b, Half::Drawn, 3, 1, false),
+        );
+        Arc::new(pr)
+    }
+
+    /// A small square lying flat 3 cm above the floor, beside the form: it drops and settles.
+    fn on_the_floor() -> Arc<Project> {
+        let mut pr = Project::new();
+        let mut piece = Piece::rectangle(PieceId(0), "Square", Point2::new(0.0, 0.0), 100.0, 100.0);
+        piece.placement = Some(Placement {
+            position: [0.6, 0.03, 0.0],
+            rotation: glam::DQuat::from_rotation_x(-std::f64::consts::FRAC_PI_2).to_array(),
+            curve: None,
+        });
+        pr.add_piece(piece);
+        Arc::new(pr)
     }
 
     #[test]
-    fn pausing_stops_time_and_reset_rewinds_it() {
-        let r = SimRunner::start(Garment::Skirt, true, || {});
-        wait_for("time > 0.1", || r.latest().time > 0.1);
+    fn play_builds_the_fabric_on_the_simulation_thread_and_runs_it() {
+        let r = SimRunner::start(Stage::shared(), || {});
+        assert!(
+            r.latest().is_none() && !r.is_draping(),
+            "nothing to drape yet"
+        );
+        let project = two_panels();
+        let mesh = opendrape_mesh::build(&project, &MeshParams::default());
+        r.play(project);
+        assert!(r.is_draping());
+        wait_for("simulated time to advance", || {
+            r.latest().is_some_and(|f| f.time > 0.1)
+        });
+        assert_eq!(r.latest().unwrap().positions.len(), mesh.particles());
+        assert!(r.latest().unwrap().notes.is_empty());
+    }
+
+    #[test]
+    fn pausing_stops_time_and_reset_drops_the_drape() {
+        let r = SimRunner::start(Stage::shared(), || {});
+        r.play(two_panels());
+        wait_for("time > 0.1", || r.latest().is_some_and(|f| f.time > 0.1));
         r.set_playing(false);
         wait_for("the worker to go idle", || r.is_idle());
-        let t = r.latest().time;
+        let t = r.latest().unwrap().time;
         std::thread::sleep(Duration::from_millis(150));
-        assert_eq!(r.latest().time, t, "paused");
-        r.reset(Garment::Skirt);
-        wait_for("reset to t = 0", || r.latest().time == 0.0);
+        assert_eq!(r.latest().unwrap().time, t, "paused");
+        r.reset();
+        wait_for("the drape to go", || r.latest().is_none());
+        assert!(!r.is_draping());
     }
 
     #[test]
     fn a_settled_drape_pauses_itself() {
-        // Simulating a garment that no longer moves would keep a laptop core busy forever.
-        let r = SimRunner::start(Garment::BodiceProxy, true, || {});
+        let r = SimRunner::start(Stage::shared(), || {});
+        r.play(on_the_floor());
         wait_for("auto-pause once settled", || !r.is_playing() && r.is_idle());
-        let t = r.latest().time;
+        let f = r.latest().expect("still showing the drape");
+        assert!(
+            f.positions.iter().all(|p| p.y < 0.02 && p.y > 0.0),
+            "on the floor"
+        );
         std::thread::sleep(Duration::from_millis(150));
-        assert_eq!(r.latest().time, t);
+        assert_eq!(r.latest().unwrap().time, f.time);
     }
 
     #[test]
-    fn rapid_resets_end_on_the_last_choice() {
-        let r = SimRunner::start(Garment::Skirt, true, || {});
-        for g in [Garment::BodiceProxy, Garment::Skirt, Garment::BodiceProxy] {
-            r.reset(g);
-        }
-        wait_for("the fitted tube", || {
-            r.latest().positions.len() == BODICE_PARTICLES
+    fn a_drape_that_goes_wrong_is_dropped_and_reported() {
+        let r = SimRunner::start(Stage::shared(), || {});
+        r.play(two_panels());
+        wait_for("the drape", || r.latest().is_some());
+        r.spoil();
+        wait_for("the drape to be dropped", || r.went_wrong());
+        assert!(r.latest().is_none() && !r.is_draping() && !r.is_playing());
+        r.play(two_panels());
+        assert!(!r.went_wrong(), "a new Play starts afresh");
+    }
+
+    #[test]
+    fn notes_name_pieces_that_start_inside_or_could_not_be_made() {
+        let mut pr = Project::new();
+        let mut inside = Piece::rectangle(PieceId(0), "Front", Point2::new(0.0, 0.0), 100.0, 100.0);
+        inside.placement = Some(Placement::at([0.0, 1.0, 0.0]));
+        let inside = pr.add_piece(inside);
+        let bow = pr.add_piece(Piece::polygon(
+            PieceId(0),
+            "Bow",
+            &[
+                Point2::new(0.0, 0.0),
+                Point2::new(100.0, 100.0),
+                Point2::new(100.0, 0.0),
+                Point2::new(0.0, 100.0),
+            ],
+        ));
+        let (_, notes) = build_drape(&pr, &Stage::shared());
+        assert_eq!(
+            notes,
+            vec![
+                DrapeNote::Mesh(MeshNote::CrossesItself(bow)),
+                DrapeNote::StartsInside(inside)
+            ]
+        );
+    }
+
+    #[test]
+    fn play_with_nothing_drawn_is_harmless() {
+        let r = SimRunner::start(Stage::shared(), || {});
+        r.play(Arc::new(Project::new()));
+        wait_for("an empty drape that settles at once", || {
+            r.latest().is_some() && !r.is_playing() && r.is_idle()
         });
+        assert!(r.latest().unwrap().positions.is_empty());
+        assert!(!r.went_wrong());
     }
 
     #[test]
     fn dropping_the_runner_stops_its_thread() {
-        let r = SimRunner::start(Garment::Skirt, true, || {});
-        wait_for("running", || r.latest().time > 0.0);
+        let r = SimRunner::start(Stage::shared(), || {});
+        r.play(two_panels());
+        wait_for("running", || r.latest().is_some_and(|f| f.time > 0.0));
         let start = Instant::now();
         drop(r);
         assert!(

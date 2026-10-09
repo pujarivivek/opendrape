@@ -3,12 +3,13 @@ use crate::editor::{self, PatternEditor};
 use crate::file_dialogs::{DialogKind, FileDialogs};
 use crate::gpu::{Decision, GpuChoice, GpuState, Os, StateStore, confirmed_state};
 use crate::recovery::Recovery;
-use crate::sim_runner::{SimFrame, SimRunner};
+use crate::sim_runner::{DrapeNote, SimFrame, SimRunner};
+use crate::stage::Stage;
 use crate::tr;
 use crate::viewport::Viewport;
 use egui::{Key, KeyboardShortcut, Modifiers, ViewportCommand};
-use opendrape_core::Project;
-use opendrape_testkit::garments::Garment;
+use opendrape_core::{PieceId, Project};
+use opendrape_mesh::MeshNote;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -21,8 +22,6 @@ pub struct Startup {
     pub previous: GpuState,
     pub store: StateStore,
     pub smoke_test: bool,
-    /// Start simulating immediately (tests start paused, so `Harness::run` can settle).
-    pub autoplay: bool,
     /// Where Open and Save get file names: the system dialogs, or a script in tests.
     pub file_dialogs: FileDialogs,
     /// Where unsaved work is kept when quitting can't ask first.
@@ -105,9 +104,12 @@ pub struct OpenDrapeApp {
     show_about: bool,
     copied: bool,
     runner: Option<SimRunner>,
-    garment: Garment,
     fps: f32,
     editor: PatternEditor,
+    /// The form, shared with the simulation thread.
+    stage: Arc<Stage>,
+    /// The project as it was when Play was pressed: any change to it returns to arranging.
+    draped: Option<Arc<Project>>,
     pending: Option<Pending>,
     /// An action requested from code rather than the menu or keyboard; handled on the next frame.
     queued: Option<FileAction>,
@@ -132,26 +134,26 @@ impl OpenDrapeApp {
             "window open, graphics: {:?}",
             info.as_ref().map(|i| (&i.name, i.device_type, i.backend))
         ));
+        let stage = Stage::shared();
         let runner = render_state.map(|_| {
             let ctx = cc.egui_ctx.clone();
-            SimRunner::start(Garment::Skirt, startup.autoplay, move || {
-                ctx.request_repaint()
-            })
+            SimRunner::start(stage.clone(), move || ctx.request_repaint())
         });
         // Read before `startup` moves into the app below.
         let recovery = startup.recovery.clone();
         let offered = recovery.take();
         Self {
-            viewport: render_state.map(Viewport::new),
+            viewport: render_state.map(|rs| Viewport::new(rs, &stage)),
             diagnostics: Diagnostics::collect(info.as_ref(), startup.decision),
             startup,
             shared,
             show_about: false,
             copied: false,
             runner,
-            garment: Garment::Skirt,
             fps: 0.0,
             editor: PatternEditor::new(),
+            stage,
+            draped: None,
             pending: None,
             queued: None,
             error: None,
@@ -197,9 +199,19 @@ impl OpenDrapeApp {
             )
     }
 
-    /// The latest simulation frame, if the 3D view is running.
+    /// The latest frame of the drape; None while arranging.
     pub fn sim_frame(&self) -> Option<Arc<SimFrame>> {
-        self.runner.as_ref().map(SimRunner::latest)
+        self.runner.as_ref().and_then(SimRunner::latest)
+    }
+
+    /// Between Play and Reset.
+    pub fn is_draping(&self) -> bool {
+        self.runner.as_ref().is_some_and(SimRunner::is_draping)
+    }
+
+    /// The form garments are arranged round and draped on.
+    pub fn stage(&self) -> &Arc<Stage> {
+        &self.stage
     }
 
     /// `fps` is `None` while paused: the window then only redraws on input.
@@ -218,38 +230,81 @@ impl OpenDrapeApp {
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         let Some(runner) = &self.runner else { return };
+        let (draping, playing) = (runner.is_draping(), runner.is_playing());
+        let mut clicked = None;
         ui.horizontal_wrapped(|ui| {
-            for g in Garment::ALL {
-                if ui
-                    .selectable_label(self.garment == g, garment_label(g))
-                    .clicked()
-                    && self.garment != g
-                {
-                    self.garment = g;
-                    runner.reset(g);
-                }
+            let label = if draping && playing {
+                tr!("toolbar-pause")
+            } else {
+                tr!("toolbar-play")
+            };
+            if ui.button(label).clicked() {
+                clicked = Some(match (draping, playing) {
+                    (false, _) => Toolbar::Play,
+                    (true, true) => Toolbar::Pause,
+                    (true, false) => Toolbar::Resume,
+                });
             }
-            ui.separator();
-            let playing = runner.is_playing();
             if ui
-                .button(if playing {
-                    tr!("toolbar-pause")
-                } else {
-                    tr!("toolbar-play")
-                })
+                .add_enabled(draping, egui::Button::new(tr!("toolbar-reset")))
                 .clicked()
             {
-                runner.set_playing(!playing);
-            }
-            if ui.button(tr!("toolbar-reset")).clicked() {
-                runner.reset(self.garment);
+                clicked = Some(Toolbar::Reset);
             }
         });
+        match clicked {
+            Some(Toolbar::Play) => {
+                let snapshot = Arc::new(self.editor.doc.project().clone());
+                runner.play(snapshot.clone());
+                self.draped = Some(snapshot);
+            }
+            Some(Toolbar::Pause) => runner.set_playing(false),
+            Some(Toolbar::Resume) => runner.set_playing(true),
+            Some(Toolbar::Reset) => {
+                runner.reset();
+                self.draped = None;
+            }
+            None => {}
+        }
     }
 
-    /// The 3D view: its toolbar, the body and garment, and the speed overlay.
+    /// A pattern edit while draped returns to arranging (live updates come later).
+    fn reset_if_edited(&mut self) {
+        let Some(runner) = &self.runner else { return };
+        let edited = self
+            .draped
+            .as_ref()
+            .is_some_and(|d| **d != *self.editor.doc.project());
+        if edited {
+            runner.reset();
+        }
+        if edited || !runner.is_draping() {
+            self.draped = None;
+        }
+    }
+
+    /// The hint while draping, and what the student should know about the drape.
+    fn notes(&self, ui: &mut egui::Ui) {
+        let Some(runner) = &self.runner else { return };
+        let warn = ui.visuals().warn_fg_color;
+        if runner.went_wrong() {
+            ui.colored_label(warn, tr!("note-went-wrong"));
+        }
+        if runner.is_draping() {
+            ui.label(tr!("hint-draping"));
+        }
+        if let Some(frame) = runner.latest() {
+            for note in frame.notes.iter() {
+                ui.colored_label(warn, note_text(note, self.editor.doc.project()));
+            }
+        }
+    }
+
+    /// The 3D view: its toolbar and notes, the form and the drape, and the speed overlay.
     fn view_3d(&mut self, ui: &mut egui::Ui, frame: &eframe::Frame) {
+        self.reset_if_edited();
         self.toolbar(ui);
+        self.notes(ui);
         ui.separator();
         let sim = self.sim_frame();
         let fps = self
@@ -674,10 +729,28 @@ fn with_project_extension(path: PathBuf) -> PathBuf {
     name.into()
 }
 
-fn garment_label(g: Garment) -> String {
-    match g {
-        Garment::Skirt => tr!("garment-skirt"),
-        Garment::BodiceProxy => tr!("garment-bodice-proxy"),
+/// The toolbar buttons of the 3D view.
+#[derive(Clone, Copy)]
+enum Toolbar {
+    Play,
+    Pause,
+    Resume,
+    Reset,
+}
+
+/// A drape note as the student reads it, naming pieces as the project does now.
+fn note_text(note: &DrapeNote, project: &Project) -> String {
+    let name = |id: PieceId| project.name_of(id).unwrap_or_default().to_owned();
+    match *note {
+        DrapeNote::Mesh(MeshNote::Coarser { .. }) => tr!("note-coarser"),
+        DrapeNote::Mesh(MeshNote::CrossesItself(id)) => tr!("note-crosses-itself", name = name(id)),
+        DrapeNote::Mesh(MeshNote::Unmeshable(id)) => tr!("note-unmeshable", name = name(id)),
+        DrapeNote::Mesh(MeshNote::LengthsDiffer { seam, by_mm }) => tr!(
+            "note-lengths-differ",
+            number = seam.0,
+            difference = project.units.format(by_mm)
+        ),
+        DrapeNote::StartsInside(id) => tr!("note-starts-inside", name = name(id)),
     }
 }
 
