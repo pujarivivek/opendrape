@@ -2610,6 +2610,7 @@ dependencies = [
  "glam",
  "opendrape-body",
  "opendrape-core",
+ "opendrape-drape",
  "opendrape-geom",
  "opendrape-mesh",
  "opendrape-sim",
