@@ -2482,6 +2482,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "opendrape-testkit"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "opendrape-body",
+ "opendrape-sim",
+ "rayon",
+]
+
+[[package]]
 name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
