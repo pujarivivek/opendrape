@@ -1,0 +1,20 @@
+[package]
+name = "opendrape-io"
+description = "OpenDrape project files (.odp)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+opendrape-core.workspace = true
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+zip.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
