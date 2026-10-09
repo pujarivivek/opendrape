@@ -57,8 +57,8 @@ enum FileAction {
     Open,
     Save,
     SaveAs,
-    /// Close the window (the graphics-mode switch restarts OpenDrape this way).
-    Quit,
+    /// Close the window and start OpenDrape again in this graphics mode.
+    Restart(GpuChoice),
 }
 
 /// What to do once unsaved changes have been dealt with.
@@ -66,7 +66,8 @@ enum FileAction {
 enum Then {
     NewProject,
     OpenFile,
-    Quit,
+    /// Close the window; with a graphics mode, OpenDrape then starts again in that mode.
+    Quit(Option<GpuChoice>),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -102,6 +103,8 @@ pub struct OpenDrapeApp {
     fps: f32,
     editor: PatternEditor,
     pending: Option<Pending>,
+    /// An action requested from code rather than the menu or keyboard; handled on the next frame.
+    queued: Option<FileAction>,
     /// Shown in a message box after a failed open or save.
     error: Option<String>,
     /// The user chose to quit without saving: let the window close.
@@ -136,6 +139,7 @@ impl OpenDrapeApp {
             fps: 0.0,
             editor: PatternEditor::new(),
             pending: None,
+            queued: None,
             error: None,
             closing: false,
             title: String::new(),
@@ -270,6 +274,11 @@ impl OpenDrapeApp {
         self.shared.restart_with.set(Some(choice));
     }
 
+    /// What Help → Graphics does: restart in `choice`, after dealing with unsaved changes.
+    pub fn choose_graphics(&mut self, choice: GpuChoice) {
+        self.queued = Some(FileAction::Restart(choice));
+    }
+
     /// Frames presented to the screen are proof this graphics mode works: clear the crash
     /// marker. egui presents a frame only after `ui()` returns, and some drivers crash on
     /// their first present, so wait until [`CONFIRM_AFTER_FRAMES`] frames have completed.
@@ -336,8 +345,7 @@ impl OpenDrapeApp {
                     for &choice in GpuChoice::available(Os::current()) {
                         let current = self.startup.decision.choice == choice;
                         if ui.radio(current, choice_label(choice)).clicked() && !current {
-                            self.request_graphics_change(choice);
-                            action = Some(FileAction::Quit);
+                            self.choose_graphics(choice);
                         }
                     }
                     ui.separator();
@@ -372,7 +380,9 @@ impl OpenDrapeApp {
         match action {
             FileAction::New => self.after_saving_changes(Then::NewProject, frame, ctx),
             FileAction::Open => self.after_saving_changes(Then::OpenFile, frame, ctx),
-            FileAction::Quit => self.after_saving_changes(Then::Quit, frame, ctx),
+            FileAction::Restart(choice) => {
+                self.after_saving_changes(Then::Quit(Some(choice)), frame, ctx)
+            }
             FileAction::Save => self.save(None, frame, ctx),
             FileAction::SaveAs => {
                 self.ask_file(DialogKind::Save, DialogFor::SaveAs(None), frame, ctx)
@@ -393,7 +403,10 @@ impl OpenDrapeApp {
         match then {
             Then::NewProject => self.editor.set_project(Project::new(), None),
             Then::OpenFile => self.ask_file(DialogKind::Open, DialogFor::Open, frame, ctx),
-            Then::Quit => {
+            Then::Quit(restart_in) => {
+                if let Some(choice) = restart_in {
+                    self.request_graphics_change(choice);
+                }
                 self.closing = true;
                 ctx.send_viewport_cmd(ViewportCommand::Close);
             }
@@ -484,7 +497,7 @@ impl OpenDrapeApp {
         {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
             if self.pending.is_none() {
-                self.pending = Some(Pending::AskToSave(Then::Quit));
+                self.pending = Some(Pending::AskToSave(Then::Quit(None)));
             }
         }
     }
@@ -521,8 +534,6 @@ impl OpenDrapeApp {
         match answer {
             Answer::Save => self.save(Some(then), frame, ctx),
             Answer::Discard => self.run(then, frame, ctx),
-            // Not quitting after all, so don't restart into another graphics mode later.
-            Answer::Cancel if then == Then::Quit => self.shared.restart_with.set(None),
             Answer::Cancel => {}
         }
     }
@@ -634,7 +645,7 @@ impl eframe::App for OpenDrapeApp {
         let menu = egui::Panel::top("menu_bar")
             .show(ui, |ui| self.menu_bar(ui))
             .inner;
-        if let Some(action) = menu.or(shortcut) {
+        if let Some(action) = menu.or(shortcut).or(self.queued.take()) {
             self.file_action(action, frame, &ctx);
         }
         self.about_window(&ctx);

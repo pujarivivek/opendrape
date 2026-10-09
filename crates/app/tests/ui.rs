@@ -509,3 +509,84 @@ fn edit_menu_greys_out_what_cannot_be_done() {
     assert!(!h.get_by_label("Undo").accesskit_node().is_disabled());
     assert!(h.get_by_label("Redo").accesskit_node().is_disabled());
 }
+
+#[test]
+fn switching_graphics_with_unsaved_work_and_cancelling_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let shared = SharedState::default();
+    let mut h = harness(dir.path(), shared.clone());
+    h.run();
+    add_piece(&mut h);
+    h.state_mut().choose_graphics(GpuChoice::Software);
+    h.run();
+    h.get_by_label("Save your changes?");
+    h.get_by_label("Cancel").click();
+    h.run();
+    assert_eq!(
+        StateStore::new(Some(dir.path())).load(),
+        GpuState::default()
+    );
+    assert_eq!(shared.restart_with.get(), None);
+    assert!(!h.state().is_closing());
+    assert_eq!(pieces(&h), 1);
+}
+
+#[test]
+fn switching_graphics_then_cancelling_the_save_dialog_does_not_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let shared = SharedState::default();
+    let mut h = harness(dir.path(), shared.clone()); // every dialog is cancelled
+    h.run();
+    add_piece(&mut h);
+    h.state_mut().choose_graphics(GpuChoice::Software);
+    h.run();
+    h.get_by_label("Save").click();
+    h.run();
+    assert_eq!(
+        StateStore::new(Some(dir.path())).load(),
+        GpuState::default()
+    );
+    assert_eq!(shared.restart_with.get(), None);
+    assert!(!h.state().is_closing());
+    assert!(h.state().editor().doc.is_dirty());
+}
+
+#[test]
+fn switching_graphics_on_a_clean_project_restarts() {
+    let dir = tempfile::tempdir().unwrap();
+    let shared = SharedState::default();
+    let mut h = harness(dir.path(), shared.clone());
+    h.run();
+    h.state_mut().choose_graphics(GpuChoice::Software);
+    h.run();
+    assert_eq!(shared.restart_with.get(), Some(GpuChoice::Software));
+    assert_eq!(
+        StateStore::new(Some(dir.path())).load().preferred,
+        GpuChoice::Software
+    );
+    assert!(h.state().is_closing());
+}
+
+#[test]
+fn switching_graphics_and_choosing_not_to_save_restarts() {
+    let dir = tempfile::tempdir().unwrap();
+    let shared = SharedState::default();
+    let mut h = harness(dir.path(), shared.clone());
+    h.run();
+    add_piece(&mut h);
+    h.state_mut().choose_graphics(GpuChoice::Software);
+    h.run();
+    assert_eq!(
+        shared.restart_with.get(),
+        None,
+        "nothing happens until the question is answered"
+    );
+    h.get_by_label("Don't save").click();
+    h.run();
+    assert_eq!(shared.restart_with.get(), Some(GpuChoice::Software));
+    assert_eq!(
+        StateStore::new(Some(dir.path())).load().preferred,
+        GpuChoice::Software
+    );
+    assert!(h.state().is_closing());
+}
