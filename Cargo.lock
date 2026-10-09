@@ -729,6 +729,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam-channel"
+version = "0.5.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98b0cc327b5bc766e7fda9c9260cc0fa81b43a8e240440422dff70788e3f9ef1"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "crossbeam-deque"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2437,14 +2446,19 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 name = "opendrape"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
+ "crossbeam-channel",
  "directories",
  "eframe",
  "egui",
  "egui-wgpu",
  "egui_kittest",
+ "glam",
  "i18n-embed",
  "i18n-embed-fl",
  "opendrape-render",
+ "opendrape-sim",
+ "opendrape-testkit",
  "rfd",
  "rust-embed",
  "serde",
