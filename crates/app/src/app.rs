@@ -377,13 +377,14 @@ impl OpenDrapeApp {
         action
     }
 
-    /// ⌘N, ⌘O, ⌘S, ⇧⌘S, ⌘Q (Ctrl on Windows). While a text field is being typed in, only ⌘Q
-    /// works: it means nothing to a text field, and quitting must always be possible.
+    /// ⌘N, ⌘O, ⌘S, ⇧⌘S, ⌘Q (Ctrl on Windows). While a text field is being typed in, or the
+    /// restore question is up, only ⌘Q works: it means nothing to a text field, and quitting
+    /// must always be possible (the waiting copy stays for next time).
     fn file_shortcut(&self, ctx: &egui::Context) -> Option<FileAction> {
         if ctx.input_mut(|i| i.consume_shortcut(&QUIT)) {
             return Some(FileAction::Quit);
         }
-        if ctx.text_edit_focused() {
+        if ctx.text_edit_focused() || self.offered.is_some() {
             return None;
         }
         // Save As first: `consume_shortcut` also matches ⌘S while Shift is held.
@@ -604,7 +605,7 @@ impl OpenDrapeApp {
         if let (true, Some((project, from))) = (restore, self.offered.take()) {
             self.editor.set_recovered(project, from);
         }
-        self.offered = None;
+        // `take` above cleared the offer, whichever the answer was.
         self.recovery.discard();
     }
 

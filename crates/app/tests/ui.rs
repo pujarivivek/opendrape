@@ -758,13 +758,21 @@ fn cmd_q_works_while_a_text_field_has_focus() {
 }
 
 fn harness_recovering(config_dir: &Path, recovery_dir: &Path) -> Harness<'static, OpenDrapeApp> {
+    harness_recovering_with(config_dir, recovery_dir, FileDialogs::always_cancel())
+}
+
+fn harness_recovering_with(
+    config_dir: &Path,
+    recovery_dir: &Path,
+    file_dialogs: FileDialogs,
+) -> Harness<'static, OpenDrapeApp> {
     let startup = Startup {
         decision: SAVED_AUTO,
         previous: GpuState::default(),
         store: StateStore::new(Some(config_dir)),
         smoke_test: false,
         autoplay: false,
-        file_dialogs: FileDialogs::always_cancel(),
+        file_dialogs,
         recovery: Recovery::new(Some(recovery_dir)),
     };
     Harness::builder()
@@ -1006,5 +1014,72 @@ fn quitting_with_the_restore_question_unanswered_keeps_the_copy() {
     assert!(
         rescue.path().join("recovery.odp").exists(),
         "the waiting copy must survive"
+    );
+}
+
+/// A recovery copy holding one piece, waiting in `dir`.
+fn leave_a_copy(dir: &Path) {
+    let mut project = opendrape_core::Project::new();
+    project.add_piece(Piece::rectangle(
+        PieceId(0),
+        "Front",
+        Point2::new(0.0, 0.0),
+        300.0,
+        500.0,
+    ));
+    Recovery::new(Some(dir)).write(&project, None);
+}
+
+#[test]
+fn file_shortcuts_do_nothing_while_the_restore_question_is_shown() {
+    let (config, rescue) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    leave_a_copy(rescue.path());
+    let dialogs = FileDialogs::scripted(vec![Some(config.path().join("other.odp"))]);
+    let FileDialogs::Scripted(unused_answers) = &dialogs else {
+        unreachable!("scripted")
+    };
+    let unused_answers = unused_answers.clone();
+    let mut h = harness_recovering_with(config.path(), rescue.path(), dialogs);
+    h.run();
+    add_piece(&mut h); // unsaved, so New and Open would ask "Save your changes?"
+    let save_as = egui::Modifiers {
+        shift: true,
+        ..egui::Modifiers::COMMAND
+    };
+    for (modifiers, key) in [
+        (egui::Modifiers::COMMAND, egui::Key::N),
+        (egui::Modifiers::COMMAND, egui::Key::O),
+        (egui::Modifiers::COMMAND, egui::Key::S),
+        (save_as, egui::Key::S),
+    ] {
+        h.key_press_modifiers(modifiers, key);
+        h.run();
+    }
+    h.get_by_label("Restore unsaved work?");
+    assert!(h.query_by_label("Save your changes?").is_none());
+    assert_eq!(unused_answers.borrow().len(), 1, "a file dialog was opened");
+    assert!(rescue.path().join("recovery.odp").exists());
+
+    // Once the question is answered the same shortcuts work again.
+    h.get_by_label("Discard").click();
+    h.run();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::N);
+    h.run();
+    h.get_by_label("Save your changes?");
+}
+
+#[test]
+fn quit_still_works_while_the_restore_question_is_shown() {
+    let (config, rescue) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    leave_a_copy(rescue.path());
+    let mut h = harness_recovering(config.path(), rescue.path());
+    h.run();
+    h.get_by_label("Restore unsaved work?");
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Q);
+    h.run();
+    assert!(h.state().is_closing());
+    assert!(
+        rescue.path().join("recovery.odp").exists(),
+        "quitting without an answer keeps the copy for next time"
     );
 }
