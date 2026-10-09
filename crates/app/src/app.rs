@@ -664,6 +664,20 @@ impl OpenDrapeApp {
         }
     }
 
+    /// Starts over with `project` (File → New, File → Open, or work restored from a recovery
+    /// copy, which stays unsaved): a fresh history, and a 3D view with nothing in it yet. The
+    /// view keeps the pieces of the last pattern it could make when a pattern can't be made, so
+    /// it must not keep those of the project that has just gone, or a file that fails to mesh
+    /// would show the pieces of the one before it.
+    fn replace_project(&mut self, project: Project, path: Option<PathBuf>, recovered: bool) {
+        if recovered {
+            self.editor.set_recovered(project, path);
+        } else {
+            self.editor.set_project(project, path);
+        }
+        self.arranged = SceneCache::default();
+    }
+
     /// Runs `then`, first asking whether to save any unsaved changes.
     fn after_saving_changes(&mut self, then: Then, frame: &eframe::Frame, ctx: &egui::Context) {
         if self.editor.doc.is_dirty() {
@@ -675,7 +689,7 @@ impl OpenDrapeApp {
 
     fn run(&mut self, then: Then, frame: &eframe::Frame, ctx: &egui::Context) {
         match then {
-            Then::NewProject => self.editor.set_project(Project::new(), None),
+            Then::NewProject => self.replace_project(Project::new(), None, false),
             Then::OpenFile => self.ask_file(DialogKind::Open, DialogFor::Open, frame, ctx),
             Then::Quit(restart_in) => {
                 if let Some(choice) = restart_in {
@@ -750,7 +764,7 @@ impl OpenDrapeApp {
         let Some(path) = answer else { return }; // cancelled
         match purpose {
             DialogFor::Open => match opendrape_io::load(&path) {
-                Ok(project) => self.editor.set_project(project, Some(path)),
+                Ok(project) => self.replace_project(project, Some(path), false),
                 Err(e) => self.error = Some(tr!("error-open", error = e.to_string())),
             },
             DialogFor::SaveAs(then) => {
@@ -850,7 +864,7 @@ impl OpenDrapeApp {
         });
         let Some(restore) = answer else { return };
         if let (true, Some((project, from))) = (restore, self.offered.take()) {
-            self.editor.set_recovered(project, from);
+            self.replace_project(project, from, true);
         }
         // `take` above cleared the offer, whichever the answer was.
         self.recovery.discard();
@@ -1135,6 +1149,127 @@ mod tests {
         h.run();
         assert!(h.query_by_label(note).is_none(), "the note goes");
         assert_eq!(h.state_mut().arranged_scene().panels.len(), 3);
+    }
+
+    /// The app in a headless window with no 3D view (as on a machine without a graphics card), so
+    /// that nothing asks for the arranged scene unless the test does.
+    fn app_without_a_view(
+        file_dialogs: FileDialogs,
+        recovery: Recovery,
+    ) -> egui_kittest::Harness<'static, OpenDrapeApp> {
+        use crate::gpu::{GpuState, Reason, StateStore};
+        let startup = Startup {
+            decision: Decision {
+                choice: GpuChoice::Auto,
+                reason: Reason::Saved,
+            },
+            previous: GpuState::default(),
+            store: StateStore::new(None),
+            smoke_test: false,
+            file_dialogs,
+            recovery,
+        };
+        egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1000.0, 700.0))
+            .build_eframe(move |cc| OpenDrapeApp::new(cc, startup, SharedState::default()))
+    }
+
+    fn rectangle(name: &str, x: f64, side_mm: f64) -> opendrape_core::Piece {
+        opendrape_core::Piece::rectangle(
+            PieceId(0),
+            name,
+            opendrape_core::Point2::new(x, 0.0),
+            side_mm,
+            side_mm,
+        )
+    }
+
+    /// Two pieces (ids 1 and 2) in the project, and the 3D view's scene made for them.
+    fn show_two_pieces(h: &mut egui_kittest::Harness<'static, OpenDrapeApp>) {
+        h.state_mut().editor.doc.edit(|p| {
+            p.add_piece(rectangle("Front", 0.0, 300.0));
+            p.add_piece(rectangle("Back", 500.0, 300.0));
+        });
+        h.run();
+        assert_eq!(h.state_mut().arranged_scene().panels.len(), 2);
+    }
+
+    /// The pieces the 3D view shows for the project that is open, when the fabric for it can't
+    /// be made (as it would be asked for on the next frame, which no test frame gets to first).
+    fn shown_when_the_pattern_cannot_be_made(
+        h: &mut egui_kittest::Harness<'static, OpenDrapeApp>,
+    ) -> Vec<PieceId> {
+        let shoulder = h.state().stage.shoulder_y();
+        let project = h.state().editor.doc.project().clone();
+        let scene = h
+            .state_mut()
+            .arranged
+            .scene_with(&project, shoulder, |_| panic!("the mesher fell over"));
+        assert!(h.state().arranged.view_failed());
+        scene.panels.iter().map(|p| p.shape).collect()
+    }
+
+    #[test]
+    fn a_new_project_that_cannot_be_shown_never_shows_the_last_ones_pieces() {
+        use egui_kittest::kittest::Queryable;
+        let mut h = app_without_a_view(FileDialogs::always_cancel(), Recovery::new(None));
+        h.run();
+        show_two_pieces(&mut h);
+        h.get_by_label("File").click();
+        h.run();
+        h.get_by_label("New").click();
+        h.run();
+        h.get_by_label("Don't save").click(); // there are unsaved changes: asked first
+        h.run();
+        assert_eq!(h.state().editor.doc.project().pieces.len(), 0, "File → New");
+        // The new project has a piece under the id the old one's first had.
+        h.state_mut()
+            .editor
+            .doc
+            .edit(|p| p.add_piece(rectangle("Skirt", 0.0, 100.0)));
+        assert_eq!(shown_when_the_pattern_cannot_be_made(&mut h), vec![]);
+    }
+
+    #[test]
+    fn an_opened_file_that_cannot_be_shown_never_shows_the_last_ones_pieces() {
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("skirt.odp");
+        let mut skirt = Project::new();
+        skirt.add_piece(rectangle("Skirt", 0.0, 100.0));
+        opendrape_io::save(&skirt, &file).unwrap();
+        let mut h =
+            app_without_a_view(FileDialogs::scripted(vec![Some(file)]), Recovery::new(None));
+        h.run();
+        show_two_pieces(&mut h);
+        h.get_by_label("File").click();
+        h.run();
+        h.get_by_label("Open…").click();
+        h.run();
+        h.get_by_label("Don't save").click(); // there are unsaved changes: asked first
+        h.run();
+        assert_eq!(*h.state().editor.doc.project(), skirt, "File → Open");
+        assert_eq!(shown_when_the_pattern_cannot_be_made(&mut h), vec![]);
+    }
+
+    #[test]
+    fn restored_work_that_cannot_be_shown_never_shows_the_last_ones_pieces() {
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().unwrap();
+        let mut skirt = Project::new();
+        skirt.add_piece(rectangle("Skirt", 0.0, 100.0));
+        Recovery::new(Some(dir.path())).write(&skirt, None);
+        let mut h = app_without_a_view(
+            FileDialogs::always_cancel(),
+            Recovery::new(Some(dir.path())),
+        );
+        h.run();
+        // The question is asked; the student has already drawn pieces in the window behind it.
+        show_two_pieces(&mut h);
+        h.get_by_label("Restore").click();
+        h.run();
+        assert_eq!(*h.state().editor.doc.project(), skirt, "the restored copy");
+        assert_eq!(shown_when_the_pattern_cannot_be_made(&mut h), vec![]);
     }
 
     #[test]
