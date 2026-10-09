@@ -79,6 +79,13 @@ impl PatternEditor {
             return Placed::Duplicate;
         };
         self.canvas.line_owner = Some(shape.id);
+        // A new line leaves the previous selection behind: Backspace past the draft's last
+        // point must not reach the line (or notch) that was selected before.
+        if self.canvas.line.is_empty()
+            && matches!(self.selection, Selection::Line(..) | Selection::Notch(..))
+        {
+            self.selection = Selection::Piece(shape.id);
+        }
         self.canvas.line.push(PenPoint {
             pos: at,
             handle: None,

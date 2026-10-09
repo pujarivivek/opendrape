@@ -1720,3 +1720,36 @@ fn delete_while_drawing_a_line_removes_draft_points_not_the_selected_line() {
     assert_eq!(h.state().line_draft().len(), 1);
     assert_eq!(piece_of(&h, id).lines.len(), 1, "the finished line stays");
 }
+
+#[test]
+fn starting_a_new_line_drops_the_selection_of_the_old_one() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    key(&mut h, Key::L);
+    click(&mut h, 150.0, 200.0);
+    click(&mut h, 300.0, 200.0);
+    key(&mut h, Key::Enter);
+    assert_eq!(h.state().selection, Selection::Line(id, 0)); // a finished line stays selected
+    click(&mut h, 150.0, 400.0);
+    assert_eq!(h.state().line_draft().len(), 1);
+    assert_eq!(h.state().selection, Selection::Piece(id));
+    key(&mut h, Key::Backspace); // the draft's only point
+    key(&mut h, Key::Backspace); // nothing left to remove, and no line selected to delete
+    assert!(h.state().line_draft().is_empty());
+    assert_eq!(piece_of(&h, id).lines.len(), 1);
+}
+
+#[test]
+fn starting_a_line_drops_a_notch_selection_too() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    key(&mut h, Key::N);
+    click(&mut h, 250.0, 101.0);
+    assert_eq!(h.state().selection, Selection::Notch(id, 0));
+    key(&mut h, Key::L);
+    click(&mut h, 150.0, 200.0);
+    assert_eq!(h.state().selection, Selection::Piece(id));
+    key(&mut h, Key::Backspace);
+    key(&mut h, Key::Backspace);
+    assert_eq!(piece_of(&h, id).notches.len(), 1);
+}
