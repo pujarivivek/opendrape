@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-09.
 
-**Status:** approved in conversation, section by section. The written document is waiting for the user's review.
+**Status:** approved by the user 2026-10-09 ("lets go"). Five points were corrected on 2026-10-10 after the planning probe disproved them; they are marked *(probe)*.
 
 **Builds on:**
 - M2b (pattern details), merged and published as `2f4b7cc`.
@@ -25,7 +25,7 @@ M4b adds what a T-shirt needs.
 
 **Success:** a tester can follow the M4a checklist on a Mac with no help. Every step is also covered by a headless test.
 1. Draft a skirt front on the fold and a mirrored pair of back panels (M2b tools).
-2. Sew the side seams with the Sew tool. The mirrored seams appear automatically.
+2. Sew the side seams and the centre back with the Sew tool. The mirrored seams appear automatically. *(probe: a skirt with an open back slides off the form.)*
 3. In 3D, right-click the front → **Place at front**, the back panel → **Place at back**, then adjust with the gizmo.
 4. Press **Play**. The seams close and the skirt settles on the form with no fabric poking through.
 5. Save, reopen: the seams and the arrangement are back. Undo steps back through the gizmo moves.
@@ -215,7 +215,7 @@ The app turns this into a `sim::Cloth` with `ClothBuilder::add_panel` (with `fla
 
 **The gizmo** is built into OpenDrape. It is drawn with egui's painter over the 3D image, projected with the orbit camera, and centred on the selected piece.
 - **Moving:**
-  - Arrows for x (red), y (green) and z (blue) move along that world axis. Pointer movement is projected onto the axis's on-screen direction and converted to metres at the gizmo's depth.
+  - Arrows for x (red), y (green) and z (blue) move along that world axis. Pointer movement is projected onto the axis's on-screen direction, and that point is mapped back onto the 3D axis exactly. *(probe: converting at the gizmo's depth was up to 35% off for long drags close up.)*
   - A centre square moves the piece in the camera's view plane.
 - **Rotating:** rings around x, y and z rotate about the piece's centre. Hold Shift to snap to 15°.
 - **Feedback:**
@@ -229,7 +229,7 @@ The app turns this into a `sim::Cloth` with `ClothBuilder::add_panel` (with `fla
 - **Where it goes:**
   - The angle around the form is 0°, 180°, +90° (form's left) or −90°.
   - The piece keeps its current height.
-  - Its curve radius is the form's surface distance at that angle and height plus 3 cm. The distance is measured by a ray outward from the centre line (`BodyCollider::ray_exit`).
+  - Its curve radius is the largest surface distance over the heights and angles the piece covers, plus 3 cm, or 20 cm when no ray finds the form. Distances are measured by rays outward from the centre line (`BodyCollider::ray_exit`). *(probe: one ray at the piece's own height found the gap between the legs and would wrap a skirt through the hips.)*
 - **Folded piece:** centred on that angle, with its fold on the centre line.
 - **A member of a pair:** placed beside its partner across the centre line. The edges that face each other in the 2D layout meet at the centre line.
 - **Flat** clears the curve.
@@ -279,7 +279,7 @@ The app turns this into a `sim::Cloth` with `ClothBuilder::add_panel` (with `fla
   - The new-version fixture.
   - Older fixtures still load.
 - **mesh:**
-  - Smallest angle ≥ 20° everywhere, and ≥ 25° away from outline corners sharper than that.
+  - Smallest angle ≥ 20°, except triangles touching an outline corner sharper than 20°, and ≥ 25° more than 4 h from corners sharper than 45°. *(probe: no triangle can beat a sharper corner.)*
   - Edge lengths within 0.5–1.6 h.
   - Area within 0.5% of the stitching outline.
   - Seam sides always have equal counts.
@@ -299,10 +299,10 @@ The app turns this into a `sim::Cloth` with `ClothBuilder::add_panel` (with `fla
   - **Place at…**.
   - Typed placement.
   - Play and Reset state changes.
-- **testkit drape:** a skirt built the way a student would (folded front, mirrored back pair, side seams, Place at…) is built through `crates/mesh` and draped. It must meet:
+- **testkit drape:** a skirt built the way a student would (folded front, mirrored back pair, side seams and centre back, Place at…) is built through `crates/mesh` and draped. It must meet:
   - no non-finite values;
   - max penetration ≤ 2 mm (p99 ≤ 1 mm);
-  - seam gap ≤ 1.5 mm max and ≤ 0.5 mm mean;
+  - before welding, seam gap ≤ 4 mm max and ≤ 1 mm mean, then welded shut *(probe: the worst gap before welding is 2.7 mm, over the seat; a flipped seam measures 11.5 mm, so the gate still catches mistakes)*;
   - kinetic energy settles;
   - a deterministic position hash.
 
