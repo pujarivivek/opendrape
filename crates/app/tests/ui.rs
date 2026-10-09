@@ -1421,7 +1421,7 @@ fn right_clicking_a_piece_in_3d_offers_place_at() {
 // tested without a window in `tests/arrange.rs`.
 
 use glam::DVec2;
-use opendrape::arrange::gizmo::{AXES, GRAZING, Gizmo, Handle, ring_angle};
+use opendrape::arrange::gizmo::{ARROW_PT, AXES, GRAZING, Gizmo, Handle, RING_PT, ring_angle};
 
 fn screen(p: DVec2) -> egui::Pos2 {
     egui::pos2(p.x as f32, p.y as f32)
@@ -2028,4 +2028,83 @@ fn a_pointer_going_along_a_grazing_ring_through_its_centre_does_not_make_it_flip
     });
     // At least the y rings (five views, two heights), and the x rings from the front and back.
     assert!(tried.len() >= 14, "{} rings", tried.len());
+}
+
+#[test]
+fn a_ring_taken_by_its_far_half_turns_with_the_point_held_in_every_view_the_app_gives() {
+    // In the app's own views, with the real pointer: a grazing ring that is tall enough on
+    // screen to have two halves turns the way the point held goes, whichever half that is.
+    let mut far_halves = Vec::new();
+    in_each_view(|h, at| {
+        let cam = h.state().view_camera().expect("the 3D view was drawn");
+        let scene = h.state_mut().arranged_scene();
+        let selection = Selection::Piece(PieceId(1));
+        let g = opendrape::arrange::Arranger::gizmo(&cam, &scene, &selection).expect("a gizmo");
+        let before = scene.panel(PieceId(1)).unwrap().placement;
+        // The ring about this axis: the point `phi` round from the one nearest the eye, and the
+        // screen direction it travels in when the ring is turned right-handedly.
+        let to_eye = cam.eye() - g.centre;
+        let near = (to_eye - AXES[at.axis] * to_eye.dot(AXES[at.axis])).normalize();
+        let radius = g.size * RING_PT / ARROW_PT;
+        let point = |phi: f64| {
+            let p = g.centre + (near * phi.cos() + AXES[at.axis].cross(near) * phi.sin()) * radius;
+            let velocity = AXES[at.axis].cross(p - g.centre).normalize();
+            let on_screen = cam.project(p).unwrap();
+            let heading = (cam.project(p + velocity * 0.001).unwrap() - on_screen).normalize();
+            (on_screen, heading)
+        };
+        let middle = cam.project(g.centre).unwrap();
+        let tall = (point(0.0).0 - middle).length();
+        if tall < 5.0 {
+            return; // too flat for the halves to be told apart
+        }
+        for (half, sign) in [("near", 1.0), ("far", -1.0)] {
+            // Of the points of that half that grab this ring, the one nearest the half's middle.
+            let (_, (grab, heading)) = (0..72)
+                .map(|k| f64::from(k) * 5f64.to_radians())
+                .filter(|phi| phi.cos() * sign >= 0.5)
+                .map(|phi| (phi, point(phi)))
+                // Not where another handle is as near (where two rings cross), or the grab
+                // would be a coin toss: it must grab this ring a point to every side too.
+                .filter(|(_, (s, _))| {
+                    [(0.0, 0.0), (1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)]
+                        .into_iter()
+                        .all(|(x, y)| {
+                            g.hit(&cam, *s + DVec2::new(x, y)) == Some(Handle::Turn(at.axis))
+                        })
+                })
+                .max_by(|a, b| (a.0.cos() * sign).total_cmp(&(b.0.cos() * sign)))
+                .unwrap_or_else(|| {
+                    panic!("{at:?}: a point of the {half} half that grabs the ring")
+                });
+            let to = grab + heading * 30.0;
+            grab_and_pull(h, grab, to);
+            let_go(h, to);
+            let now = own_place(h).expect("the piece was turned");
+            let q = glam::DQuat::from_array(now.rotation)
+                * glam::DQuat::from_array(before.rotation).inverse();
+            let turned = 2.0 * q.xyz().dot(AXES[at.axis]).atan2(q.w);
+            assert!(
+                (0.25..=0.7).contains(&turned),
+                "{at:?}: the {half} half, pulled the way it goes, turned {}°",
+                turned.to_degrees()
+            );
+            // One undo step, and the next try starts from the same piece.
+            assert!(h.state_mut().editor_mut().doc.undo());
+            h.run();
+            if half == "far" {
+                far_halves.push(at);
+            }
+        }
+    });
+    // The y ring, in the app as it opens, with the piece where it starts and lowered.
+    for lower in [false, true] {
+        assert!(
+            far_halves
+                .iter()
+                .any(|t| t.axis == 1 && t.view == "Default" && t.lower == lower),
+            "the far half of the y ring in the default view (lower: {lower})"
+        );
+    }
+    assert!(far_halves.len() >= 8, "{far_halves:?}");
 }

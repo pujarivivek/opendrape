@@ -190,8 +190,9 @@ fn dragging_a_ring_turns_the_piece_and_shift_snaps_to_15_degrees() {
 
 #[test]
 fn a_ring_seen_at_a_grazing_angle_turns_with_the_pointer_across_it_and_shift_snaps() {
-    // In this view the y ring is a thin sliver: it turns by 1 radian for every ring-radius
-    // (60 points) the pointer goes across it, wherever on or beside the ring that is.
+    // In this view the y ring is a thin sliver: taken by its near half, it turns by 1 radian
+    // for every ring-radius (60 points) the pointer goes across it, wherever on or beside the
+    // ring that is. (The far half goes the other way: see the tests after this one.)
     let (mut doc, _, sel) = one_piece();
     let mut cache = SceneCache::default();
     let mut arranger = Arranger::default();
@@ -206,15 +207,9 @@ fn a_ring_seen_at_a_grazing_angle_turns_with_the_pointer_across_it_and_shift_sna
         .unwrap()
         - cam.project(g.centre + near).unwrap())
     .normalize();
-    let (u, v) = AXES[1].any_orthonormal_pair();
-    let on_ring = |a: f64| g.centre + (u * a.cos() + v * a.sin()) * (g.size * RING_PT / ARROW_PT);
-    let grab = (0..36)
-        .map(|k| {
-            cam.project(on_ring(f64::from(k) * 10f64.to_radians()))
-                .unwrap()
-        })
-        .find(|p| g.hit(&cam, *p) == Some(Handle::Turn(1)))
-        .expect("a point that grabs the y ring");
+    // A point of the half nearest the eye, away from the middle of the ring.
+    let (grab, _) = ring_point(&g, &cam, 1, 0.4);
+    assert_eq!(g.hit(&cam, grab), Some(Handle::Turn(1)));
     assert!(grab.distance(centre) > 20.0, "grabbed away from the middle");
     let turned = |doc: &Document| {
         let q = DQuat::from_array(doc.project().pieces[0].placement.unwrap().rotation);
@@ -259,6 +254,207 @@ fn a_ring_seen_at_a_grazing_angle_turns_with_the_pointer_across_it_and_shift_sna
         true
     ));
     assert!((turned(&doc) - 30f64.to_radians()).abs() < 1e-6);
+}
+
+#[test]
+fn a_grazing_ring_turns_with_the_point_held_whichever_half_it_is_taken_by() {
+    // Seen from here the y ring is a flat ellipse. Its near half and its far half go opposite
+    // ways across the screen when it turns, and the ring follows the point held: pulled along its
+    // own way, either half turns the piece forwards; pulled the other way, backwards.
+    let cam = camera();
+    let mut checked = 0;
+    for (half, phi, exact) in [
+        ("near", 0.4, true),
+        ("near, the other side", -0.4, true),
+        ("far", std::f64::consts::PI - 0.4, true),
+        ("far, the other side", std::f64::consts::PI + 0.4, true),
+        // Round towards a tip of the ellipse, where the way a point goes is partly across it.
+        ("near, round the tip", 0.9, false),
+        ("far, round the tip", std::f64::consts::PI - 0.9, false),
+    ] {
+        for (way, shift) in [(1.0, false), (-1.0, false), (1.0, true)] {
+            let (mut doc, id, sel) = one_piece();
+            let mut cache = SceneCache::default();
+            let mut arranger = Arranger::default();
+            let g = gizmo(&doc, &mut cache, &sel);
+            let before = cache
+                .scene(doc.project(), SHOULDER)
+                .panel(id)
+                .unwrap()
+                .placement;
+            let (grab, heading) = ring_point(&g, &cam, 1, phi);
+            assert_eq!(g.hit(&cam, grab), Some(Handle::Turn(1)), "{half}");
+            assert!(drag(
+                &mut arranger,
+                &mut doc,
+                &mut cache,
+                &sel,
+                grab,
+                grab + heading * (way * 30.0),
+                shift
+            ));
+            let turned = turned_about(&doc, id, 1, &before);
+            if shift {
+                // Half a radian, 28.6°, snaps to 30°.
+                assert!(
+                    (turned - 30f64.to_radians()).abs() < 1e-6,
+                    "{half}: {}°",
+                    turned.to_degrees()
+                );
+            } else if exact {
+                // 30 points of 60, a little off for perspective.
+                assert!(
+                    (turned - way * 0.5).abs() < 0.04,
+                    "{half}, pulled {way}: {}°",
+                    turned.to_degrees()
+                );
+            } else {
+                assert!(turned * way > 0.1, "{half}, pulled {way}: {turned}");
+            }
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 18);
+}
+
+#[test]
+fn the_same_pull_turns_the_near_half_and_the_far_half_of_a_grazing_ring_opposite_ways() {
+    let cam = camera();
+    let mut turns = Vec::new();
+    for phi in [0.4, std::f64::consts::PI - 0.4] {
+        let (mut doc, id, sel) = one_piece();
+        let mut cache = SceneCache::default();
+        let mut arranger = Arranger::default();
+        let g = gizmo(&doc, &mut cache, &sel);
+        let before = cache
+            .scene(doc.project(), SHOULDER)
+            .panel(id)
+            .unwrap()
+            .placement;
+        // The same pull each time: the way the nearest point of the ring goes.
+        let (grab, _) = ring_point(&g, &cam, 1, phi);
+        let (_, nearest_way) = ring_point(&g, &cam, 1, 0.0);
+        assert!(drag(
+            &mut arranger,
+            &mut doc,
+            &mut cache,
+            &sel,
+            grab,
+            grab + nearest_way * 30.0,
+            false
+        ));
+        turns.push(turned_about(&doc, id, 1, &before));
+    }
+    assert!((turns[0] - 0.5).abs() < 0.04, "the near half: {turns:?}");
+    assert!((turns[1] + 0.5).abs() < 0.04, "the far half: {turns:?}");
+}
+
+#[test]
+fn a_grazing_ring_keeps_the_way_it_turns_however_the_pointer_wanders_across_it() {
+    // Which half was taken is decided when the button goes down. Dragged on, along the way the
+    // point held goes while also drifting right across the ring's ellipse and out beyond it, the
+    // ring turns forwards at a steady rate every step, never backwards. Taken by the far half, the
+    // pointer passes the ellipse's middle line (where the near half starts) after about 12 steps.
+    let cam = camera();
+    for (half, phi, towards) in [
+        ("far", std::f64::consts::PI - 0.4, 1.0),
+        ("near", 0.4, -1.0),
+    ] {
+        let (mut doc, id, sel) = one_piece();
+        let mut cache = SceneCache::default();
+        let mut arranger = Arranger::default();
+        let g = gizmo(&doc, &mut cache, &sel);
+        let before = cache
+            .scene(doc.project(), SHOULDER)
+            .panel(id)
+            .unwrap()
+            .placement;
+        let unmoved = doc.project().clone();
+        // The ring's projected axis, which points from the far half to the near half.
+        let (nearest, _) = ring_point(&g, &cam, 1, 0.0);
+        let drift = (nearest - cam.project(g.centre).unwrap()).normalize() * towards;
+        let (grab, heading) = ring_point(&g, &cam, 1, phi);
+        let scene = cache.scene(doc.project(), SHOULDER);
+        assert!(arranger.press(&cam, &scene, &sel, &mut doc, grab));
+        let mut last = 0.0;
+        for step in 1..=40 {
+            let along = f64::from(step) * 1.5;
+            arranger.drag_to(
+                &cam,
+                &mut doc,
+                grab + heading * along + drift * along,
+                false,
+            );
+            let turned = turned_about(&doc, id, 1, &before);
+            let by = (turned - last).to_degrees();
+            assert!(
+                (0.5..=4.0).contains(&by),
+                "{half}: step {step} turned {by}° (a steady 1.4° is right)"
+            );
+            last = turned;
+        }
+        // 40 steps of 1.5 points of a 60 point radius is 1 radian.
+        assert!((last - 1.0).abs() < 0.1, "{half}: {}°", last.to_degrees());
+        // And back to where it began by another way: nothing is left.
+        for step in (0..40).rev() {
+            let along = f64::from(step) * 1.5;
+            arranger.drag_to(
+                &cam,
+                &mut doc,
+                grab + heading * along + drift * along * 0.5,
+                false,
+            );
+        }
+        arranger.drag_to(&cam, &mut doc, grab, false);
+        arranger.release(&mut doc);
+        assert_eq!(*doc.project(), unmoved, "{half}: back where it began");
+    }
+}
+
+#[test]
+fn round_a_rings_tips_and_on_a_hairline_ring_the_nearest_side_rule_stands() {
+    // Round the tips of the ellipse neither half is the one held, and a ring seen almost edge-on
+    // has no halves a pointer could tell apart: both turn as they did for the nearest side,
+    // whatever the point taken hold of.
+    let cases = [
+        (
+            "a tip",
+            camera(),
+            vec![std::f64::consts::FRAC_PI_2, -std::f64::consts::FRAC_PI_2],
+        ),
+        ("a hairline", level_camera(), vec![0.5, -0.5, 2.7, -2.7]),
+    ];
+    for (what, cam, phis) in cases {
+        for phi in phis {
+            let (mut doc, id, sel) = one_piece();
+            let mut cache = SceneCache::default();
+            let mut arranger = Arranger::default();
+            let g = gizmo_in(&cam, &doc, &mut cache, &sel);
+            let before = cache
+                .scene(doc.project(), SHOULDER)
+                .panel(id)
+                .unwrap()
+                .placement;
+            let (grab, _) = ring_point(&g, &cam, 1, phi);
+            let (_, nearest_way) = ring_point(&g, &cam, 1, 0.0);
+            assert_eq!(g.hit(&cam, grab), Some(Handle::Turn(1)), "{what}, {phi}");
+            assert!(drag_in(
+                &cam,
+                &mut arranger,
+                &mut doc,
+                &mut cache,
+                &sel,
+                (grab, grab + nearest_way * 30.0),
+                false
+            ));
+            let turned = turned_about(&doc, id, 1, &before);
+            assert!(
+                (turned - 0.5).abs() < 0.05,
+                "{what}, {phi}: pulled the nearest side's way, turned {}°",
+                turned.to_degrees()
+            );
+        }
+    }
 }
 
 #[test]
@@ -473,6 +669,43 @@ fn on_ring(g: &Gizmo, cam: &ScreenCamera, axis: usize, turn: f64) -> (DVec2, DVe
         cam.project(at(a0 + turn)).unwrap(),
         u.cross(v),
     )
+}
+
+/// The screen point of the ring about `axis` that is `phi` radians round from the point nearest
+/// the eye (towards where that point goes when the ring is turned right-handedly), and the screen
+/// direction (unit) the point travels in then, worked out from the ring's geometry. `phi` of 0 is
+/// the nearest point, π the farthest.
+fn ring_point(g: &Gizmo, cam: &ScreenCamera, axis: usize, phi: f64) -> (DVec2, DVec2) {
+    let to_eye = cam.eye() - g.centre;
+    let near = (to_eye - AXES[axis] * to_eye.dot(AXES[axis])).normalize();
+    let r = g.size * RING_PT / ARROW_PT;
+    let p = g.centre + (near * phi.cos() + AXES[axis].cross(near) * phi.sin()) * r;
+    let velocity = AXES[axis].cross(p - g.centre).normalize();
+    let at = cam.project(p).unwrap();
+    (
+        at,
+        (cam.project(p + velocity * 0.001).unwrap() - at).normalize_or_zero(),
+    )
+}
+
+/// How far (radians) the piece has turned about `axis` since it was `before`.
+fn turned_about(doc: &Document, id: PieceId, axis: usize, before: &Placement) -> f64 {
+    let now = doc.project().placement_of(id).unwrap_or(*before);
+    let q = DQuat::from_array(now.rotation) * DQuat::from_array(before.rotation).inverse();
+    2.0 * q.xyz().dot(AXES[axis]).atan2(q.w)
+}
+
+/// A view from the front left that looks along the ground nearly level, so that the y ring is
+/// a hairline: its two halves lie closer together than a pointer can tell.
+fn level_camera() -> ScreenCamera {
+    let orbit = OrbitCamera {
+        target: Vec3::new(0.0, 1.0, 0.0),
+        yaw: 0.6,
+        pitch: 0.03,
+        distance: 2.6,
+        fov_y: 35f32.to_radians(),
+    };
+    ScreenCamera::new(&orbit, DVec2::new(0.0, 30.0), DVec2::new(700.0, 600.0))
 }
 
 #[test]

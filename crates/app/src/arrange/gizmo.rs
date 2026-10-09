@@ -155,6 +155,25 @@ pub fn plane_drag(cam: &ScreenCamera, centre: DVec3, from: DVec2, to: DVec2) -> 
 /// grazing angle (more than 60° from face-on, a flat sliver of an ellipse): see [`ring_angle`].
 pub const GRAZING: f64 = 0.5;
 
+/// The unit direction from the eye to `centre`.
+fn view_towards(cam: &ScreenCamera, centre: DVec3) -> DVec3 {
+    (centre - cam.eye).normalize_or(cam.forward)
+}
+
+/// Whether the ring about `axis` through `centre` is seen at a grazing angle: see [`GRAZING`].
+/// The one test for turning it by [`ring_angle`]'s grazing way, and for what [`grab_side`] and
+/// [`held_ring_angle`] do.
+fn is_grazing(cam: &ScreenCamera, centre: DVec3, axis: DVec3) -> bool {
+    view_towards(cam, centre).dot(axis).abs() < GRAZING
+}
+
+/// The point of the ring about `axis` nearest the eye, as a unit direction from the centre, for
+/// `view` the unit direction from the eye to the centre. None when the axis points at (or from)
+/// the eye, which a ring seen at a grazing angle never does.
+fn nearest_side(view: DVec3, axis: DVec3) -> Option<DVec3> {
+    (-view - axis * (-view).dot(axis)).try_normalize()
+}
+
 /// Radians turned about unit `axis` through `centre` when the pointer goes `from` → `to`. A drag
 /// that goes round further than half a turn has to be added up from the angles of its successive
 /// moves, each from the last pointer position to the next (as `Arranger::drag_to` does), not
@@ -169,9 +188,10 @@ pub const GRAZING: f64 = 0.5;
 /// pointer's movement along the screen direction the nearest side of the ring travels in, which
 /// is across the ring's projected axis, divided by the ring's on-screen radius: a steady rate
 /// in degrees per point. Movement along the axis, or anywhere else, turns it by nothing. Both
-/// ways agree about which way is positive (the way the nearest side of the ring goes when it
-/// is turned right-handedly about `axis`). The way is decided from the view direction at the
-/// centre, so it never changes during a drag.
+/// ways agree about which way is positive for a pointer holding the nearest side (the way that
+/// side goes when the ring is turned right-handedly about `axis`). A pointer holding the far
+/// side follows that side instead, which goes the other way: see [`held_ring_angle`]. The way is
+/// decided from the view direction at the centre, so it never changes during a drag.
 pub fn ring_angle(
     cam: &ScreenCamera,
     centre: DVec3,
@@ -179,9 +199,8 @@ pub fn ring_angle(
     from: DVec2,
     to: DVec2,
 ) -> Option<f64> {
-    let view = (centre - cam.eye).normalize_or(cam.forward);
-    if view.dot(axis).abs() < GRAZING {
-        return grazing_angle(cam, centre, axis, view, from, to);
+    if is_grazing(cam, centre, axis) {
+        return grazing_angle(cam, centre, axis, from, to);
     }
     let hit = |s: DVec2| {
         let (o, r) = cam.ray(s);
@@ -198,19 +217,17 @@ pub fn ring_angle(
     Some(a.cross(b).dot(axis).atan2(a.dot(b)))
 }
 
-/// [`ring_angle`] for a ring seen at a grazing angle, `view` being the unit direction from the
-/// eye to `centre`.
+/// [`ring_angle`] for a ring seen at a grazing angle (for the nearest side of the ring).
 fn grazing_angle(
     cam: &ScreenCamera,
     centre: DVec3,
     axis: DVec3,
-    view: DVec3,
     from: DVec2,
     to: DVec2,
 ) -> Option<f64> {
     // The point of the ring nearest the eye, and the way it goes when the ring is turned
-    // right-handedly about `axis`. (`near` is not short: the axis is at least 60° from `view`.)
-    let near = (-view - axis * (-view).dot(axis)).try_normalize()?;
+    // right-handedly about `axis`. (`near` is not short: the axis is at least 60° from the view direction.)
+    let near = nearest_side(view_towards(cam, centre), axis)?;
     let heading = axis.cross(near);
     // That way, and the ring's radius, on screen.
     let origin = cam.project(centre)?;
@@ -218,6 +235,67 @@ fn grazing_angle(
     let along = cam.project(centre + heading * radius)? - origin;
     let radius_pt = along.length();
     (radius_pt > 1e-6).then(|| (to - from).dot(along) / (radius_pt * radius_pt))
+}
+
+/// [`ring_angle`] for a pointer that took hold of the ring at a point [`grab_side`] gave `side`
+/// for: the turn that follows the point held. Only a ring seen at a grazing angle has a side to
+/// take; any other is read exactly, the half held and all.
+pub fn held_ring_angle(
+    cam: &ScreenCamera,
+    centre: DVec3,
+    axis: DVec3,
+    side: f64,
+    from: DVec2,
+    to: DVec2,
+) -> Option<f64> {
+    let angle = ring_angle(cam, centre, axis, from, to)?;
+    Some(if is_grazing(cam, centre, axis) {
+        angle * side
+    } else {
+        angle
+    })
+}
+
+/// How far (as a share of the ring's on-screen half-height) a grab must be beyond the ring's
+/// middle line, towards the far side, to count as holding the far side: nearer the middle line
+/// is the ring's tips, where neither half is the one held.
+const FAR_SIDE: f64 = 0.3;
+
+/// Which way [`ring_angle`] reads a ring seen at a grazing angle for a pointer that took hold of
+/// it at `grab`: 1 for the half of the ring's ellipse nearer the eye (the way `ring_angle` goes),
+/// −1 for the half farther, whose points travel the other way across the screen when the ring
+/// turns, so that the turn follows the point held. Decided once, when the drag begins, and kept:
+/// the pointer then crosses the ring as it likes without the turn ever changing sign.
+///
+/// It is also 1, which keeps the nearest-side rule, where the half is not clear: near the
+/// ellipse's tips (`FAR_SIDE`), and for a ring so thin that its two halves lie within
+/// [`GRAB_PT`] of each other. And it is 1 for a ring that is not seen at a grazing angle, which
+/// [`ring_angle`] reads exactly, the half held and all.
+pub fn grab_side(cam: &ScreenCamera, centre: DVec3, axis: DVec3, grab: DVec2) -> f64 {
+    if !is_grazing(cam, centre, axis) {
+        return 1.0;
+    }
+    let Some(near) = nearest_side(view_towards(cam, centre), axis) else {
+        return 1.0;
+    };
+    let radius = RING_PT * cam.metres_per_point(centre);
+    let (Some(origin), Some(nearest)) = (cam.project(centre), cam.project(centre + near * radius))
+    else {
+        return 1.0;
+    };
+    // The nearest point of the ring shows `half_height` beyond the centre of the ellipse, the
+    // far one the same before it, along the ring's projected axis.
+    let towards_near = nearest - origin;
+    let half_height = towards_near.length();
+    if half_height < GRAB_PT / 2.0 {
+        return 1.0;
+    }
+    let beyond_middle = (grab - origin).dot(towards_near / half_height);
+    if beyond_middle < -FAR_SIDE * half_height {
+        -1.0
+    } else {
+        1.0
+    }
 }
 
 /// `radians` to the nearest multiple of `step_deg` degrees.
@@ -569,18 +647,36 @@ mod tests {
         );
     }
 
-    /// The point of the ring about `axis` nearest the eye (on a circle, the point towards the
-    /// eye), and the screen direction (unit) it travels in when the ring is turned
-    /// right-handedly: worked out from the ring's geometry, not from anything `ring_angle` does.
-    fn nearest_point_and_heading(cam: &ScreenCamera, centre: DVec3, axis: usize) -> (DVec2, DVec2) {
+    /// The point of the ring about `axis` that is `phi` radians round from the point nearest the
+    /// eye (on a circle, the point towards the eye), on the way that point goes when the ring is
+    /// turned right-handedly, and the screen direction (unit) the point travels in then: worked
+    /// out from the ring's geometry, not from anything `ring_angle` does. `phi` of 0 is the
+    /// nearest point, π the farthest, ±π/2 the tips of the ring's ellipse.
+    fn ring_point_and_heading(
+        cam: &ScreenCamera,
+        centre: DVec3,
+        axis: usize,
+        phi: f64,
+    ) -> (DVec2, DVec2) {
         let radius = Gizmo::new(cam, centre).size * RING_PT / ARROW_PT;
         let to_eye = cam.eye() - centre;
-        let in_plane = to_eye - AXES[axis] * to_eye.dot(AXES[axis]);
-        let nearest = centre + in_plane.normalize() * radius;
-        let velocity = AXES[axis].cross(nearest - centre).normalize();
-        let at = cam.project(nearest).unwrap();
-        let heading = (cam.project(nearest + velocity * 0.001).unwrap() - at).normalize();
+        let near = (to_eye - AXES[axis] * to_eye.dot(AXES[axis])).normalize();
+        let p = centre + (near * phi.cos() + AXES[axis].cross(near) * phi.sin()) * radius;
+        let velocity = AXES[axis].cross(p - centre).normalize();
+        let at = cam.project(p).unwrap();
+        let heading = (cam.project(p + velocity * 0.001).unwrap() - at).normalize_or_zero();
         (at, heading)
+    }
+
+    fn nearest_point_and_heading(cam: &ScreenCamera, centre: DVec3, axis: usize) -> (DVec2, DVec2) {
+        ring_point_and_heading(cam, centre, axis, 0.0)
+    }
+
+    /// Half the height of the ring's ellipse on screen: how far the nearest point of the ring
+    /// shows from the centre.
+    fn half_height(cam: &ScreenCamera, centre: DVec3, axis: usize) -> f64 {
+        let (nearest, _) = nearest_point_and_heading(cam, centre, axis);
+        nearest.distance(cam.project(centre).unwrap())
     }
 
     #[test]
@@ -685,47 +781,121 @@ mod tests {
 
     #[test]
     fn the_two_ways_of_turning_a_ring_agree_at_the_switch() {
-        // Take hold of the side of the ring nearest the eye and pull it along the way it goes
-        // for a right-handed turn: that is a positive turn, on either side of the switch, from
-        // above and from below, for every axis. Pulled the other way it is a negative one. The
-        // two ways give about the same angle too (the exact one reads a straight pull as the
-        // arctangent of its length over the radius, the grazing one as the length over it).
+        // Take hold of the side of the ring nearest the eye, or the side farthest from it, and
+        // pull that point along the way it goes for a right-handed turn: that is a positive
+        // turn, on either side of the switch, from above and from below, for every axis. Pulled
+        // the other way it is a negative one. The two ways give about the same angle too (the
+        // exact one reads a straight pull as the arctangent of its length over the radius, the
+        // grazing one as the length over it).
         let mut cases = 0;
         for (k, axis) in AXES.iter().enumerate() {
             for towards in [1.0, -1.0] {
-                let side = [DVec3::Z, DVec3::Z, DVec3::X][k];
-                let mut angles = Vec::new();
-                for cos in [GRAZING - 0.02, GRAZING + 0.02] {
-                    let eye =
-                        (*axis * towards * cos + side * (1.0_f64 - cos * cos).sqrt()).normalize();
-                    let (cam, centre) = looking_from(eye);
-                    let (at, heading) = nearest_point_and_heading(&cam, centre, k);
-                    for (pull, sign) in [(20.0, 1.0), (-20.0, -1.0)] {
-                        let turned = ring_angle(&cam, centre, *axis, at, at + heading * pull)
-                            .unwrap_or_else(|| panic!("axis {k}, {towards}, {cos}"));
-                        assert_eq!(
-                            turned.signum(),
-                            sign,
-                            "axis {k} {} the viewer, {cos}, pulled {pull}: {turned}",
-                            if towards > 0.0 {
-                                "towards"
-                            } else {
-                                "away from"
+                for (arc, phi) in [("near", 0.0), ("far", std::f64::consts::PI)] {
+                    let side = [DVec3::Z, DVec3::Z, DVec3::X][k];
+                    let mut angles = Vec::new();
+                    for cos in [GRAZING - 0.02, GRAZING + 0.02] {
+                        let eye = (*axis * towards * cos + side * (1.0_f64 - cos * cos).sqrt())
+                            .normalize();
+                        let (cam, centre) = looking_from(eye);
+                        let (at, heading) = ring_point_and_heading(&cam, centre, k, phi);
+                        let held = grab_side(&cam, centre, *axis, at);
+                        for (pull, sign) in [(20.0, 1.0), (-20.0, -1.0)] {
+                            let to = at + heading * pull;
+                            let turned = held_ring_angle(&cam, centre, *axis, held, at, to)
+                                .unwrap_or_else(|| panic!("axis {k}, {towards}, {cos}"));
+                            assert_eq!(
+                                turned.signum(),
+                                sign,
+                                "axis {k} {} the viewer, the {arc} arc, {cos}, pulled {pull}: {turned}",
+                                if towards > 0.0 {
+                                    "towards"
+                                } else {
+                                    "away from"
+                                }
+                            );
+                            if pull > 0.0 {
+                                angles.push(turned);
                             }
-                        );
-                        if pull > 0.0 {
-                            angles.push(turned);
+                            cases += 1;
                         }
-                        cases += 1;
                     }
+                    assert!(
+                        (angles[0] / angles[1] - 1.0).abs() < 0.2,
+                        "axis {k}, {towards}, the {arc} arc: {angles:?} either side of the switch"
+                    );
                 }
-                assert!(
-                    (angles[0] / angles[1] - 1.0).abs() < 0.15,
-                    "axis {k}, {towards}: {angles:?} either side of the switch"
-                );
             }
         }
-        assert_eq!(cases, 24);
+        assert_eq!(cases, 48);
+    }
+
+    #[test]
+    fn a_grazing_ring_taken_by_its_far_half_turns_with_the_point_held() {
+        // The far half of a ring goes the other way across the screen from the near half when
+        // the ring turns. Whichever half the pointer took hold of, pulling that point along its
+        // own way turns the ring forwards. Round the ring's tips, and for a ring too thin to
+        // tell the halves apart, the nearest-side rule stands.
+        let centre = DVec3::new(-0.05, 0.9, 0.3);
+        let (mut near, mut far, mut tips, mut thin, mut exact) = (0, 0, 0, 0, 0);
+        for c in cameras() {
+            let cam = ScreenCamera::new(&c, DVec2::new(10.0, 40.0), DVec2::new(800.0, 600.0));
+            let view = (centre - cam.eye()).normalize();
+            for (k, axis) in AXES.into_iter().enumerate() {
+                for step in 0..24 {
+                    let phi = f64::from(step) * 15f64.to_radians();
+                    let (at, heading) = ring_point_and_heading(&cam, centre, k, phi);
+                    let side = grab_side(&cam, centre, axis, at);
+                    if view.dot(axis).abs() >= GRAZING {
+                        // Read exactly, the half held and all.
+                        assert_eq!(side, 1.0, "axis {k}, {step}");
+                        exact += 1;
+                        continue;
+                    }
+                    let tall = half_height(&cam, centre, k);
+                    if tall < 3.5 {
+                        assert_eq!(side, 1.0, "axis {k} is nearly edge-on ({tall} points)");
+                        thin += 1;
+                        continue;
+                    }
+                    if tall < 4.5 {
+                        continue; // where "too thin" begins
+                    }
+                    let cos = phi.cos();
+                    if cos <= -0.5 {
+                        assert_eq!(side, -1.0, "axis {k}, the far half at {step}");
+                        far += 1;
+                    } else if cos >= -0.2 {
+                        assert_eq!(side, 1.0, "axis {k}, the near half or a tip at {step}");
+                        if cos >= 0.5 {
+                            near += 1;
+                        } else {
+                            tips += 1;
+                        }
+                    }
+                    if cos.abs() >= 0.5 {
+                        for (pull, sign) in [(20.0, 1.0), (-20.0, -1.0)] {
+                            let to = at + heading * pull;
+                            let turned = held_ring_angle(&cam, centre, axis, side, at, to).unwrap();
+                            assert_eq!(turned.signum(), sign, "axis {k}, {step}, pulled {pull}");
+                            // About 20 points of the 60 point radius, when the point held goes
+                            // the way the ring's ellipse is long (round its tips it goes
+                            // across, and a pull along that is a pull partly across the ring).
+                            if cos.abs() >= 0.95 {
+                                assert!(
+                                    (turned.abs() * RING_PT / 20.0 - 1.0).abs() < 0.1,
+                                    "axis {k}, {step}: {}°",
+                                    turned.to_degrees()
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            near > 1000 && far > 1000 && tips > 500 && thin > 500 && exact > 3000,
+            "{near} near, {far} far, {tips} at the tips, {thin} too thin, {exact} read exactly"
+        );
     }
 
     #[test]

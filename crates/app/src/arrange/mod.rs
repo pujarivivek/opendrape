@@ -11,7 +11,7 @@ pub use scene::{ArrangedPanel, ArrangedScene, SceneCache};
 
 use crate::editor::{Document, Selection};
 use crate::tr;
-use gizmo::{AXES, Gizmo, Handle, axis_drag, plane_drag, ring_angle, snap_angle};
+use gizmo::{AXES, Gizmo, Handle, axis_drag, grab_side, held_ring_angle, plane_drag, snap_angle};
 use glam::{DQuat, DVec2, DVec3};
 use opendrape_core::{PieceId, Placement, Units};
 
@@ -45,6 +45,10 @@ struct GizmoDrag {
     last: DVec2,
     /// ...and the angle (radians) turned so far, which can go past half a turn.
     turned: f64,
+    /// Which half of a ring seen at a grazing angle the press took hold of: 1 for the near half,
+    /// -1 for the far half (see [`grab_side`]). Decided at the press and kept, so that a turn
+    /// never changes sign during a drag. 1 for everything else.
+    side: f64,
     /// What the piece has done as of the last move the project accepted.
     moved: Option<Moved>,
     /// A refused move of this drag has been reported already: one notice per drag.
@@ -137,7 +141,8 @@ impl Arranger {
 
     /// A drag starts at `pos`: on a handle of the selected piece's gizmo, it grabs it and
     /// returns true (the drag moves the piece); anywhere else it returns false (the drag turns
-    /// the camera).
+    /// the camera). For a ring seen at a grazing angle, where it is taken hold of (`pos`)
+    /// decides which way the pointer turns it, for the whole drag: see [`gizmo::grab_side`].
     pub fn press(
         &mut self,
         cam: &ScreenCamera,
@@ -156,6 +161,15 @@ impl Arranger {
         let Some(handle) = gizmo.hit(cam, pos) else {
             return false;
         };
+        let side = match handle {
+            Handle::Turn(k) => grab_side(
+                cam,
+                DVec3::from_array(panel.placement.position),
+                AXES[k],
+                pos,
+            ),
+            _ => 1.0,
+        };
         doc.begin_gesture();
         self.drag = Some(GizmoDrag {
             handle,
@@ -165,6 +179,7 @@ impl Arranger {
             start: pos,
             last: pos,
             turned: 0.0,
+            side,
             moved: None,
             refusal_noted: false,
         });
@@ -226,7 +241,7 @@ impl Arranger {
                 // `ring_angle` measures at most half a turn either way, so a longer drag is
                 // added up from the small angles between successive pointer positions. A
                 // position the ring can't be read at changes nothing.
-                let Some(step) = ring_angle(cam, centre, AXES[k], d.last, pos) else {
+                let Some(step) = held_ring_angle(cam, centre, AXES[k], d.side, d.last, pos) else {
                     return false;
                 };
                 turned += step;
