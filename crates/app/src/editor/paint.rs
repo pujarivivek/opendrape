@@ -318,6 +318,16 @@ impl PatternEditor {
                 painter.circle_filled(p, 5.5, c.selected);
                 painter.circle_stroke(p, 5.5, Stroke::new(1.5, c.table));
             }
+            Selection::Notch(_, k) => {
+                if k < piece.notches.len() {
+                    for [a, b] in geom::notch_marks(piece, &piece.notches[k]) {
+                        painter.line_segment(
+                            [v.to_screen(rect, a), v.to_screen(rect, b)],
+                            Stroke::new(3.0, c.selected),
+                        );
+                    }
+                }
+            }
             Selection::Piece(_) | Selection::None => {}
         }
     }
@@ -377,7 +387,7 @@ impl PatternEditor {
             let r = Rect::from_two_pos(v.to_screen(rect, start), v.to_screen(rect, end));
             painter.rect_stroke(r, 0.0, ink, StrokeKind::Middle);
         }
-        if self.tool == Tool::AddPoint
+        if matches!(self.tool, Tool::AddPoint | Tool::Notch)
             && let Some(p) = self.canvas.preview
         {
             painter.circle_stroke(v.to_screen(rect, p), 4.5, ink);

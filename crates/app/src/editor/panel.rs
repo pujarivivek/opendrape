@@ -5,7 +5,8 @@ use super::{PatternEditor, Selection, Tool, select_all_on_focus};
 use crate::tr;
 use egui::{Id, Key};
 use opendrape_core::{
-    Edge, MAX_ALLOWANCE_MM, Piece, PieceId, Point2, Project, Side, Units, VertexKind,
+    Edge, MAX_ALLOWANCE_MM, Notch, NotchStyle, Piece, PieceId, Point2, Project, Side, Units,
+    VertexKind,
 };
 use opendrape_geom::{self as geom, Anchor};
 use std::collections::HashMap;
@@ -45,6 +46,7 @@ impl PatternEditor {
             Selection::Piece(id) => self.piece_properties(ui, id),
             Selection::Edge(id, i) => self.edge_properties(ui, id, i),
             Selection::Vertex(id, i) => self.vertex_properties(ui, id, i),
+            Selection::Notch(id, k) => self.notch_properties(ui, id, k),
         }
         let shown = &self.panel.shown;
         self.panel.editing.retain(|id, _| shown.contains(id));
@@ -296,6 +298,75 @@ impl PatternEditor {
         }
     }
 
+    fn notch_properties(&mut self, ui: &mut egui::Ui, id: PieceId, k: usize) {
+        let Some((piece, _)) = self.doc.project().owner(id).map(|(p, s)| (p.clone(), s)) else {
+            return;
+        };
+        let Some(notch) = piece.notches.get(k).copied() else {
+            return;
+        };
+        let units = self.doc.project().units;
+        let source = piece.id;
+        let len = geom::edge_length(&piece, notch.edge);
+        ui.strong(tr!("panel-notch"));
+        egui::Grid::new("notch_properties")
+            .num_columns(3)
+            .show(ui, |ui| {
+                let typed = self.field(
+                    ui,
+                    tr!("box-distance"),
+                    &units.format_number(notch.distance),
+                    units.suffix(),
+                );
+                self.apply_typed(typed, true, tr!("notice-bad-notch"), |p, mm| {
+                    (0.0..=len).contains(&mm)
+                        && p.piece_mut(source).is_some_and(|pc| {
+                            pc.notches[k].distance = mm;
+                            true
+                        })
+                });
+            });
+        ui.label(tr!("panel-notch-marks"));
+        ui.horizontal(|ui| {
+            for (marks, label) in [
+                (1, tr!("panel-notch-single")),
+                (2, tr!("panel-notch-double")),
+                (3, tr!("panel-notch-triple")),
+            ] {
+                if ui.radio(notch.marks == marks, label).clicked() && notch.marks != marks {
+                    self.edit_notch(source, k, |n| n.marks = marks);
+                }
+            }
+        });
+        ui.label(tr!("panel-notch-style"));
+        ui.horizontal(|ui| {
+            for (style, label) in [
+                (NotchStyle::Slit, tr!("panel-notch-slit")),
+                (NotchStyle::V, tr!("panel-notch-v")),
+            ] {
+                if ui.radio(notch.style == style, label).clicked() && notch.style != style {
+                    self.edit_notch(source, k, |n| n.style = style);
+                }
+            }
+        });
+        ui.add_space(6.0);
+        if ui.button(tr!("panel-delete-notch")).clicked() {
+            self.delete_selection();
+        }
+    }
+
+    /// Changes notch `k` of `source` as one undo step.
+    fn edit_notch(&mut self, source: PieceId, k: usize, change: impl FnOnce(&mut Notch)) {
+        self.doc.edit(|p| {
+            if let Some(pc) = p.piece_mut(source)
+                && let Some(n) = pc.notches.get_mut(k)
+            {
+                change(n);
+            }
+        });
+        self.note_if_refused();
+    }
+
     fn make_pair(&mut self, piece: &Piece) {
         let name = tr!("twin-name", name = piece.name.clone());
         let offset = twin_offset_beside(piece);
@@ -401,6 +472,7 @@ impl PatternEditor {
             Tool::Pen => tr!("hint-pen-drawing"),
             Tool::Rectangle => tr!("hint-rectangle"),
             Tool::AddPoint => tr!("hint-add-point"),
+            Tool::Notch => tr!("hint-notch"),
         }
     }
 }

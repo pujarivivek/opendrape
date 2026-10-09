@@ -4,6 +4,7 @@ mod cache;
 mod canvas;
 mod document;
 mod length_box;
+mod notch_tool;
 mod paint;
 mod panel;
 mod view;
@@ -43,10 +44,17 @@ pub enum Tool {
     Pen,
     Rectangle,
     AddPoint,
+    Notch,
 }
 
 impl Tool {
-    pub const ALL: [Self; 4] = [Self::Edit, Self::Pen, Self::Rectangle, Self::AddPoint];
+    pub const ALL: [Self; 5] = [
+        Self::Edit,
+        Self::Pen,
+        Self::Rectangle,
+        Self::AddPoint,
+        Self::Notch,
+    ];
 
     /// Single-key shortcut: the letters other pattern software uses, so habits carry over.
     pub fn key(self) -> Key {
@@ -55,6 +63,7 @@ impl Tool {
             Self::Pen => Key::H,
             Self::Rectangle => Key::S,
             Self::AddPoint => Key::X,
+            Self::Notch => Key::N,
         }
     }
 
@@ -64,6 +73,7 @@ impl Tool {
             Self::Pen => tr!("tool-pen"),
             Self::Rectangle => tr!("tool-rectangle"),
             Self::AddPoint => tr!("tool-add-point"),
+            Self::Notch => tr!("tool-notch"),
         }
     }
 
@@ -73,6 +83,7 @@ impl Tool {
             Self::Pen => tr!("tool-pen-tip"),
             Self::Rectangle => tr!("tool-rectangle-tip"),
             Self::AddPoint => tr!("tool-add-point-tip"),
+            Self::Notch => tr!("tool-notch-tip"),
         }
     }
 }
@@ -86,13 +97,17 @@ pub enum Selection {
     Piece(PieceId),
     Vertex(PieceId, usize),
     Edge(PieceId, usize),
+    /// A notch: the shape's id and the index into the stored piece's notches.
+    Notch(PieceId, usize),
 }
 
 impl Selection {
     pub fn piece(self) -> Option<PieceId> {
         match self {
             Self::None => None,
-            Self::Piece(id) | Self::Vertex(id, _) | Self::Edge(id, _) => Some(id),
+            Self::Piece(id) | Self::Vertex(id, _) | Self::Edge(id, _) | Self::Notch(id, _) => {
+                Some(id)
+            }
         }
     }
 
@@ -107,6 +122,7 @@ impl Selection {
         };
         match self {
             Self::Vertex(_, i) | Self::Edge(_, i) if i >= piece.len() => Self::Piece(id),
+            Self::Notch(_, k) if k >= piece.notches.len() => Self::Piece(id),
             other => other,
         }
     }

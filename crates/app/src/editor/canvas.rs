@@ -38,7 +38,7 @@ pub(super) struct CanvasState {
 
 /// What placing a pen point did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Placed {
+pub(super) enum Placed {
     /// A point was added to the draft.
     Added,
     /// The point closed the draft into a new piece.
@@ -58,12 +58,18 @@ enum Hit {
     Vertex(PieceId, usize),
     Edge(PieceId, usize),
     Inside(PieceId),
+    /// A notch's mark: the shape and the stored notch's index.
+    Notch(PieceId, usize),
 }
 
 impl Hit {
     fn piece(self) -> PieceId {
         match self {
-            Self::Handle(id, ..) | Self::Vertex(id, _) | Self::Edge(id, _) | Self::Inside(id) => id,
+            Self::Handle(id, ..)
+            | Self::Vertex(id, _)
+            | Self::Edge(id, _)
+            | Self::Inside(id)
+            | Self::Notch(id, _) => id,
         }
     }
 
@@ -72,6 +78,7 @@ impl Hit {
             Self::Handle(id, i, _) | Self::Edge(id, i) => Selection::Edge(id, i),
             Self::Vertex(id, i) => Selection::Vertex(id, i),
             Self::Inside(id) => Selection::Piece(id),
+            Self::Notch(id, k) => Selection::Notch(id, k),
         }
     }
 }
@@ -120,6 +127,8 @@ impl Drag {
                 }
             }
             Hit::Inside(_) => p.translate(d),
+            // Notches are not dragged: no drag starts on one.
+            Hit::Notch(..) => {}
         }
         p
     }
@@ -145,7 +154,7 @@ impl PatternEditor {
         let cursor = hover.map(|w| match self.tool {
             Tool::Pen => self.snap(w, tol, shift),
             Tool::Rectangle => self.snap(w, tol, false),
-            Tool::Edit | Tool::AddPoint => w,
+            Tool::Edit | Tool::AddPoint | Tool::Notch => w,
         });
         self.canvas.cursor = cursor;
         // A press on the canvas dismisses the last notice, unless a property field owned the
@@ -167,6 +176,7 @@ impl PatternEditor {
             Tool::Rectangle => self.rectangle_tool(&response, press, pointer, latest, tol),
             Tool::Edit => self.edit_tool(&response, press, pointer, tol),
             Tool::AddPoint => self.add_point_tool(&response, hover, pointer, tol),
+            Tool::Notch => self.notch_tool(&response, hover, pointer, tol),
         }
         if keys_free {
             self.canvas_keys(ui, &response);
@@ -355,6 +365,7 @@ impl PatternEditor {
                 }
             }
             Tool::Rectangle if pressed(Key::Escape) => self.canvas.rect_start = None,
+            Tool::Notch => self.notch_box_on_digits(ui, response),
             Tool::Edit => {
                 if pressed(Key::Escape) {
                     self.selection = Selection::None;
@@ -367,23 +378,9 @@ impl PatternEditor {
         }
     }
 
-    /// A digit typed while drawing opens the number box with that digit in it. The text events
-    /// are taken out of the input so the box (created later this frame) doesn't get them twice.
+    /// A digit typed while drawing opens the number box with that digit in it.
     fn open_box_on_digits(&mut self, ui: &egui::Ui, response: &Response) {
-        let mut typed = String::new();
-        ui.input_mut(|i| {
-            i.events.retain(|e| match e {
-                Event::Text(t)
-                    if !t.is_empty()
-                        && t.chars()
-                            .all(|c| c.is_ascii_digit() || c == '.' || c == ',') =>
-                {
-                    typed.push_str(t);
-                    false
-                }
-                _ => true,
-            })
-        });
+        let typed = take_typed_digits(ui);
         let Some(last) = self.canvas.pen.last() else {
             return;
         };
@@ -433,6 +430,27 @@ impl PatternEditor {
                 (Some(w), Some(h)) => self.add_rectangle(at, w, h),
                 _ => self.notice = Some(tr!("notice-bad-number")),
             },
+            BoxKind::NotchDistance {
+                shape,
+                source,
+                edge,
+                from_end,
+            } => {
+                let len = self
+                    .doc
+                    .project()
+                    .piece(source)
+                    .map_or(0.0, |p| geom::edge_length(p, edge));
+                let d = Units::parse(&number_box.first)
+                    .map(|v| units.to_mm(v))
+                    .filter(|d| d.is_finite() && (0.0..=len).contains(d));
+                match d {
+                    Some(d) => {
+                        self.add_notch(shape, source, edge, if from_end { len - d } else { d })
+                    }
+                    None => self.notice = Some(tr!("notice-bad-notch")),
+                }
+            }
         }
     }
 
@@ -448,6 +466,7 @@ impl PatternEditor {
         {
             let shapes = self.shapes();
             if let Some(hit) = self.hit(&shapes, grab, tol)
+                && !matches!(hit, Hit::Notch(..))
                 && let Some(shape) = shapes.iter().find(|s| s.id == hit.piece())
                 && let Some(original) = self.doc.project().piece(shape.source).cloned()
             {
@@ -493,8 +512,8 @@ impl PatternEditor {
         }
     }
 
-    /// What the edit tool picks at `w`: the selected shape's curve handles first, then
-    /// points, edges and insides, topmost shape first. Points and edges of a fold's pale half
+    /// What the edit tool picks at `w`: the selected shape's curve handles first, then notch
+    /// marks, then points, edges and insides, topmost shape first. Points and edges of a fold's pale half
     /// are not editable: they pick the piece.
     fn hit(&self, shapes: &[geom::Shape], w: Point2, tol: f64) -> Option<Hit> {
         if let Some(sel) = self.selection.piece()
@@ -509,6 +528,23 @@ impl PatternEditor {
                 }
                 if c2.distance(w) <= tol {
                     return Some(Hit::Handle(s.id, i, HandleEnd::End));
+                }
+            }
+        }
+        // Notch marks sit out on the cut line, so they never hide a point or an edge.
+        for s in shapes.iter().rev() {
+            let stored = self
+                .doc
+                .project()
+                .owner(s.id)
+                .map_or(0, |(p, _)| p.notches.len());
+            for (j, notch) in s.piece.notches.iter().enumerate() {
+                let near = geom::notch_marks(&s.piece, notch)
+                    .iter()
+                    .any(|[a, b]| segment_distance(w, *a, *b) <= tol);
+                if near && stored > 0 {
+                    // A fold's pale half repeats the stored notches after them, in order.
+                    return Some(Hit::Notch(s.id, j % stored));
                 }
             }
         }
@@ -559,6 +595,18 @@ impl PatternEditor {
                     self.notice = Some(tr!("notice-min-points"));
                 }
             }
+            Selection::Notch(id, k) => {
+                self.doc.edit(|p| {
+                    if let Some((pc, _)) = p.owner_mut(id)
+                        && k < pc.notches.len()
+                    {
+                        pc.notches.remove(k);
+                    }
+                });
+                if !self.note_if_refused() {
+                    self.selection = Selection::Piece(id);
+                }
+            }
             Selection::Edge(..) | Selection::None => {}
         }
     }
@@ -600,6 +648,38 @@ impl PatternEditor {
             self.selection = Selection::Piece(id);
         }
     }
+}
+
+/// Takes the digits (and decimal marks) typed this frame out of the input, so the number box
+/// created later this frame doesn't get them twice. Returns them, or "" if none were typed.
+pub(super) fn take_typed_digits(ui: &egui::Ui) -> String {
+    let mut typed = String::new();
+    ui.input_mut(|i| {
+        i.events.retain(|e| match e {
+            Event::Text(t)
+                if !t.is_empty()
+                    && t.chars()
+                        .all(|c| c.is_ascii_digit() || c == '.' || c == ',') =>
+            {
+                typed.push_str(t);
+                false
+            }
+            _ => true,
+        })
+    });
+    typed
+}
+
+/// Distance (mm) from `p` to the segment `a`–`b`.
+fn segment_distance(p: Point2, a: Point2, b: Point2) -> f64 {
+    let ab = b - a;
+    let len2 = ab.x * ab.x + ab.y * ab.y;
+    let t = if len2 < 1e-18 {
+        0.0
+    } else {
+        (((p.x - a.x) * ab.x + (p.y - a.y) * ab.y) / len2).clamp(0.0, 1.0)
+    };
+    p.distance(a + ab * t)
 }
 
 /// A typed length the pattern can hold: the same range `geom::set_edge_length` accepts.

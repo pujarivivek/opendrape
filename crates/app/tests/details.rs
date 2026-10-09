@@ -5,8 +5,8 @@ mod common;
 use common::*;
 use egui::{Key, Modifiers, accesskit::Role, vec2};
 use egui_kittest::kittest::Queryable;
-use opendrape::editor::Selection;
-use opendrape_core::{Piece, PieceId, Point2, Units};
+use opendrape::editor::{Selection, Tool};
+use opendrape_core::{Notch, NotchStyle, Piece, PieceId, Point2, Units};
 use opendrape_geom as geom;
 
 /// A 150 × 300 mm half piece at (300,100), folded on its left edge (x = 300): its pale half
@@ -507,4 +507,203 @@ fn the_allowance_limit_is_named_in_the_current_units() {
     );
     type_into(&mut h, "Seam allowance", "3,93"); // what the message names is accepted
     assert!((piece_of(&h, id).allowance - 3.93 * 25.4).abs() < 1e-9);
+}
+
+#[test]
+fn the_notch_tool_adds_a_notch_where_clicked() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    key(&mut h, Key::N);
+    assert_eq!(h.state().tool, Tool::Notch);
+    click(&mut h, 250.0, 101.0); // bottom edge, halfway
+    let notches = piece_of(&h, id).notches;
+    assert_eq!(notches.len(), 1);
+    assert_eq!(notches[0].edge, 0);
+    assert!(
+        (notches[0].distance - 150.0).abs() < 0.5,
+        "{}",
+        notches[0].distance
+    );
+    assert_eq!(h.state().selection, Selection::Notch(id, 0));
+}
+
+#[test]
+fn a_typed_notch_distance_counts_from_the_nearer_end() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    key(&mut h, Key::N);
+    let p = at(&h, 380.0, 101.0); // near the bottom edge's right end
+    h.hover_at(p);
+    h.run();
+    type_number(&mut h, "5");
+    assert!(
+        h.get_by_role_and_label(Role::TextInput, "Distance")
+            .is_focused()
+    );
+    key(&mut h, Key::Enter);
+    assert_eq!(piece_of(&h, id).notches, vec![Notch::new(0, 250.0)]); // 300 - 50
+}
+
+#[test]
+fn a_notch_distance_past_the_edge_is_refused() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    key(&mut h, Key::N);
+    let p = at(&h, 380.0, 101.0);
+    h.hover_at(p);
+    h.run();
+    type_number(&mut h, "5");
+    h.get_by_role_and_label(Role::TextInput, "Distance")
+        .type_text("00"); // 500 cm
+    h.run();
+    key(&mut h, Key::Enter);
+    assert!(piece_of(&h, id).notches.is_empty());
+    assert!(h.state().notice.is_some());
+}
+
+#[test]
+fn the_notch_panel_changes_marks_style_and_distance() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    h.state_mut()
+        .doc
+        .edit(|p| p.piece_mut(id).unwrap().notches.push(Notch::new(0, 150.0)));
+    h.run();
+    click(&mut h, 250.0, 92.0); // on the mark, out on the cut line
+    assert_eq!(h.state().selection, Selection::Notch(id, 0));
+    h.get_by_label("Double").click();
+    h.run();
+    h.get_by_label("V").click();
+    h.run();
+    type_into(&mut h, "Distance", "10");
+    assert_eq!(
+        piece_of(&h, id).notches,
+        vec![Notch {
+            edge: 0,
+            distance: 100.0,
+            marks: 2,
+            style: NotchStyle::V
+        }]
+    );
+}
+
+#[test]
+fn notches_on_a_twin_belong_to_its_piece() {
+    let mut h = harness();
+    let (id, twin) = with_pair(&mut h);
+    key(&mut h, Key::N);
+    click(&mut h, 600.0, 101.0); // the twin's bottom edge, halfway
+    let notches = piece_of(&h, id).notches;
+    assert_eq!(notches.len(), 1);
+    assert!((notches[0].distance - 150.0).abs() < 0.5);
+    assert_eq!(h.state().selection, Selection::Notch(twin, 0));
+}
+
+#[test]
+fn selection_of_a_removed_notch_is_dropped() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    key(&mut h, Key::N);
+    click(&mut h, 250.0, 101.0);
+    cmd(&mut h, Key::Z);
+    assert!(piece_of(&h, id).notches.is_empty());
+    assert_eq!(h.state().selection, Selection::Piece(id));
+}
+
+#[test]
+fn delete_removes_the_selected_notch() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    h.state_mut()
+        .doc
+        .edit(|p| p.piece_mut(id).unwrap().notches.push(Notch::new(0, 150.0)));
+    h.run();
+    click(&mut h, 250.0, 92.0);
+    key(&mut h, Key::Delete);
+    assert!(piece_of(&h, id).notches.is_empty());
+    assert_eq!(h.state().selection, Selection::Piece(id));
+}
+
+#[test]
+fn a_drag_starting_on_a_notch_moves_nothing() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    h.state_mut()
+        .doc
+        .edit(|p| p.piece_mut(id).unwrap().notches.push(Notch::new(0, 150.0)));
+    h.run();
+    let before = piece_of(&h, id);
+    drag(&mut h, (250.0, 92.0), (250.0, 60.0));
+    assert_eq!(piece_of(&h, id), before);
+}
+
+#[test]
+fn a_drag_on_a_notch_selects_nothing() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    h.state_mut()
+        .doc
+        .edit(|p| p.piece_mut(id).unwrap().notches.push(Notch::new(0, 150.0)));
+    h.run();
+    drag(&mut h, (250.0, 92.0), (250.0, 60.0));
+    assert_eq!(h.state().selection, Selection::None);
+}
+
+#[test]
+fn the_delete_notch_button_removes_it() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    h.state_mut()
+        .doc
+        .edit(|p| p.piece_mut(id).unwrap().notches.push(Notch::new(0, 150.0)));
+    h.run();
+    click(&mut h, 250.0, 92.0);
+    h.get_by_label("Delete notch").click();
+    h.run();
+    assert!(piece_of(&h, id).notches.is_empty());
+    assert_eq!(h.state().selection, Selection::Piece(id));
+}
+
+#[test]
+fn a_digit_away_from_every_edge_opens_no_notch_box() {
+    let mut h = harness();
+    with_rectangle(&mut h);
+    key(&mut h, Key::N);
+    let p = at(&h, 250.0, 300.0); // well inside the piece
+    h.hover_at(p);
+    h.run();
+    type_number(&mut h, "5");
+    assert!(!h.state().length_box_open());
+}
+
+#[test]
+fn a_notch_distance_typed_by_the_start_of_an_edge_counts_from_the_start() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    key(&mut h, Key::N);
+    let p = at(&h, 120.0, 101.0); // near the bottom edge's left end
+    h.hover_at(p);
+    h.run();
+    type_number(&mut h, "4");
+    key(&mut h, Key::Enter);
+    assert_eq!(piece_of(&h, id).notches, vec![Notch::new(0, 40.0)]);
+    assert_eq!(h.state().selection, Selection::Notch(id, 0));
+}
+
+#[test]
+fn notches_go_on_a_folded_pieces_drawn_edges_and_never_on_the_fold() {
+    let mut h = harness();
+    let id = with_half(&mut h);
+    key(&mut h, Key::N);
+    click(&mut h, 300.0, 250.0); // the fold line, inside the whole piece
+    click(&mut h, 225.0, 101.0); // the pale half's bottom edge
+    assert!(piece_of(&h, id).notches.is_empty());
+    click(&mut h, 375.0, 101.0); // the drawn half's bottom edge, halfway
+    let notches = piece_of(&h, id).notches;
+    assert_eq!(notches.len(), 1);
+    assert!((notches[0].distance - 75.0).abs() < 0.5);
+    // Its mirror image on the pale half picks the same stored notch.
+    key(&mut h, Key::Z);
+    click(&mut h, 225.0, 92.0);
+    assert_eq!(h.state().selection, Selection::Notch(id, 0));
 }
