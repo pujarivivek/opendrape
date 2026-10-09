@@ -42,6 +42,8 @@ pub(super) struct CanvasState {
     pub line_owner: Option<PieceId>,
     /// The last line point is being dragged out into a curve point.
     pub line_dragging: bool,
+    /// Sew tool: the seam being sewn.
+    pub sew: Option<super::sew_tool::SewDraft>,
 }
 
 /// What placing a pen point did.
@@ -215,7 +217,7 @@ impl PatternEditor {
         let cursor = hover.map(|w| match self.tool {
             Tool::Pen => self.snap(w, tol, shift),
             Tool::Rectangle => self.snap(w, tol, false),
-            Tool::Edit | Tool::AddPoint | Tool::Notch | Tool::Line => w,
+            Tool::Edit | Tool::AddPoint | Tool::Notch | Tool::Line | Tool::Sew => w,
         });
         self.canvas.cursor = cursor;
         // A press on the canvas dismisses the last notice, unless a property field owned the
@@ -239,6 +241,7 @@ impl PatternEditor {
             Tool::AddPoint => self.add_point_tool(&response, hover, pointer, tol),
             Tool::Notch => self.notch_tool(&response, hover, pointer, tol),
             Tool::Line => self.line_tool(&response, press, pointer, tol),
+            Tool::Sew => self.sew_tool(&response, pointer, tol, shift),
         }
         if keys_free {
             self.canvas_keys(ui, &response);
@@ -466,6 +469,7 @@ impl PatternEditor {
                     self.delete_selection();
                 }
             }
+            Tool::Sew if pressed(Key::Escape) => self.canvas.sew = None,
             _ => {}
         }
     }
@@ -803,7 +807,7 @@ impl PatternEditor {
         best
     }
 
-    /// Deletes the selected point, notch, line or piece. A piece keeps at least 3 points.
+    /// Deletes the selected point, notch, line, seam or piece. A piece keeps at least 3 points.
     pub(super) fn delete_selection(&mut self) {
         match self.selection {
             Selection::Piece(id) => {
@@ -847,6 +851,13 @@ impl PatternEditor {
                 });
                 if !self.note_if_refused() {
                     self.selection = Selection::Piece(id);
+                }
+            }
+            Selection::Seam(id) => {
+                // Its mirror image goes with it.
+                self.doc.edit(|p| p.remove_seam(id));
+                if !self.note_if_refused() {
+                    self.selection = Selection::None;
                 }
             }
             Selection::Edge(..) | Selection::None => {}

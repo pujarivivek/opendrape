@@ -157,3 +157,12 @@ recovery-title = Restore unsaved work?
 recovery-body = OpenDrape closed last time with unsaved work. Restore it?
 recovery-restore = Restore
 recovery-discard = Discard
+
+tool-sew = Sew
+tool-sew-tip = Sew edges together: click an edge, then the edge it is sewn to.
+hint-sew-start = Click an edge to start a seam. Shift-click the next edges along the outline to add them.
+hint-sew-second = Click the edge to sew it to. Shift-click to add more edges to this side; Esc cancels.
+hint-sew-extend = Shift-click to add edges to the second side, or click an edge to start another seam.
+notice-already-sewn = This edge is already sewn.
+notice-sew-not-next = Shift-click an edge right next to this side, on the same piece.
+notice-sew-same-edge = Pick a different edge for the other side of the seam.

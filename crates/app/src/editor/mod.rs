@@ -8,6 +8,7 @@ mod line_tool;
 mod notch_tool;
 mod paint;
 mod panel;
+mod sew_tool;
 mod view;
 
 pub use canvas::PenPoint;
@@ -16,7 +17,7 @@ pub use view::View;
 
 use crate::tr;
 use egui::{Key, KeyboardShortcut, Modifiers};
-use opendrape_core::{PieceId, Point2, Project, Units};
+use opendrape_core::{PieceId, Point2, Project, SeamId, Units};
 use opendrape_geom as geom;
 use std::path::PathBuf;
 
@@ -47,16 +48,18 @@ pub enum Tool {
     AddPoint,
     Notch,
     Line,
+    Sew,
 }
 
 impl Tool {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Edit,
         Self::Pen,
         Self::Rectangle,
         Self::AddPoint,
         Self::Notch,
         Self::Line,
+        Self::Sew,
     ];
 
     /// Single-key shortcut: the letters other pattern software uses, so habits carry over.
@@ -68,6 +71,8 @@ impl Tool {
             Self::AddPoint => Key::X,
             Self::Notch => Key::N,
             Self::Line => Key::L,
+            // S is the Rectangle's.
+            Self::Sew => Key::W,
         }
     }
 
@@ -79,6 +84,7 @@ impl Tool {
             Self::AddPoint => tr!("tool-add-point"),
             Self::Notch => tr!("tool-notch"),
             Self::Line => tr!("tool-line"),
+            Self::Sew => tr!("tool-sew"),
         }
     }
 
@@ -90,6 +96,7 @@ impl Tool {
             Self::AddPoint => tr!("tool-add-point-tip"),
             Self::Notch => tr!("tool-notch-tip"),
             Self::Line => tr!("tool-line-tip"),
+            Self::Sew => tr!("tool-sew-tip"),
         }
     }
 }
@@ -107,12 +114,14 @@ pub enum Selection {
     Notch(PieceId, usize),
     /// An internal line: the shape's id and the index into the stored piece's lines.
     Line(PieceId, usize),
+    /// A stored seam (clicking a seam's mirror image selects the seam).
+    Seam(SeamId),
 }
 
 impl Selection {
     pub fn piece(self) -> Option<PieceId> {
         match self {
-            Self::None => None,
+            Self::None | Self::Seam(_) => None,
             Self::Piece(id)
             | Self::Vertex(id, _)
             | Self::Edge(id, _)
@@ -124,6 +133,13 @@ impl Selection {
     /// This selection if it still exists in `project` (after an undo, say); otherwise its
     /// piece, or nothing. The id may name a twin: its points and edges are its stored piece's.
     pub fn validated(self, project: &Project) -> Self {
+        if let Self::Seam(id) = self {
+            return if project.seam(id).is_some() {
+                self
+            } else {
+                Self::None
+            };
+        }
         let Some(id) = self.piece() else {
             return Self::None;
         };

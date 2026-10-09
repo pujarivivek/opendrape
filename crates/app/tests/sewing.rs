@@ -5,6 +5,7 @@ mod common;
 use common::*;
 use egui::Key;
 use egui_kittest::kittest::Queryable;
+use opendrape::editor::{Selection, Tool};
 use opendrape_core::{Half, Piece, PieceId, Point2, Seam, SeamId, SeamSide};
 
 /// A 150 × 300 mm half piece at (300,100), folded on its left edge (x = 300): stored edges 0
@@ -120,4 +121,195 @@ fn a_sewn_edge_cannot_become_the_fold() {
             "The fold line must be a straight edge with no notches or seams on it, and the whole piece (with its lines) on one side of it."
         )
     );
+}
+
+fn seams(h: &H) -> Vec<Seam> {
+    h.state().doc.project().seams.clone()
+}
+
+fn notice(h: &H) -> Option<String> {
+    h.state().notice.clone()
+}
+
+#[test]
+fn two_clicks_make_a_seam_whose_starts_meet() {
+    let mut h = harness();
+    let front = with_rectangle(&mut h); // edges: 0 bottom, 1 right, 2 top, 3 left
+    let back = with_back(&mut h);
+    key(&mut h, Key::W);
+    assert_eq!(h.state().tool, Tool::Sew);
+    click(&mut h, 401.0, 150.0); // the front's right edge, near its start (400,100)
+    assert!(seams(&h).is_empty(), "half made");
+    click(&mut h, 599.0, 150.0); // the back's left edge, near its end (600,100)
+    let made = seams(&h);
+    assert_eq!(
+        made,
+        vec![Seam {
+            id: SeamId(1),
+            a: side(front, Half::Drawn, 1, 1, true),
+            b: side(back, Half::Drawn, 3, 1, false),
+        }]
+    );
+    assert_eq!(h.state().selection, Selection::Seam(SeamId(1)));
+    cmd(&mut h, Key::Z);
+    assert!(seams(&h).is_empty(), "one undo step");
+    assert_eq!(
+        h.state().selection,
+        Selection::None,
+        "a removed seam is not selected"
+    );
+}
+
+#[test]
+fn shift_clicks_add_the_next_edges_to_either_side() {
+    let mut h = harness();
+    let front = with_rectangle(&mut h);
+    let back = with_back(&mut h);
+    key(&mut h, Key::W);
+    click(&mut h, 401.0, 150.0); // front edge 1, forward
+    shift_click(&mut h, 250.0, 501.0); // front edge 2, after it
+    click(&mut h, 599.0, 150.0); // back edge 3, backwards
+    shift_click(&mut h, 750.0, 501.0); // back edge 2, before it
+    assert_eq!(seams(&h)[0].a, side(front, Half::Drawn, 1, 2, true));
+    assert_eq!(seams(&h)[0].b, side(back, Half::Drawn, 2, 2, false));
+    cmd(&mut h, Key::Z);
+    assert_eq!(
+        seams(&h)[0].b,
+        side(back, Half::Drawn, 3, 1, false),
+        "each edge added is a step"
+    );
+    // Clicking away from every edge ends extending: the next Shift-click starts a new side.
+    click(&mut h, 250.0, 300.0);
+    shift_click(&mut h, 750.0, 501.0);
+    assert_eq!(seams(&h)[0].b, side(back, Half::Drawn, 3, 1, false));
+}
+
+#[test]
+fn edges_that_are_sewn_or_not_next_are_refused() {
+    let mut h = harness();
+    with_rectangle(&mut h);
+    with_back(&mut h);
+    key(&mut h, Key::W);
+    click(&mut h, 401.0, 150.0);
+    shift_click(&mut h, 650.0, 101.0); // the back's bottom edge: another piece
+    assert_eq!(
+        notice(&h).as_deref(),
+        Some("Shift-click an edge right next to this side, on the same piece.")
+    );
+    click(&mut h, 401.0, 450.0); // the first side's own edge
+    assert_eq!(
+        notice(&h).as_deref(),
+        Some("Pick a different edge for the other side of the seam.")
+    );
+    click(&mut h, 599.0, 150.0);
+    assert_eq!(seams(&h).len(), 1);
+    click(&mut h, 401.0, 300.0); // sewn now
+    assert_eq!(notice(&h).as_deref(), Some("This edge is already sewn."));
+    assert_eq!(seams(&h).len(), 1);
+}
+
+#[test]
+fn escape_cancels_a_half_made_seam() {
+    let mut h = harness();
+    with_rectangle(&mut h);
+    with_back(&mut h);
+    key(&mut h, Key::W);
+    click(&mut h, 401.0, 150.0);
+    key(&mut h, Key::Escape);
+    click(&mut h, 599.0, 150.0); // starts a new seam instead of finishing one
+    assert!(seams(&h).is_empty());
+}
+
+#[test]
+fn mirrored_seams_appear_by_themselves() {
+    let mut h = harness();
+    let front = with_half(&mut h); // drawn half x 300..450, pale half x 150..300
+    let back = with_back(&mut h);
+    let twin = h
+        .state_mut()
+        .doc
+        .edit(|p| p.add_twin(back, "Back (mirror)".into(), Point2::new(1900.0, 0.0)))
+        .unwrap(); // the twin covers x 1000..1300
+    h.state_mut().fit();
+    h.run();
+    key(&mut h, Key::W);
+    click(&mut h, 451.0, 150.0); // the drawn half's right edge
+    click(&mut h, 599.0, 150.0); // the back's left edge
+    let all = h.state().doc.project().all_seams();
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[1].0.a, side(front, Half::Pale, 1, 1, true));
+    assert_eq!(all[1].0.b, side(twin, Half::Drawn, 3, 1, false));
+    // The mirror image's edges are sewn too.
+    click(&mut h, 149.0, 150.0); // the pale half's outer edge
+    assert_eq!(notice(&h).as_deref(), Some("This edge is already sewn."));
+    click(&mut h, 1301.0, 150.0); // the twin's matching edge
+    assert_eq!(notice(&h).as_deref(), Some("This edge is already sewn."));
+    // A twin's own free edge can be sewn: its bottom edge to the pale half's bottom.
+    click(&mut h, 1150.0, 99.0);
+    click(&mut h, 225.0, 99.0);
+    assert_eq!(seams(&h).len(), 2);
+    assert_eq!(seams(&h)[1].a.shape, twin);
+    assert_eq!(seams(&h)[1].b, side(front, Half::Pale, 0, 1, false));
+}
+
+#[test]
+fn delete_removes_the_selected_seam() {
+    let mut h = harness();
+    with_rectangle(&mut h);
+    with_back(&mut h);
+    key(&mut h, Key::W);
+    click(&mut h, 401.0, 150.0);
+    click(&mut h, 599.0, 150.0);
+    key(&mut h, Key::Z); // the Edit tool: the seam stays selected
+    key(&mut h, Key::Delete);
+    assert!(seams(&h).is_empty());
+    assert_eq!(h.state().selection, Selection::None);
+}
+
+#[test]
+fn a_back_sewn_to_its_own_mirror_image_is_one_seam() {
+    let mut h = harness();
+    let back = with_back(&mut h); // 600..900; its twin at 1000..1300
+    let twin = h
+        .state_mut()
+        .doc
+        .edit(|p| p.add_twin(back, "Back (mirror)".into(), Point2::new(1900.0, 0.0)))
+        .unwrap();
+    h.state_mut().fit();
+    h.run();
+    key(&mut h, Key::W);
+    click(&mut h, 901.0, 150.0); // the back's right edge, near its start (900,100)
+    click(&mut h, 999.0, 450.0); // the twin's matching edge, near its far end: sewn twisted
+    assert_eq!(notice(&h), None, "not refused");
+    let all = h.state().doc.project().all_seams();
+    assert_eq!(
+        all.len(),
+        1,
+        "its own mirror image: drawn and stitched once"
+    );
+    assert_eq!(all[0].0.a, side(back, Half::Drawn, 1, 1, true));
+    assert_eq!(all[0].0.b, side(twin, Half::Drawn, 1, 1, false));
+}
+
+#[test]
+fn undo_and_deletion_drop_a_seam_selection_and_a_half_made_seam() {
+    let mut h = harness();
+    let front = with_rectangle(&mut h);
+    with_back(&mut h);
+    key(&mut h, Key::W);
+    click(&mut h, 401.0, 150.0);
+    click(&mut h, 599.0, 150.0);
+    shift_click(&mut h, 750.0, 501.0); // extending the second side
+    cmd(&mut h, Key::Z);
+    cmd(&mut h, Key::Z); // the seam itself goes
+    assert_eq!(h.state().selection, Selection::None);
+    shift_click(&mut h, 750.0, 501.0); // nothing left to extend: starts a new side instead
+    assert!(seams(&h).is_empty());
+    // A half-made seam whose piece is deleted is dropped too.
+    key(&mut h, Key::Escape);
+    click(&mut h, 401.0, 150.0);
+    h.state_mut().doc.edit(|p| p.remove_piece(front));
+    h.run();
+    click(&mut h, 599.0, 150.0); // starts a new seam: the old first side is gone
+    assert!(seams(&h).is_empty());
 }

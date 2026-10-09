@@ -48,6 +48,8 @@ impl PatternEditor {
             Selection::Vertex(id, i) => self.vertex_properties(ui, id, i),
             Selection::Notch(id, k) => self.notch_properties(ui, id, k),
             Selection::Line(id, l) => self.line_properties(ui, id, l),
+            // The seam panel comes with seam drawing.
+            Selection::Seam(_) => {}
         }
         let shown = &self.panel.shown;
         self.panel.editing.retain(|id, _| shown.contains(id));
@@ -515,6 +517,11 @@ impl PatternEditor {
             Tool::Notch => tr!("hint-notch"),
             Tool::Line if self.canvas.line.is_empty() => tr!("hint-line-start"),
             Tool::Line => tr!("hint-line-drawing"),
+            Tool::Sew => match self.canvas.sew {
+                None => tr!("hint-sew-start"),
+                Some(draft) if draft.seam.is_none() => tr!("hint-sew-second"),
+                Some(_) => tr!("hint-sew-extend"),
+            },
         }
     }
 }

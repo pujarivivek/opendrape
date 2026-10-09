@@ -365,7 +365,7 @@ impl PatternEditor {
                     }
                 }
             }
-            Selection::Piece(_) | Selection::None => {}
+            Selection::Piece(_) | Selection::Seam(_) | Selection::None => {}
         }
     }
 
@@ -382,6 +382,18 @@ impl PatternEditor {
             && let Some(p) = self.canvas.preview
         {
             painter.circle_stroke(v.to_screen(rect, p), 4.5, ink);
+        }
+        // The seam side being sewn, thick, with a ring where it starts.
+        if let Some(side) = self.sew_draft_side()
+            && let Some(shape) = geom::shape_of(self.doc.project(), side.shape)
+            && let Some(points) = geom::side_points(&shape, &side, v.mm(0.25))
+            && let Some(start) = points.first().copied()
+        {
+            painter.add(Shape::line(
+                self.screen_points(rect, points),
+                Stroke::new(4.0, c.selected),
+            ));
+            painter.circle_stroke(v.to_screen(rect, start), 6.0, ink);
         }
     }
 
