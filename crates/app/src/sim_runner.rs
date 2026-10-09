@@ -34,8 +34,14 @@ pub struct SimRunner {
     tx: Sender<Command>,
     latest: Arc<ArcSwap<SimFrame>>,
     playing: Arc<AtomicBool>,
+    idle: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
+
+/// Below this kinetic energy (J) for [`SETTLE_FRAMES`] frames, a welded drape counts as settled
+/// and the simulation pauses itself, so a finished drape doesn't keep a laptop core busy.
+const SETTLED_ENERGY: f64 = 1e-6;
+const SETTLE_FRAMES: u32 = 60;
 
 impl SimRunner {
     pub fn start(garment: Garment, playing: bool, on_frame: impl Fn() + Send + 'static) -> Self {
@@ -44,17 +50,19 @@ impl SimRunner {
         let mut publisher = Publisher::new(&scene, 0);
         let latest = Arc::new(ArcSwap::from_pointee(publisher.frame(&scene, 0.0)));
         let playing = Arc::new(AtomicBool::new(playing));
+        let idle = Arc::new(AtomicBool::new(false));
         let thread = {
-            let (latest, playing) = (latest.clone(), playing.clone());
+            let (latest, playing, idle) = (latest.clone(), playing.clone(), idle.clone());
             std::thread::Builder::new()
                 .name("opendrape-sim".into())
-                .spawn(move || run(scene, publisher, &rx, &latest, &playing, &on_frame))
+                .spawn(move || run(scene, publisher, &rx, &latest, &playing, &idle, &on_frame))
                 .expect("spawn the simulation thread")
         };
         Self {
             tx,
             latest,
             playing,
+            idle,
             thread: Some(thread),
         }
     }
@@ -63,6 +71,10 @@ impl SimRunner {
     }
     pub fn is_playing(&self) -> bool {
         self.playing.load(Ordering::Relaxed)
+    }
+    /// True while the worker is paused and waiting: no step is in flight.
+    pub fn is_idle(&self) -> bool {
+        self.idle.load(Ordering::Acquire)
     }
     pub fn set_playing(&self, playing: bool) {
         self.playing.store(playing, Ordering::Relaxed);
@@ -120,20 +132,26 @@ fn run(
     rx: &Receiver<Command>,
     latest: &ArcSwap<SimFrame>,
     playing: &AtomicBool,
+    idle: &AtomicBool,
     on_frame: &dyn Fn(),
 ) {
     let mut next = Instant::now();
+    let mut settled_frames = 0;
     loop {
         // Paused: sleep until a command arrives. Playing: just look.
         let cmd = if playing.load(Ordering::Relaxed) {
             rx.try_recv().ok()
         } else {
-            Some(rx.recv().unwrap_or(Command::Shutdown))
+            idle.store(true, Ordering::Release);
+            let cmd = rx.recv().unwrap_or(Command::Shutdown);
+            idle.store(false, Ordering::Release);
+            Some(cmd)
         };
         match cmd {
             Some(Command::Shutdown) => return,
             Some(Command::Reset(g)) => {
                 scene = Scene::new(g);
+                settled_frames = 0;
                 publisher = Publisher::new(&scene, publisher.seq);
                 latest.store(Arc::new(publisher.frame(&scene, 0.0)));
                 on_frame();
@@ -148,6 +166,16 @@ fn run(
         }
         let started = Instant::now();
         scene.step();
+        let cloth = scene.solver.cloth();
+        settled_frames = if !cloth.has_open_stitches() && cloth.kinetic_energy() < SETTLED_ENERGY {
+            settled_frames + 1
+        } else {
+            0
+        };
+        if settled_frames >= SETTLE_FRAMES {
+            playing.store(false, Ordering::Relaxed);
+            settled_frames = 0;
+        }
         latest.store(Arc::new(
             publisher.frame(&scene, started.elapsed().as_secs_f64() * 1000.0),
         ));
@@ -191,12 +219,22 @@ mod tests {
         let r = SimRunner::start(Garment::Skirt, true, || {});
         wait_for("time > 0.1", || r.latest().time > 0.1);
         r.set_playing(false);
-        std::thread::sleep(Duration::from_millis(100)); // let an in-flight step finish
+        wait_for("the worker to go idle", || r.is_idle());
         let t = r.latest().time;
         std::thread::sleep(Duration::from_millis(150));
         assert_eq!(r.latest().time, t, "paused");
         r.reset(Garment::Skirt);
         wait_for("reset to t = 0", || r.latest().time == 0.0);
+    }
+
+    #[test]
+    fn a_settled_drape_pauses_itself() {
+        // Simulating a garment that no longer moves would keep a laptop core busy forever.
+        let r = SimRunner::start(Garment::BodiceProxy, true, || {});
+        wait_for("auto-pause once settled", || !r.is_playing() && r.is_idle());
+        let t = r.latest().time;
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(r.latest().time, t);
     }
 
     #[test]

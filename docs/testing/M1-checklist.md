@@ -10,7 +10,9 @@ drawing yet: the two garments are built in.
       into place at the waist within about 5 seconds, then stops moving.
 - [ ] Turn the view by dragging and zoom by scrolling: the skirt never passes through the body
       (no skin showing through the fabric).
-- [ ] The text at the top left shows a speed of at least 20 fps.
+- [ ] While the fabric is moving, the text at the top left shows a speed of at least 20 fps.
+- [ ] Once the skirt has settled, the simulation pauses itself (the button changes to **Play**),
+      so OpenDrape doesn't keep your computer busy.
 - [ ] **Pause** freezes the fabric; **Play** continues it.
 - [ ] **Reset** starts the drape again from the beginning.
 - [ ] Click **Fitted tube (collision test)**: a tight tube hugs the chest and waist with no

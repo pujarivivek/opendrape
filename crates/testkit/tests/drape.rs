@@ -60,3 +60,21 @@ fn drape_is_deterministic() {
     };
     assert_eq!(hash(), hash());
 }
+
+#[test]
+fn welded_skirt_is_consistently_wound() {
+    // Opposite panels must face the same way, or the welded seams get cancelling normals
+    // (a dark streak down each side seam).
+    let mut cloth = Scene::new(Garment::Skirt).solver.cloth().clone();
+    cloth.weld_stitches();
+    let mut directed = std::collections::HashSet::new();
+    for t in cloth.triangles() {
+        for k in 0..3 {
+            let e = (t[k], t[(k + 1) % 3]);
+            assert!(
+                directed.insert(e),
+                "edge {e:?} traversed twice in the same direction"
+            );
+        }
+    }
+}

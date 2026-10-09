@@ -55,11 +55,7 @@ pub fn measure(cloth: &Cloth, collider: &BodyCollider) -> DrapeReport {
         strain_mean: strain.iter().sum::<f64>() / strain.len() as f64,
         strain_p99: pct(&strain, 0.99),
         strain_max: strain[strain.len() - 1],
-        kinetic_energy: live
-            .iter()
-            .filter(|&&i| !cloth.is_pinned(i))
-            .map(|&i| 0.5 * cloth.mass(i) * cloth.velocities()[i].length_squared())
-            .sum(),
+        kinetic_energy: cloth.kinetic_energy(),
         lowest_y,
         highest_y,
         has_nan,

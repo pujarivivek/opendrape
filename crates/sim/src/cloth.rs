@@ -106,24 +106,32 @@ impl ClothBuilder {
             }
         }
         self.cloth.x.extend_from_slice(&panel.positions);
-        for m in mass {
+        for &m in &mass {
             // A vertex with no area (unused, or only in degenerate triangles) can't move.
             self.cloth
                 .inv_mass
                 .push(if m > 0.0 { 1.0 / m } else { 0.0 });
             self.cloth.alive.push(m > 0.0);
         }
+        // Links to such a vertex would turn it into an invisible pin holding the cloth up.
+        let has_mass = |&(a, b): &(u32, u32)| mass[a as usize] > 0.0 && mass[b as usize] > 0.0;
         let link = |(a, b): (u32, u32)| Link {
             a: a + base,
             b: b + base,
             rest: rest_pos(a).distance(rest_pos(b)) * rest_scale,
         };
-        self.cloth
-            .stretch
-            .extend(unique_edges(&panel.triangles).into_iter().map(link));
-        self.cloth
-            .bend
-            .extend(bending_pairs(&panel.triangles).into_iter().map(link));
+        self.cloth.stretch.extend(
+            unique_edges(&panel.triangles)
+                .into_iter()
+                .filter(has_mass)
+                .map(link),
+        );
+        self.cloth.bend.extend(
+            bending_pairs(&panel.triangles)
+                .into_iter()
+                .filter(has_mass)
+                .map(link),
+        );
         self.cloth
             .triangles
             .extend(panel.triangles.iter().map(|t| t.map(|k| k + base)));
@@ -199,6 +207,13 @@ impl Cloth {
     }
     pub fn has_open_stitches(&self) -> bool {
         !self.stitches.is_empty()
+    }
+    /// Kinetic energy (J) of all movable particles.
+    pub fn kinetic_energy(&self) -> f64 {
+        (0..self.len())
+            .filter(|&i| self.alive[i] && self.inv_mass[i] > 0.0)
+            .map(|i| 0.5 * self.mass(i) * self.v[i].length_squared())
+            .sum()
     }
     /// Increases whenever `triangles()` change (welding).
     pub fn topology_version(&self) -> u64 {

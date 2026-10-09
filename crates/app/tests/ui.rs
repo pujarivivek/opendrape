@@ -209,7 +209,12 @@ fn reset_and_garment_switch_reload_the_scene() {
 #[test]
 fn stats_text_is_readable() {
     assert_eq!(
-        OpenDrapeApp::stats_text(59.6, 11.73, 4794),
+        OpenDrapeApp::stats_text(Some(59.6), 11.73, 4794),
         "60 fps · simulation 11.7 ms per step · 4794 points"
+    );
+    // Paused: the window only redraws on input, so a frame rate would be misleading.
+    assert_eq!(
+        OpenDrapeApp::stats_text(None, 11.73, 4794),
+        "simulation 11.7 ms per step · 4794 points"
     );
 }

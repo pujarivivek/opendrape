@@ -135,7 +135,15 @@ fn skirt() -> Solver {
             };
             DVec3::new(r * phi.sin(), SKIRT_WAIST_Y + p.y, zc + r * phi.cos())
         };
-        panels.push(builder.add_panel(&grid_panel(rows, cols, false, Some(&flat), &place), 1.0));
+        let mut panel = grid_panel(rows, cols, false, Some(&flat), &place);
+        if !front {
+            // The back panel is placed mirrored; flip its winding so both panels face outward
+            // and the welded seams get consistent normals.
+            for t in &mut panel.triangles {
+                t.swap(1, 2);
+            }
+        }
+        panels.push(builder.add_panel(&panel, 1.0));
     }
     for i in 0..=rows {
         for j in [0, cols] {

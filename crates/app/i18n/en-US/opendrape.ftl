@@ -31,3 +31,4 @@ toolbar-reset = Reset
 garment-skirt = A-line skirt
 garment-bodice-proxy = Fitted tube (collision test)
 overlay-stats = { $fps } fps · simulation { $ms } ms per step · { $points } points
+overlay-stats-paused = simulation { $ms } ms per step · { $points } points

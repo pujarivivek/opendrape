@@ -327,6 +327,12 @@ mod tests {
             s.step(None);
         }
         assert!(s.cloth().positions().iter().all(|p| p.is_finite()));
+        // Vertex 2 only belongs to the zero-area triangle; it must not hold the cloth up.
+        assert!(
+            s.cloth().positions()[3].y < -0.5,
+            "live cloth fell: {}",
+            s.cloth().positions()[3]
+        );
     }
 
     #[test]

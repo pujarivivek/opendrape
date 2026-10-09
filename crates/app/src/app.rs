@@ -76,13 +76,18 @@ impl OpenDrapeApp {
         self.runner.as_ref().map(SimRunner::latest)
     }
 
-    pub fn stats_text(fps: f32, step_ms: f64, points: usize) -> String {
-        tr!(
-            "overlay-stats",
-            fps = format!("{fps:.0}"),
-            ms = format!("{step_ms:.1}"),
-            points = points.to_string()
-        )
+    /// `fps` is `None` while paused: the window then only redraws on input.
+    pub fn stats_text(fps: Option<f32>, step_ms: f64, points: usize) -> String {
+        let (ms, points) = (format!("{step_ms:.1}"), points.to_string());
+        match fps {
+            Some(fps) => tr!(
+                "overlay-stats",
+                fps = format!("{fps:.0}"),
+                ms = ms,
+                points = points
+            ),
+            None => tr!("overlay-stats-paused", ms = ms, points = points),
+        }
     }
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
@@ -240,7 +245,11 @@ impl eframe::App for OpenDrapeApp {
             0.9 * self.fps + 0.1 / dt
         };
         let sim = self.sim_frame();
-        let fps = self.fps;
+        let fps = self
+            .runner
+            .as_ref()
+            .is_some_and(SimRunner::is_playing)
+            .then_some(self.fps);
         egui::CentralPanel::default().show(ui, |ui| {
             match (self.viewport.as_mut(), frame.wgpu_render_state()) {
                 (Some(viewport), Some(rs)) => {
