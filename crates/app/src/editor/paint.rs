@@ -1,9 +1,11 @@
 //! Drawing the pattern table: grid, pieces, the selection, and drafts in progress.
 
-use super::{PatternEditor, Selection, Tool, canvas::pen_piece};
+use super::{PatternEditor, Selection, Tool, cache::Drawn, canvas::pen_piece};
+use crate::tr;
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, vec2};
-use opendrape_core::{Edge, Piece, Point2};
+use opendrape_core::{Edge, LineKind, Point2};
 use opendrape_geom as geom;
+use std::rc::Rc;
 
 struct Palette {
     table: Color32,
@@ -14,6 +16,13 @@ struct Palette {
     selected: Color32,
     handle: Color32,
     label: Color32,
+    /// The seam allowance band.
+    band: Color32,
+    /// The cut line.
+    cut: Color32,
+    /// The outline and fill of the pale half of a cut-on-fold piece.
+    pale: Color32,
+    pale_fill: Color32,
 }
 
 impl Palette {
@@ -28,6 +37,10 @@ impl Palette {
                 selected: Color32::from_rgb(255, 150, 90),
                 handle: Color32::from_rgb(120, 170, 255),
                 label: Color32::from_gray(190),
+                band: Color32::from_rgba_unmultiplied(120, 160, 230, 20),
+                cut: Color32::from_gray(120),
+                pale: Color32::from_gray(110),
+                pale_fill: Color32::from_rgba_unmultiplied(120, 160, 230, 22),
             }
         } else {
             Self {
@@ -39,21 +52,41 @@ impl Palette {
                 selected: Color32::from_rgb(220, 90, 30),
                 handle: Color32::from_rgb(50, 110, 220),
                 label: Color32::from_gray(70),
+                band: Color32::from_rgba_unmultiplied(70, 110, 200, 18),
+                cut: Color32::from_gray(150),
+                pale: Color32::from_gray(165),
+                pale_fill: Color32::from_rgba_unmultiplied(70, 110, 200, 20),
             }
         }
     }
 }
 
 impl PatternEditor {
-    pub(super) fn paint(&self, painter: &Painter, rect: Rect, dark: bool) {
+    pub(super) fn paint(&self, painter: &Painter, rect: Rect, dark: bool, drawn: &[Rc<Drawn>]) {
         let c = Palette::new(dark);
         painter.rect_filled(rect, 0.0, c.table);
         self.paint_grid(painter, rect, &c);
-        for piece in &self.doc.project().pieces {
-            self.paint_piece(painter, rect, piece, &c);
+        for d in drawn {
+            self.paint_shape(painter, rect, d, &c);
         }
-        self.paint_selection(painter, rect, &c);
+        if let Some(d) = drawn
+            .iter()
+            .find(|d| Some(d.shape.id) == self.selection.piece())
+        {
+            self.paint_selection(painter, rect, d, &c);
+        }
         self.paint_drafts(painter, rect, &c);
+    }
+
+    fn mesh(&self, rect: Rect, points: &[Point2], triangles: &[u32], fill: Color32) -> Shape {
+        let mut mesh = egui::Mesh::default();
+        for p in points {
+            mesh.colored_vertex(self.view.to_screen(rect, *p), fill);
+        }
+        for &[a, b, t] in triangles.as_chunks::<3>().0 {
+            mesh.add_triangle(a, b, t);
+        }
+        Shape::mesh(mesh)
     }
 
     fn screen_points(&self, rect: Rect, points: Vec<Point2>) -> Vec<Pos2> {
@@ -97,20 +130,74 @@ impl PatternEditor {
         }
     }
 
-    fn paint_piece(&self, painter: &Painter, rect: Rect, piece: &Piece, c: &Palette) {
+    fn paint_shape(&self, painter: &Painter, rect: Rect, d: &Drawn, c: &Palette) {
         let v = self.view;
-        let outline = self.screen_points(rect, geom::outline_points(piece, v.mm(0.25)));
-        let selected = self.selection.piece() == Some(piece.id);
+        let piece = &d.shape.piece;
+        let selected = self.selection.piece() == Some(d.shape.id);
         let ink = if selected { c.selected } else { c.ink };
-        if outline.len() >= 3 {
-            painter.add(fill_polygon(&outline, c.fill));
+        let width = if selected { 2.0 } else { 1.5 };
+        if self.show_allowance && !d.cut.is_empty() {
+            painter.add(self.mesh(rect, &d.cut, &d.cut_fill, c.band));
+            painter.add(Shape::closed_line(
+                self.screen_points(rect, d.cut.clone()),
+                Stroke::new(1.0, c.cut),
+            ));
         }
-        painter.add(Shape::closed_line(
-            outline,
-            Stroke::new(if selected { 2.0 } else { 1.5 }, ink),
-        ));
-        for vertex in &piece.vertices {
-            painter.circle_filled(v.to_screen(rect, vertex.pos), 3.0, ink);
+        let folded = match d.shape.kind {
+            geom::ShapeKind::Folded { drawn, fold, .. } => Some((drawn, fold)),
+            _ => None,
+        };
+        let fill = if folded.is_some() {
+            c.pale_fill
+        } else {
+            c.fill
+        };
+        painter.add(self.mesh(rect, &d.outline, &d.fill, fill));
+        match folded {
+            Some((drawn, fold)) => {
+                painter.add(Shape::closed_line(
+                    self.screen_points(rect, d.outline.clone()),
+                    Stroke::new(1.0, c.pale),
+                ));
+                for j in 0..drawn - 1 {
+                    let pts = self.screen_points(rect, geom::edge_points(piece, j, v.mm(0.25)));
+                    painter.add(Shape::line(pts, Stroke::new(width, ink)));
+                }
+                self.paint_fold(painter, rect, fold, c);
+            }
+            None => {
+                painter.add(Shape::closed_line(
+                    self.screen_points(rect, d.outline.clone()),
+                    Stroke::new(width, ink),
+                ));
+            }
+        }
+        for (k, vertex) in piece.vertices.iter().enumerate() {
+            if d.shape.stored_vertex(k).is_some() {
+                painter.circle_filled(v.to_screen(rect, vertex.pos), 3.0, ink);
+            }
+        }
+        for [a, b] in &d.notches {
+            painter.line_segment(
+                [v.to_screen(rect, *a), v.to_screen(rect, *b)],
+                Stroke::new(1.5, ink),
+            );
+        }
+        for (points, kind) in &d.lines {
+            let pts = self.screen_points(rect, points.clone());
+            match kind {
+                LineKind::Marking => {
+                    painter.extend(Shape::dashed_line(
+                        &pts,
+                        Stroke::new(1.0, c.label),
+                        5.0,
+                        3.0,
+                    ));
+                }
+                LineKind::Cutout => {
+                    painter.add(Shape::line(pts, Stroke::new(1.5, ink)));
+                }
+            }
         }
         // Grainline: a double-headed arrow through the middle, with the name beside it.
         let centre = v.to_screen(rect, geom::centroid(piece));
@@ -119,42 +206,100 @@ impl PatternEditor {
         let grain = Stroke::new(1.0, c.label);
         painter.arrow(centre, along, grain);
         painter.arrow(centre, -along, grain);
-        painter.text(
+        let name = painter.text(
             centre + vec2(6.0, -4.0),
             Align2::LEFT_BOTTOM,
             &piece.name,
             FontId::proportional(13.0),
             c.label,
         );
+        if self.is_paired(&d.shape) {
+            // Link badge: two overlapping rings after the name.
+            let at = name.right_center() + vec2(9.0, 0.0);
+            painter.circle_stroke(at - vec2(3.0, 0.0), 4.0, grain);
+            painter.circle_stroke(at + vec2(3.0, 0.0), 4.0, grain);
+        }
         if self.show_lengths {
-            let units = self.doc.project().units;
-            for i in 0..piece.len() {
-                let mid = v.to_screen(rect, geom::point_on_edge(piece, i, 0.5));
-                let text = units.format(geom::edge_length(piece, i));
-                painter.text(
-                    mid,
-                    Align2::CENTER_CENTER,
-                    text,
-                    FontId::proportional(11.0),
-                    c.label,
-                );
-            }
+            self.paint_lengths(painter, rect, d, c);
         }
     }
 
-    fn paint_selection(&self, painter: &Painter, rect: Rect, c: &Palette) {
-        let Some(piece) = self
-            .selection
-            .piece()
-            .and_then(|id| self.doc.project().piece(id))
-        else {
-            return;
-        };
+    /// Whether a shape is one of a pair (a twin, or a piece that has one).
+    fn is_paired(&self, shape: &geom::Shape) -> bool {
+        matches!(shape.kind, geom::ShapeKind::Twin { .. })
+            || self
+                .doc
+                .project()
+                .piece(shape.source)
+                .is_some_and(|p| p.twin.is_some())
+    }
+
+    /// The fold line: dashed, with a two-headed arrow across its middle and "Place on fold".
+    fn paint_fold(
+        &self,
+        painter: &Painter,
+        rect: Rect,
+        (near, far): (Point2, Point2),
+        c: &Palette,
+    ) {
+        let (a, b) = (
+            self.view.to_screen(rect, near),
+            self.view.to_screen(rect, far),
+        );
+        painter.extend(Shape::dashed_line(
+            &[a, b],
+            Stroke::new(1.5, c.ink),
+            8.0,
+            4.0,
+        ));
+        let mid = a + (b - a) * 0.5;
+        let across = (b - a).normalized().rot90() * 18.0;
+        let stroke = Stroke::new(1.0, c.label);
+        painter.arrow(mid, across, stroke);
+        painter.arrow(mid, -across, stroke);
+        painter.text(
+            mid + across + vec2(4.0, 0.0),
+            Align2::LEFT_CENTER,
+            tr!("fold-label"),
+            FontId::proportional(11.0),
+            c.label,
+        );
+    }
+
+    /// Each editable edge's length, just outside the piece (and outside the allowance band when
+    /// it is shown), so no line runs through the text.
+    fn paint_lengths(&self, painter: &Painter, rect: Rect, d: &Drawn, c: &Palette) {
+        let piece = &d.shape.piece;
+        let units = self.doc.project().units;
+        for j in 0..piece.len() {
+            if d.shape.stored_edge(j).is_none() {
+                continue;
+            }
+            let (at, out) = geom::edge_label_anchor(piece, j);
+            let band = if self.show_allowance {
+                piece.edge_allowance(j) * self.view.zoom
+            } else {
+                0.0
+            };
+            let gap = (band + 10.0) as f32;
+            let pos = self.view.to_screen(rect, at) + vec2(out.x as f32, -(out.y as f32)) * gap;
+            painter.text(
+                pos,
+                Align2::CENTER_CENTER,
+                units.format(geom::edge_length(piece, j)),
+                FontId::proportional(11.0),
+                c.label,
+            );
+        }
+    }
+
+    fn paint_selection(&self, painter: &Painter, rect: Rect, d: &Drawn, c: &Palette) {
         let v = self.view;
+        let piece = &d.shape.piece;
         let handle = Stroke::new(1.0, c.handle);
-        for (i, edge) in piece.edges.iter().enumerate() {
-            if let Edge::Curve { c1, c2 } = *edge {
-                let (a, b) = piece.edge_ends(i);
+        for (k, edge) in piece.edges.iter().enumerate() {
+            if let (Some(_), Edge::Curve { c1, c2 }) = (d.shape.stored_edge(k), *edge) {
+                let (a, b) = piece.edge_ends(k);
                 for (end, h) in [(a, c1), (b, c2)] {
                     let (end, h) = (v.to_screen(rect, end), v.to_screen(rect, h));
                     painter.line_segment([end, h], handle);
@@ -164,11 +309,16 @@ impl PatternEditor {
         }
         match self.selection {
             Selection::Edge(_, i) => {
-                let pts = self.screen_points(rect, geom::edge_points(piece, i, v.mm(0.25)));
-                painter.add(Shape::line(pts, Stroke::new(3.5, c.selected)));
+                // A fold's own edge is not on the outline: `shape_edge` would name its mirror
+                // image's neighbour, so only an edge that maps back to `i` is drawn.
+                let k = d.shape.shape_edge(i);
+                if d.shape.stored_edge(k) == Some(i) {
+                    let pts = self.screen_points(rect, geom::edge_points(piece, k, v.mm(0.25)));
+                    painter.add(Shape::line(pts, Stroke::new(3.5, c.selected)));
+                }
             }
             Selection::Vertex(_, i) => {
-                let p = v.to_screen(rect, piece.vertices[i].pos);
+                let p = v.to_screen(rect, piece.vertices[d.shape.shape_vertex(i)].pos);
                 painter.circle_filled(p, 5.5, c.selected);
                 painter.circle_stroke(p, 5.5, Stroke::new(1.5, c.table));
             }
@@ -237,22 +387,4 @@ impl PatternEditor {
             painter.circle_stroke(v.to_screen(rect, p), 4.5, ink);
         }
     }
-}
-
-/// epaint fills only convex shapes, so concave pieces are triangulated (earcut) into a mesh.
-fn fill_polygon(points: &[Pos2], fill: Color32) -> Shape {
-    let mut triangles: Vec<u32> = Vec::new();
-    earcut::Earcut::new().earcut(
-        points.iter().map(|p| [f64::from(p.x), f64::from(p.y)]),
-        &[] as &[u32],
-        &mut triangles,
-    );
-    let mut mesh = egui::Mesh::default();
-    for p in points {
-        mesh.colored_vertex(*p, fill);
-    }
-    for &[a, b, c] in triangles.as_chunks::<3>().0 {
-        mesh.add_triangle(a, b, c);
-    }
-    Shape::mesh(mesh)
 }

@@ -106,3 +106,6 @@ error-title = Something went wrong
 error-open = This file could not be opened: { $error }.
 error-save = The project could not be saved: { $error }.
 error-ok = OK
+
+toolbar-show-allowance = Show seam allowance
+fold-label = Place on fold

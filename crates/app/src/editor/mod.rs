@@ -1,5 +1,6 @@
 //! The 2D pattern window: drawing and editing pattern pieces.
 
+mod cache;
 mod canvas;
 mod document;
 mod length_box;
@@ -14,6 +15,7 @@ pub use view::View;
 use crate::tr;
 use egui::{Key, KeyboardShortcut, Modifiers};
 use opendrape_core::{PieceId, Point2, Project, Units};
+use opendrape_geom as geom;
 use std::path::PathBuf;
 
 /// Undo: Cmd+Z (Ctrl+Z on Windows).
@@ -75,7 +77,8 @@ impl Tool {
     }
 }
 
-/// What the properties panel shows and Delete removes.
+/// What the properties panel shows and Delete removes. The ids are shape ids (a piece's own, or
+/// its twin's); point and edge numbers are the stored piece's, whichever shape was clicked.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Selection {
     #[default]
@@ -94,13 +97,16 @@ impl Selection {
     }
 
     /// This selection if it still exists in `project` (after an undo, say); otherwise its
-    /// piece, or nothing.
+    /// piece, or nothing. The id may name a twin: its points and edges are its stored piece's.
     pub fn validated(self, project: &Project) -> Self {
-        let Some(piece) = self.piece().and_then(|id| project.piece(id)) else {
+        let Some(id) = self.piece() else {
+            return Self::None;
+        };
+        let Some((piece, _)) = project.owner(id) else {
             return Self::None;
         };
         match self {
-            Self::Vertex(_, i) | Self::Edge(_, i) if i >= piece.len() => Self::Piece(piece.id),
+            Self::Vertex(_, i) | Self::Edge(_, i) if i >= piece.len() => Self::Piece(id),
             other => other,
         }
     }
@@ -113,12 +119,15 @@ pub struct PatternEditor {
     pub selection: Selection,
     /// Show every edge's length on the pattern.
     pub show_lengths: bool,
+    /// Show the seam allowance: a light band out to the cut line.
+    pub show_allowance: bool,
     /// Where the canvas was last drawn (tests use it to turn millimetres into screen points).
     pub canvas_rect: egui::Rect,
     /// Why the last action was refused, shown in the status bar until the next click.
     pub notice: Option<String>,
     canvas: canvas::CanvasState,
     panel: panel::PanelState,
+    cache: cache::ShapeCache,
     fit_pending: bool,
     /// A units switch asked for in the toolbar this frame, applied once the panels and the
     /// canvas have run: a number typed in the old units and applied by the very same click
@@ -140,10 +149,12 @@ impl PatternEditor {
             tool: Tool::default(),
             selection: Selection::None,
             show_lengths: true,
+            show_allowance: true,
             canvas_rect: egui::Rect::NOTHING,
             notice: None,
             canvas: canvas::CanvasState::default(),
             panel: panel::PanelState::default(),
+            cache: cache::ShapeCache::default(),
             fit_pending: true,
             pending_units: None,
         }
@@ -151,9 +162,10 @@ impl PatternEditor {
 
     /// Starts over with `project` (File → New or Open): clears the history and fits the view.
     pub fn set_project(&mut self, project: Project, path: Option<PathBuf>) {
-        let show_lengths = self.show_lengths;
+        let (show_lengths, show_allowance) = (self.show_lengths, self.show_allowance);
         *self = Self {
             show_lengths,
+            show_allowance,
             ..Self::new()
         };
         self.doc = Document::new(project, path);
@@ -208,6 +220,18 @@ impl PatternEditor {
     /// Show every piece on the next frame.
     pub fn fit(&mut self) {
         self.fit_pending = true;
+    }
+
+    /// Every shape on the table (see `geom::shapes`).
+    pub(super) fn shapes(&self) -> Vec<geom::Shape> {
+        geom::shapes(self.doc.project())
+    }
+
+    /// The stored piece behind a shape id (the piece itself, or the one a twin mirrors).
+    // Not called yet: the properties panel uses it from the next task on.
+    #[allow(dead_code)]
+    pub(super) fn source_of(&self, id: PieceId) -> Option<PieceId> {
+        self.doc.project().owner(id).map(|(p, _)| p.id)
     }
 
     /// Points placed so far in the piece being drawn with the pen.
@@ -296,6 +320,7 @@ impl PatternEditor {
             }
             ui.separator();
             ui.checkbox(&mut self.show_lengths, tr!("toolbar-show-lengths"));
+            ui.checkbox(&mut self.show_allowance, tr!("toolbar-show-allowance"));
             if ui
                 .button(tr!("toolbar-fit"))
                 .on_hover_text(tr!("toolbar-fit-tip"))
@@ -325,14 +350,14 @@ fn select_all_on_focus(
     }
 }
 
-/// The smallest box (mm) holding every piece.
+/// The smallest box (mm) holding every shape (twins and the pale halves of folds included).
 fn project_bounds(project: &Project) -> Option<(Point2, Point2)> {
-    let mut points = project
-        .pieces
+    let points: Vec<Point2> = geom::shapes(project)
         .iter()
-        .flat_map(|p| opendrape_geom::outline_points(p, 1.0));
-    let first = points.next()?;
-    Some(points.fold((first, first), |(lo, hi), p| {
+        .flat_map(|s| geom::outline_points(&s.piece, 1.0))
+        .collect();
+    let first = *points.first()?;
+    Some(points.iter().fold((first, first), |(lo, hi), p| {
         (
             Point2::new(lo.x.min(p.x), lo.y.min(p.y)),
             Point2::new(hi.x.max(p.x), hi.y.max(p.y)),

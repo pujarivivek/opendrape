@@ -79,30 +79,42 @@ impl Hit {
 /// An edit-tool drag. Every frame recomputes the piece from how it was when the drag began
 /// plus the pointer's offset from where it grabbed, so no movement is lost between frames.
 pub(super) struct Drag {
+    /// The stored piece as it was when the drag began.
     original: Piece,
     hit: Hit,
     grab: Point2,
+    /// The dragged shape's kind: a twin's movements are mirrored back onto the stored piece.
+    kind: geom::ShapeKind,
 }
 
 impl Drag {
+    /// The stored piece after the pointer moved `d` (in the dragged shape's coordinates).
     fn moved(&self, d: Point2) -> Piece {
         let o = &self.original;
         let mut p = o.clone();
+        let twin = matches!(self.kind, geom::ShapeKind::Twin { .. });
+        let ds = if twin { Point2::new(-d.x, d.y) } else { d };
         match self.hit {
-            Hit::Vertex(_, i) => p.move_vertex(i, o.vertices[i].pos + d),
+            Hit::Vertex(_, i) => p.move_vertex(i, o.vertices[i].pos + ds),
             Hit::Handle(_, i, end) => {
                 if let Edge::Curve { c1, c2 } = o.edges[i] {
                     let from = match end {
                         HandleEnd::Start => c1,
                         HandleEnd::End => c2,
                     };
-                    p.set_handle(i, end, from + d);
+                    p.set_handle(i, end, from + ds);
                 }
             }
             Hit::Edge(_, i) => {
                 let j = o.next(i);
-                p.move_vertex(i, o.vertices[i].pos + d);
-                p.move_vertex(j, o.vertices[j].pos + d);
+                p.move_vertex(i, o.vertices[i].pos + ds);
+                p.move_vertex(j, o.vertices[j].pos + ds);
+            }
+            // A twin moves on its own (its offset); the stored piece moves without its twin.
+            Hit::Inside(_) if twin => {
+                if let Some(t) = &mut p.twin {
+                    t.offset = t.offset + d;
+                }
             }
             Hit::Inside(_) => p.translate(d),
         }
@@ -164,7 +176,8 @@ impl PatternEditor {
             }
         }
         self.selection = self.selection.validated(self.doc.project());
-        self.paint(&painter, rect, ui.visuals().dark_mode);
+        let drawn = self.cache.shapes(self.doc.project(), self.view.zoom);
+        self.paint(&painter, rect, ui.visuals().dark_mode, &drawn);
     }
 
     fn pan_and_zoom(&mut self, ui: &egui::Ui, response: &Response) {
@@ -311,12 +324,10 @@ impl PatternEditor {
             return constrain_45(last.pos, w);
         }
         let first = pen.first().map(|p| p.pos);
-        let vertices = self
-            .doc
-            .project()
-            .pieces
+        let shapes = geom::shapes(self.doc.project());
+        let vertices = shapes
             .iter()
-            .flat_map(|p| p.vertices.iter().map(|v| v.pos));
+            .flat_map(|s| s.piece.vertices.iter().map(|v| v.pos));
         first
             .into_iter()
             .chain(vertices)
@@ -431,16 +442,21 @@ impl PatternEditor {
     ) {
         if response.drag_started_by(PointerButton::Primary)
             && let Some(grab) = press
-            && let Some(hit) = self.hit(grab, tol)
-            && let Some(original) = self.doc.project().piece(hit.piece()).cloned()
         {
-            self.selection = hit.selection();
-            self.doc.begin_gesture();
-            self.canvas.drag = Some(Drag {
-                original,
-                hit,
-                grab,
-            });
+            let shapes = self.shapes();
+            if let Some(hit) = self.hit(&shapes, grab, tol)
+                && let Some(shape) = shapes.iter().find(|s| s.id == hit.piece())
+                && let Some(original) = self.doc.project().piece(shape.source).cloned()
+            {
+                self.selection = hit.selection();
+                self.doc.begin_gesture();
+                self.canvas.drag = Some(Drag {
+                    original,
+                    hit,
+                    grab,
+                    kind: shape.kind,
+                });
+            }
         }
         if response.dragged_by(PointerButton::Primary)
             && let (Some(drag), Some(now)) = (&self.canvas.drag, pointer)
@@ -459,45 +475,53 @@ impl PatternEditor {
         if response.clicked()
             && let Some(at) = pointer
         {
-            self.selection = self.hit(at, tol).map_or(Selection::None, Hit::selection);
+            self.selection = self
+                .hit(&self.shapes(), at, tol)
+                .map_or(Selection::None, Hit::selection);
         }
     }
 
-    /// What the edit tool picks at `w`: the selected piece's curve handles first, then points,
-    /// edges and piece insides, topmost piece first.
-    fn hit(&self, w: Point2, tol: f64) -> Option<Hit> {
-        let project = self.doc.project();
-        if let Some(piece) = self.selection.piece().and_then(|id| project.piece(id)) {
-            for (i, edge) in piece.edges.iter().enumerate() {
-                if let Edge::Curve { c1, c2 } = *edge {
-                    if c1.distance(w) <= tol {
-                        return Some(Hit::Handle(piece.id, i, HandleEnd::Start));
-                    }
-                    if c2.distance(w) <= tol {
-                        return Some(Hit::Handle(piece.id, i, HandleEnd::End));
-                    }
+    /// What the edit tool picks at `w`: the selected shape's curve handles first, then
+    /// points, edges and insides, topmost shape first. Points and edges of a fold's pale half
+    /// are not editable: they pick the piece.
+    fn hit(&self, shapes: &[geom::Shape], w: Point2, tol: f64) -> Option<Hit> {
+        if let Some(sel) = self.selection.piece()
+            && let Some(s) = shapes.iter().find(|s| s.id == sel)
+        {
+            for (k, edge) in s.piece.edges.iter().enumerate() {
+                let (Some(i), Edge::Curve { c1, c2 }) = (s.stored_edge(k), *edge) else {
+                    continue;
+                };
+                if c1.distance(w) <= tol {
+                    return Some(Hit::Handle(s.id, i, HandleEnd::Start));
+                }
+                if c2.distance(w) <= tol {
+                    return Some(Hit::Handle(s.id, i, HandleEnd::End));
                 }
             }
         }
-        let pieces = || project.pieces.iter().rev();
-        pieces()
-            .find_map(|p| {
-                p.vertices
-                    .iter()
-                    .position(|v| v.pos.distance(w) <= tol)
-                    .map(|i| Hit::Vertex(p.id, i))
-            })
-            .or_else(|| {
-                pieces().find_map(|p| {
-                    geom::nearest_edge(p, w)
-                        .filter(|e| e.2 <= tol)
-                        .map(|(i, _, _)| Hit::Edge(p.id, i))
+        let topmost = || shapes.iter().rev();
+        topmost()
+            .find_map(|s| {
+                (0..s.piece.len()).find_map(|k| {
+                    let i = s.stored_vertex(k)?;
+                    (s.piece.vertices[k].pos.distance(w) <= tol).then_some(Hit::Vertex(s.id, i))
                 })
             })
             .or_else(|| {
-                pieces()
-                    .find(|p| geom::contains(p, w))
-                    .map(|p| Hit::Inside(p.id))
+                topmost().find_map(|s| {
+                    geom::nearest_edge(&s.piece, w)
+                        .filter(|e| e.2 <= tol)
+                        .map(|(k, _, _)| match s.stored_edge(k) {
+                            Some(i) => Hit::Edge(s.id, i),
+                            None => Hit::Inside(s.id),
+                        })
+                })
+            })
+            .or_else(|| {
+                topmost()
+                    .find(|s| geom::contains(&s.piece, w))
+                    .map(|s| Hit::Inside(s.id))
             })
     }
 
@@ -512,8 +536,8 @@ impl PatternEditor {
             }
             Selection::Vertex(id, i) => {
                 let removed = self.doc.edit(|p| {
-                    p.piece_mut(id)
-                        .is_some_and(|piece| geom::remove_vertex(piece, i))
+                    p.owner_mut(id)
+                        .is_some_and(|(piece, _)| geom::remove_vertex(piece, i))
                 });
                 if self.note_if_refused() {
                     // The notice says why.
@@ -534,21 +558,21 @@ impl PatternEditor {
         pointer: Option<Point2>,
         tol: f64,
     ) {
-        let project = self.doc.project();
         self.canvas.preview = hover
-            .and_then(|w| nearest_edge(project, w, tol))
-            .and_then(|(id, i, t)| Some(geom::point_on_edge(project.piece(id)?, i, t)));
+            .and_then(|w| nearest_edge(self.doc.project(), w, tol))
+            .map(|hit| hit.4);
         if response.clicked()
             && let Some(at) = pointer
-            && let Some((id, i, t)) = nearest_edge(self.doc.project(), at, tol)
+            && let Some((shape, source, i, t, _)) = nearest_edge(self.doc.project(), at, tol)
         {
+            // A twin keeps its edges' direction, so `t` is the same on the stored piece.
             let split = self.doc.edit(|p| {
-                p.piece_mut(id)
+                p.piece_mut(source)
                     .and_then(|piece| geom::split_edge(piece, i, t))
             });
             if !self.note_if_refused() {
                 match split {
-                    Some(v) => self.selection = Selection::Vertex(id, v),
+                    Some(v) => self.selection = Selection::Vertex(shape, v),
                     None => self.notice = Some(tr!("notice-too-close")),
                 }
             }
@@ -571,19 +595,22 @@ fn valid_length(mm: f64) -> bool {
     mm.is_finite() && (geom::MIN_EDGE_MM..=geom::MAX_EDGE_MM).contains(&mm)
 }
 
-/// The edge nearest to `w` within `tol` mm over all pieces: (piece, edge, curve parameter).
+/// The editable outline edge nearest to `w` within `tol` mm, over all shapes:
+/// (shape, stored piece, stored edge, curve parameter, the point on the shape).
 pub(super) fn nearest_edge(
     project: &Project,
     w: Point2,
     tol: f64,
-) -> Option<(PieceId, usize, f64)> {
-    project
-        .pieces
+) -> Option<(PieceId, PieceId, usize, f64, Point2)> {
+    geom::shapes(project)
         .iter()
-        .filter_map(|p| geom::nearest_edge(p, w).map(|(i, t, d)| (p.id, i, t, d)))
-        .filter(|hit| hit.3 <= tol)
-        .min_by(|a, b| a.3.total_cmp(&b.3))
-        .map(|(id, i, t, _)| (id, i, t))
+        .filter_map(|s| {
+            let (k, t, d) = geom::nearest_edge(&s.piece, w)?;
+            let i = s.stored_edge(k)?;
+            (d <= tol).then(|| (s.id, s.source, i, t, geom::point_on_edge(&s.piece, k, t), d))
+        })
+        .min_by(|a, b| a.5.total_cmp(&b.5))
+        .map(|(id, source, i, t, at, _)| (id, source, i, t, at))
 }
 
 /// The closed piece the pen points make. A point with a handle is smooth: the edge leaving it

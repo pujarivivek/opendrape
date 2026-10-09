@@ -2,53 +2,13 @@
 //! Positions are given in pattern millimetres and turned into screen points with the
 //! editor's own view, so the tests don't depend on the window layout.
 
-use egui::{Event, Key, Modifiers, PointerButton, Pos2, accesskit::Role, vec2};
-use egui_kittest::{Harness, kittest::Queryable};
-use opendrape::editor::{PatternEditor, Selection, Tool};
+use egui::{Event, Key, Modifiers, Pos2, accesskit::Role, vec2};
+use egui_kittest::kittest::Queryable;
+use opendrape::editor::{Selection, Tool};
 use opendrape_core::{Edge, Piece, PieceId, Point2, VertexKind};
 
-type H = Harness<'static, PatternEditor>;
-
-fn harness() -> H {
-    let mut h = Harness::builder()
-        .with_size(vec2(1100.0, 750.0))
-        .build_ui_state(|ui, ed: &mut PatternEditor| ed.ui(ui), PatternEditor::new());
-    h.run();
-    h
-}
-
-/// Screen position of the pattern point (x, y) mm.
-fn at(h: &H, x: f64, y: f64) -> Pos2 {
-    let ed = h.state();
-    ed.view.to_screen(ed.canvas_rect, Point2::new(x, y))
-}
-
-fn button(h: &H, pos: Pos2, pressed: bool, modifiers: Modifiers) {
-    h.event(Event::PointerButton {
-        pos,
-        button: PointerButton::Primary,
-        pressed,
-        modifiers,
-    });
-}
-
-fn click(h: &mut H, x: f64, y: f64) {
-    let p = at(h, x, y);
-    h.hover_at(p);
-    button(h, p, true, Modifiers::NONE);
-    button(h, p, false, Modifiers::NONE);
-    h.run();
-}
-
-fn shift_click(h: &mut H, x: f64, y: f64) {
-    let p = at(h, x, y);
-    h.hover_at(p);
-    h.event(Event::ModifiersChanged(Modifiers::SHIFT));
-    button(h, p, true, Modifiers::SHIFT);
-    button(h, p, false, Modifiers::SHIFT);
-    h.event(Event::ModifiersChanged(Modifiers::NONE));
-    h.run();
-}
+mod common;
+use common::*;
 
 /// A click as a real mouse makes it: the press and the release arrive in different frames.
 fn slow_click(h: &mut H, pos: Pos2) {
@@ -58,61 +18,6 @@ fn slow_click(h: &mut H, pos: Pos2) {
     button(h, pos, false, Modifiers::NONE);
     h.run();
 }
-
-/// Press at `from`, move there in steps, release at `to` (all in mm).
-fn drag(h: &mut H, from: (f64, f64), to: (f64, f64)) {
-    let (a, b) = (at(h, from.0, from.1), at(h, to.0, to.1));
-    h.hover_at(a);
-    button(h, a, true, Modifiers::NONE);
-    for i in 1..=5 {
-        h.hover_at(a + (b - a) * (i as f32 / 5.0));
-    }
-    button(h, b, false, Modifiers::NONE);
-    h.run();
-}
-
-fn key(h: &mut H, k: Key) {
-    h.key_press(k);
-    h.run();
-}
-
-fn cmd(h: &mut H, k: Key) {
-    h.key_press_modifiers(Modifiers::COMMAND, k);
-    h.run();
-}
-
-/// Within 0.05 mm (clicks pass through f32 screen coordinates).
-fn close(a: Point2, b: Point2) {
-    assert!(a.distance(b) < 0.05, "{a:?} vs {b:?}");
-}
-
-/// Types `first` over the canvas, which opens the number box.
-fn type_number(h: &mut H, first: &str) {
-    h.event(Event::Text(first.into()));
-    h.run();
-}
-
-/// Adds a 300 × 400 mm rectangle with its lower-left corner at (100, 100), as if drawn.
-fn with_rectangle(h: &mut H) -> PieceId {
-    let id = h.state_mut().doc.edit(|p| {
-        p.add_piece(Piece::rectangle(
-            PieceId(0),
-            "Front",
-            Point2::new(100.0, 100.0),
-            300.0,
-            400.0,
-        ))
-    });
-    h.run();
-    id
-}
-
-const SQUARE: [(f64, f64); 4] = [
-    (100.0, 100.0),
-    (400.0, 100.0),
-    (400.0, 500.0),
-    (100.0, 500.0),
-];
 
 #[test]
 fn pen_draws_a_closed_piece() {
@@ -627,30 +532,6 @@ fn selection_survives_undo_of_its_piece() {
     h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
     h.run();
     assert_eq!(h.state().doc.project().pieces.len(), 1);
-}
-
-fn piece_of(h: &H, id: PieceId) -> Piece {
-    h.state().doc.project().piece(id).unwrap().clone()
-}
-
-fn field_text(h: &H, label: &str) -> String {
-    h.get_by_role_and_label(Role::TextInput, label)
-        .value()
-        .unwrap_or_default()
-}
-
-/// Clicks the property field `label`, replaces its text with `text` and presses Enter.
-fn type_into(h: &mut H, label: &str, text: &str) {
-    h.get_by_role_and_label(Role::TextInput, label).click();
-    h.run();
-    h.get_by_role_and_label(Role::TextInput, label)
-        .type_text(text);
-    h.run();
-    key(h, Key::Enter);
-}
-
-fn untouched_rectangle(id: PieceId) -> Piece {
-    Piece::rectangle(id, "Front", Point2::new(100.0, 100.0), 300.0, 400.0)
 }
 
 #[test]
