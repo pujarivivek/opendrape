@@ -61,8 +61,9 @@ impl Recovery {
     }
 
     /// The waiting copy and the file it came from, if there is a copy that opens. A copy that
-    /// doesn't open is deleted. A note that is empty, or doesn't hold a full path (a note cut
-    /// short, or edited by hand), counts as no file.
+    /// is damaged or can't be read is deleted; one made by a newer OpenDrape is kept for when
+    /// that is installed again, and not offered. A note that is empty, or doesn't hold a full
+    /// path (a note cut short, or edited by hand), counts as no file.
     pub fn take(&self) -> Option<(Project, Option<PathBuf>)> {
         let copy = self.copy().filter(|c| c.exists())?;
         match opendrape_io::load(&copy) {
@@ -73,6 +74,10 @@ impl Recovery {
                     .map(|note| PathBuf::from(note.trim()))
                     .filter(|path| path.is_absolute());
                 Some((project, from))
+            }
+            Err(e @ opendrape_io::OdpError::NewerVersion { .. }) => {
+                crate::startup_log::stage(format_args!("recovery: keeping {copy:?}: {e}"));
+                None
             }
             Err(e) => {
                 crate::startup_log::stage(format_args!("recovery: dropping {copy:?}: {e}"));
@@ -143,6 +148,28 @@ mod tests {
         let r = Recovery::new(Some(dir.path()));
         assert!(r.take().is_none());
         assert!(!dir.path().join("recovery.odp").exists());
+    }
+
+    #[test]
+    fn a_copy_from_a_newer_opendrape_is_kept_and_not_offered() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = Recovery::new(Some(dir.path()));
+        let mut newer = project();
+        newer.schema_version = opendrape_core::SCHEMA_VERSION + 1;
+        let (copy, note) = (
+            dir.path().join("recovery.odp"),
+            dir.path().join("recovery-origin.txt"),
+        );
+        std::fs::write(&copy, opendrape_io::to_bytes(&newer).unwrap()).unwrap();
+        std::fs::write(&note, skirt().to_str().unwrap()).unwrap();
+        for _ in 0..2 {
+            assert!(r.take().is_none(), "this version can't open it");
+            assert!(copy.exists() && note.exists(), "but it is not deleted");
+        }
+        // A damaged copy in its place is still dropped.
+        std::fs::write(&copy, b"not a zip").unwrap();
+        assert!(r.take().is_none());
+        assert!(!copy.exists() && !note.exists());
     }
 
     #[test]

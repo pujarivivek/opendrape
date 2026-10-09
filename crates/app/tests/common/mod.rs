@@ -62,6 +62,19 @@ pub fn drag(h: &mut H, from: (f64, f64), to: (f64, f64)) {
     h.run();
 }
 
+/// Press at the first of `path` (all in mm), move through the rest one at a time, and release
+/// at the last.
+pub fn drag_through(h: &mut H, path: &[(f64, f64)]) {
+    let points: Vec<Pos2> = path.iter().map(|&(x, y)| at(h, x, y)).collect();
+    h.hover_at(points[0]);
+    button(h, points[0], true, Modifiers::NONE);
+    for &p in &points[1..] {
+        h.hover_at(p);
+    }
+    button(h, *points.last().unwrap(), false, Modifiers::NONE);
+    h.run();
+}
+
 pub fn key(h: &mut H, k: Key) {
     h.key_press(k);
     h.run();

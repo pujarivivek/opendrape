@@ -206,6 +206,10 @@ impl PatternEditor {
             self.doc.edit(|p| {
                 if let Some(pc) = p.piece_mut(source) {
                     pc.edge_props[i].hem = hem;
+                    if hem {
+                        // A hem replaces the edge's own allowance: it gets the hem's 3 cm.
+                        pc.edge_props[i].allowance = None;
+                    }
                 }
             });
             self.note_if_refused();
@@ -315,7 +319,7 @@ impl PatternEditor {
             .show(ui, |ui| {
                 let typed = self.field(
                     ui,
-                    tr!("box-distance"),
+                    tr!("panel-notch-distance"),
                     &units.format_number(notch.distance),
                     units.suffix(),
                 );

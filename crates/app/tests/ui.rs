@@ -5,7 +5,10 @@ use egui_kittest::{
 use opendrape::editor::{Selection, Tool};
 use opendrape::gpu::{Decision, GpuChoice, GpuState, Reason, StateStore};
 use opendrape::{FileDialogs, OpenDrapeApp, Recovery, Shared, SharedState, Startup};
-use opendrape_core::{Piece, PieceId, Point2, Project};
+use opendrape_core::{
+    Edge, EdgeProps, InternalLine, LineKind, Notch, NotchStyle, Piece, PieceId, Point2, Project,
+    Vertex,
+};
 use std::{path::Path, rc::Rc};
 
 const SAVED_AUTO: Decision = Decision {
@@ -299,6 +302,156 @@ fn save_as_writes_a_project_file() {
         *h.state().editor().doc.project()
     );
     assert_eq!(h.state().window_title(), "skirt.odp — OpenDrape");
+}
+
+/// A bodice with an allowance of its own and per edge, a hem, notches of each style, an open
+/// marking line and a closed curved cut-out, paired with a twin that sits higher than it, and a
+/// sleeve cut on the fold.
+fn detailed_project() -> Project {
+    let at = Point2::new;
+    let mut project = Project::new();
+    let mut bodice = Piece::rectangle(PieceId(0), "Bodice", at(0.0, 0.0), 400.0, 600.0);
+    bodice.allowance = 12.0;
+    bodice.edge_props[0] = EdgeProps {
+        allowance: Some(5.5),
+        hem: false,
+    };
+    bodice.edge_props[1].hem = true;
+    bodice.edges[3] = Edge::Curve {
+        c1: at(-40.0, 450.0),
+        c2: at(-30.0, 150.0),
+    };
+    bodice.notches = vec![
+        Notch::new(0, 50.0),
+        Notch {
+            marks: 2,
+            style: NotchStyle::V,
+            ..Notch::new(0, 120.0)
+        },
+        Notch {
+            marks: 3,
+            ..Notch::new(1, 200.0)
+        },
+    ];
+    bodice.lines = vec![
+        InternalLine::open(&[at(60.0, 120.0), at(340.0, 120.0)]),
+        InternalLine {
+            vertices: vec![
+                Vertex::corner(at(150.0, 400.0)),
+                Vertex::corner(at(250.0, 400.0)),
+                Vertex::corner(at(200.0, 500.0)),
+            ],
+            edges: vec![
+                Edge::Curve {
+                    c1: at(180.0, 380.0),
+                    c2: at(220.0, 380.0),
+                },
+                Edge::Line,
+                Edge::Line,
+            ],
+            closed: true,
+            kind: LineKind::Cutout,
+        },
+    ];
+    let id = project.add_piece(bodice);
+    project.add_twin(id, "Bodice (mirror)".into(), at(905.0, 25.0));
+    let mut sleeve = Piece::rectangle(PieceId(0), "Sleeve", at(1500.0, 0.0), 200.0, 500.0);
+    sleeve.fold = Some(3);
+    project.add_piece(sleeve);
+    assert_eq!(project.check(), Ok(()));
+    project
+}
+
+#[test]
+fn a_detailed_project_saves_reopens_and_undoes_step_by_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("detailed.odp");
+    let mut h = harness_with(
+        dir.path(),
+        SharedState::default(),
+        FileDialogs::scripted(vec![Some(file.clone()), Some(file.clone())]),
+    );
+    h.run();
+    let saved = detailed_project();
+    h.state_mut().editor_mut().set_project(saved.clone(), None);
+    h.run();
+    file_menu(&mut h, "Save As…");
+    assert_eq!(opendrape_io::load(&file).unwrap(), saved);
+    assert!(!h.state().editor().doc.is_dirty());
+
+    // More work, then Open: the question about it, and then the file as it was saved.
+    h.state_mut().editor_mut().doc.edit(|p| {
+        p.piece_mut(PieceId(1)).unwrap().notches.clear();
+    });
+    h.run();
+    file_menu(&mut h, "Open…");
+    h.get_by_label("Don't save").click();
+    h.run();
+    assert_eq!(*h.state().editor().doc.project(), saved);
+    assert_eq!(h.state().window_title(), "detailed.odp — OpenDrape");
+    assert!(!h.state().editor().can_undo(), "a fresh history");
+
+    // Several steps of work on the reopened project, each its own undo step.
+    let mut stages = vec![saved.clone()];
+    let steps: [fn(&mut Project); 5] = [
+        |p| {
+            p.piece_mut(PieceId(1))
+                .unwrap()
+                .notches
+                .push(Notch::new(2, 77.0))
+        },
+        |p| {
+            let bodice = p.piece_mut(PieceId(1)).unwrap();
+            bodice.edge_props[2].allowance = Some(0.0);
+            bodice.allowance = 8.0;
+        },
+        |p| {
+            let bodice = p.piece_mut(PieceId(1)).unwrap();
+            bodice.lines.remove(0);
+            bodice.notches[1].marks = 3;
+        },
+        |p| p.piece_mut(PieceId(3)).unwrap().fold = None,
+        |p| {
+            p.piece_mut(PieceId(1))
+                .unwrap()
+                .twin
+                .as_mut()
+                .unwrap()
+                .offset
+                .y = 90.0
+        },
+    ];
+    for step in &steps {
+        h.state_mut().editor_mut().doc.edit(step);
+        h.run();
+        let now = h.state().editor().doc.project().clone();
+        assert_ne!(now, *stages.last().unwrap());
+        stages.push(now);
+    }
+    for expected in stages.iter().rev().skip(1) {
+        h.state_mut().editor_mut().undo();
+        h.run();
+        assert_eq!(h.state().editor().doc.project(), expected);
+    }
+    assert!(!h.state().editor().can_undo(), "back to the file as opened");
+    h.state_mut().editor_mut().undo(); // nothing more to undo
+    assert_eq!(*h.state().editor().doc.project(), saved);
+    // The keyboard does the same, and redo comes back.
+    h.state_mut().editor_mut().redo();
+    h.run();
+    assert_eq!(h.state().editor().doc.project(), &stages[1]);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(*h.state().editor().doc.project(), saved);
+    for _ in 1..stages.len() {
+        h.state_mut().editor_mut().redo();
+    }
+    h.run();
+    assert_eq!(h.state().editor().doc.project(), stages.last().unwrap());
+    // And the last version saves and opens again as it is.
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+    h.run();
+    assert_eq!(&opendrape_io::load(&file).unwrap(), stages.last().unwrap());
 }
 
 #[test]

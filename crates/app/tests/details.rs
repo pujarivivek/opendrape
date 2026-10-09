@@ -347,6 +347,42 @@ fn the_hem_checkbox_gives_three_centimetres() {
 }
 
 #[test]
+fn ticking_hem_replaces_the_edges_own_allowance() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    click(&mut h, 250.0, 100.0);
+    type_into(&mut h, "Seam allowance", "2");
+    assert_eq!(piece_of(&h, id).edge_props[0].allowance, Some(20.0));
+    h.get_by_label("Hem").click();
+    h.run();
+    let edge = piece_of(&h, id).edge_props[0];
+    assert!(edge.hem);
+    assert_eq!(
+        edge.allowance, None,
+        "the hem's 3 cm, not the 2 cm typed before"
+    );
+    assert_eq!(field_text(&h, "Seam allowance"), "3.0");
+    assert!(
+        h.query_by_label("Same as piece").is_none(),
+        "no allowance of its own left to reset"
+    );
+    // One undo brings the 2 cm back, with the hem off.
+    cmd(&mut h, Key::Z);
+    let edge = piece_of(&h, id).edge_props[0];
+    assert!(!edge.hem);
+    assert_eq!(edge.allowance, Some(20.0));
+    // Unticking a hem leaves the edge with the piece's allowance.
+    h.get_by_label("Hem").click();
+    h.run();
+    h.get_by_label("Hem").click();
+    h.run();
+    let edge = piece_of(&h, id).edge_props[0];
+    assert!(!edge.hem);
+    assert_eq!(edge.allowance, None);
+    assert_eq!(field_text(&h, "Seam allowance"), "1.0");
+}
+
+#[test]
 fn set_a_fold_then_unfold_or_remove_it() {
     let mut h = harness();
     let id = with_rectangle(&mut h); // (100,100)-(400,500)
@@ -398,12 +434,25 @@ fn a_fold_that_would_cross_the_piece_is_refused() {
     h.get_by_label("Set as fold line").click();
     h.run();
     assert_eq!(piece_of(&h, id).fold, None);
-    assert!(
-        h.state()
-            .notice
-            .as_deref()
-            .is_some_and(|n| n.contains("one side"))
-    );
+    assert!(notice_is(&h, FOLD_REFUSED), "{:?}", h.state().notice);
+}
+
+const FOLD_REFUSED: &str = "The fold line must be a straight edge with no notches on it, and the whole piece (with its lines) on one side of it.";
+
+#[test]
+fn a_fold_on_an_edge_with_a_notch_is_refused_with_the_same_message() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    h.state_mut()
+        .doc
+        .edit(|p| p.piece_mut(id).unwrap().notches.push(Notch::new(3, 100.0)));
+    h.run();
+    click(&mut h, 100.0, 200.0); // the left edge, well away from the notch's mark at y = 400
+    assert_eq!(h.state().selection, Selection::Edge(id, 3));
+    h.get_by_label("Set as fold line").click();
+    h.run();
+    assert_eq!(piece_of(&h, id).fold, None);
+    assert!(notice_is(&h, FOLD_REFUSED), "{:?}", h.state().notice);
 }
 
 #[test]
@@ -485,10 +534,9 @@ fn a_twin_edge_has_the_pieces_sewing_controls_but_cannot_be_folded() {
     h.get_by_label("Hem").click();
     h.run();
     assert!(piece_of(&h, id).edge_props[0].hem);
-    h.get_by_label("Same as piece").click();
-    h.run();
+    // The hem replaced the 2 cm the edge had: it has the hem's 3 cm.
     assert_eq!(piece_of(&h, id).edge_props[0].allowance, None);
-    assert_eq!(field_text(&h, "Seam allowance"), "3.0"); // the hem's
+    assert_eq!(field_text(&h, "Seam allowance"), "3.0");
 }
 
 #[test]
@@ -611,6 +659,38 @@ fn a_typed_notch_distance_counts_from_the_nearer_end() {
 }
 
 #[test]
+fn a_notch_box_whose_edge_has_gone_closes_without_adding_anything() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    key(&mut h, Key::N);
+    let p = at(&h, 100.0, 300.0); // the left edge, edge 3
+    h.hover_at(p);
+    h.run();
+    type_number(&mut h, "5");
+    assert!(h.state().length_box_open());
+    // The piece loses a point, so it has no edge 3 any more, while the box is open.
+    h.state_mut().doc.edit(|pr| {
+        assert!(geom::remove_vertex(pr.piece_mut(id).unwrap(), 3));
+    });
+    assert_eq!(piece_of(&h, id).len(), 3);
+    key(&mut h, Key::Enter);
+    assert!(!h.state().length_box_open());
+    assert!(piece_of(&h, id).notches.is_empty());
+    // And the same when the whole piece has gone.
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    key(&mut h, Key::N);
+    let p = at(&h, 100.0, 300.0);
+    h.hover_at(p);
+    h.run();
+    type_number(&mut h, "5");
+    h.state_mut().doc.edit(|pr| pr.remove_piece(id));
+    key(&mut h, Key::Enter);
+    assert!(!h.state().length_box_open());
+    assert!(h.state().doc.project().pieces.is_empty());
+}
+
+#[test]
 fn a_notch_distance_past_the_edge_is_refused() {
     let mut h = harness();
     let id = with_rectangle(&mut h);
@@ -641,7 +721,8 @@ fn the_notch_panel_changes_marks_style_and_distance() {
     h.run();
     h.get_by_label("V").click();
     h.run();
-    type_into(&mut h, "Distance", "10");
+    assert_eq!(field_text(&h, "Distance from start"), "15.0");
+    type_into(&mut h, "Distance from start", "10");
     assert_eq!(
         piece_of(&h, id).notches,
         vec![Notch {
@@ -1162,10 +1243,12 @@ fn the_edit_tool_moves_lines_and_their_points_but_keeps_them_inside() {
         piece_of(&h, id).lines[0].vertices[0].pos,
         Point2::new(160.0, 260.0),
     );
-    drag(&mut h, (160.0, 260.0), (700.0, 260.0)); // out of the piece: not applied
+    // Out of the piece in 108 mm steps: the point stays where it last was inside (376), short
+    // of the right edge (400).
+    drag(&mut h, (160.0, 260.0), (700.0, 260.0));
     close(
         piece_of(&h, id).lines[0].vertices[0].pos,
-        Point2::new(160.0, 260.0),
+        Point2::new(376.0, 260.0),
     );
 }
 
@@ -1218,10 +1301,16 @@ fn a_line_dragged_out_of_its_piece_is_held_back_and_says_why() {
         InternalLine::open(&[Point2::new(150.0, 200.0), Point2::new(300.0, 200.0)]),
     );
     let before = piece_of(&h, id);
-    drag(&mut h, (225.0, 200.0), (225.0, 600.0)); // the whole line, up past the top edge
-    assert_eq!(piece_of(&h, id), before);
+    // The whole line, up past the top edge (y = 500) in steps of 80 mm: it stops at the last
+    // one inside, 240 mm up.
+    drag(&mut h, (225.0, 200.0), (225.0, 600.0));
+    let line = piece_of(&h, id).lines.remove(0);
+    close(line.vertices[0].pos, Point2::new(150.0, 440.0));
+    close(line.vertices[1].pos, Point2::new(300.0, 440.0));
     assert!(notice_is(&h, OUTSIDE), "{:?}", h.state().notice);
-    cmd(&mut h, Key::Z); // the held-back drag left no step: this undoes the line itself
+    cmd(&mut h, Key::Z); // the drag is one step: this puts the line back
+    assert_eq!(piece_of(&h, id), before);
+    cmd(&mut h, Key::Z); // and this undoes the line itself
     assert!(piece_of(&h, id).lines.is_empty());
 }
 
@@ -1337,10 +1426,12 @@ fn dragging_a_line_on_a_twin_moves_the_stored_line_the_mirrored_way() {
     let line = piece_of(&h, id).lines.remove(0);
     close(line.vertices[0].pos, Point2::new(320.0, 170.0)); // stored: left 10, down 20
     close(line.vertices[1].pos, Point2::new(140.0, 200.0));
-    // Dragged out past the twin's right edge (x = 750), which is the stored piece's left edge.
+    // Dragged out past the twin's right edge (x = 750), which is the stored piece's left edge,
+    // in steps of 54 mm: it stops at the last one inside, 216 mm to the right (the stored line
+    // 216 to the left).
     drag(&mut h, (530.0, 210.0), (800.0, 210.0));
     let held = piece_of(&h, id).lines.remove(0);
-    close(held.vertices[0].pos, Point2::new(320.0, 170.0));
+    close(held.vertices[0].pos, Point2::new(104.0, 170.0));
     assert!(notice_is(&h, OUTSIDE));
     assert_eq!(
         piece_of(&h, id).twin.map(|t| t.offset),
@@ -1570,19 +1661,116 @@ fn a_handle_dragged_so_the_curve_leaves_the_piece_is_held_back() {
     let mut h = harness();
     let id = with_rectangle(&mut h); // left edge x = 100
     with_line(&mut h, id, curved_line());
-    let before = piece_of(&h, id);
     h.state_mut().selection = Selection::Line(id, 0);
     view_at(&mut h, 300.0, 300.0, 0.5);
     h.run();
-    // The first handle goes 600 mm left of the piece: the curve leaves it by the left edge.
-    drag(&mut h, (200.0, 300.0), (-400.0, 300.0));
-    assert_eq!(piece_of(&h, id), before);
+    // The first handle goes 600 mm left of the piece: the curve leaves it by the left edge, so
+    // it stays at the one place on the way that is inside.
+    drag_through(
+        &mut h,
+        &[
+            (200.0, 300.0),
+            (150.0, 300.0),
+            (100.0, 300.0),
+            (-400.0, 300.0),
+        ],
+    );
     assert!(notice_is(&h, OUTSIDE), "{:?}", h.state().notice);
+    let (c1, c2) = line_handles(&h, id);
+    close(c1, Point2::new(100.0, 300.0));
+    close(c2, Point2::new(300.0, 300.0));
+    // A handle that goes nowhere inside at all leaves the line as it was.
+    drag_through(&mut h, &[(100.0, 300.0), (-400.0, 300.0)]);
+    let (c1, _) = line_handles(&h, id);
+    close(c1, Point2::new(100.0, 300.0));
     // Within the piece it moves.
-    drag(&mut h, (200.0, 300.0), (200.0, 350.0));
+    drag(&mut h, (100.0, 300.0), (200.0, 350.0));
     let (c1, c2) = line_handles(&h, id);
     close(c1, Point2::new(200.0, 350.0));
     close(c2, Point2::new(300.0, 300.0));
+}
+
+/// A short open line across the middle of the `with_rectangle` piece (100..400 by 100..500).
+fn short_line() -> InternalLine {
+    InternalLine::open(&[Point2::new(150.0, 200.0), Point2::new(250.0, 200.0)])
+}
+
+#[test]
+fn a_line_dragged_out_of_its_piece_stays_where_it_last_was_inside() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    with_line(&mut h, id, short_line());
+    let before = piece_of(&h, id);
+    // Left in steps of 20, 20, 9 mm (the line's left end at x = 101, inside), and then 21 and
+    // 30 mm more, over the piece's left edge (x = 100).
+    drag_through(
+        &mut h,
+        &[
+            (200.0, 200.0),
+            (180.0, 200.0),
+            (160.0, 200.0),
+            (151.0, 200.0),
+            (130.0, 200.0),
+            (100.0, 200.0),
+        ],
+    );
+    let line = piece_of(&h, id).lines.remove(0);
+    close(line.vertices[0].pos, Point2::new(101.0, 200.0));
+    close(line.vertices[1].pos, Point2::new(201.0, 200.0));
+    assert!(notice_is(&h, OUTSIDE));
+    // The whole drag is one undo step.
+    cmd(&mut h, Key::Z);
+    assert_eq!(piece_of(&h, id), before);
+}
+
+#[test]
+fn a_line_point_dragged_out_of_its_piece_stays_where_it_last_was_inside() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    with_line(&mut h, id, short_line());
+    drag_through(
+        &mut h,
+        &[
+            (150.0, 200.0),
+            (140.0, 200.0),
+            (120.0, 200.0),
+            (105.0, 200.0),
+            (90.0, 200.0),
+            (60.0, 200.0),
+        ],
+    );
+    let line = piece_of(&h, id).lines.remove(0);
+    close(line.vertices[0].pos, Point2::new(105.0, 200.0));
+    close(line.vertices[1].pos, Point2::new(250.0, 200.0));
+    assert!(notice_is(&h, OUTSIDE));
+}
+
+#[test]
+fn a_line_handle_dragged_out_of_its_piece_stays_where_it_last_was_inside() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    with_line(&mut h, id, curved_line());
+    h.state_mut().selection = Selection::Line(id, 0);
+    view_at(&mut h, 200.0, 300.0, 0.6);
+    h.run();
+    // The handle goes left along y = 300: the curve is inside the piece until the handle is
+    // about 35 mm left of the origin (x = 0 is fine, x = -50 is not).
+    drag_through(
+        &mut h,
+        &[
+            (200.0, 300.0),
+            (150.0, 300.0),
+            (100.0, 300.0),
+            (50.0, 300.0),
+            (0.0, 300.0),
+            (-50.0, 300.0),
+            (-100.0, 300.0),
+        ],
+    );
+    let (c1, c2) = line_handles(&h, id);
+    close(c1, Point2::new(0.0, 300.0));
+    close(c2, Point2::new(300.0, 300.0));
+    assert!(notice_is(&h, OUTSIDE));
 }
 
 #[test]
@@ -1688,11 +1876,12 @@ fn dragging_a_line_point_across_a_notch_in_the_piece_is_refused() {
         id,
         InternalLine::open(&[Point2::new(150.0, 450.0), Point2::new(150.0, 150.0)]),
     );
-    // The new end (350,150) is inside the foot, but the line to it crosses the notch.
+    // The new end (350,150) is inside the foot, but the line to it crosses the notch. In steps
+    // of 40 mm the line holds as far as (190,150), still inside the arm, and no further.
     drag(&mut h, (150.0, 150.0), (350.0, 150.0));
     close(
         piece_of(&h, id).lines[0].vertices[1].pos,
-        Point2::new(150.0, 150.0),
+        Point2::new(190.0, 150.0),
     );
     assert!(notice_is(&h, OUTSIDE));
 }
@@ -1894,10 +2083,12 @@ fn a_line_that_sticks_out_can_be_brought_back_in_one_point_at_a_time() {
         Point2::new(150.0, 200.0),
     );
     assert!(h.state().notice.is_none(), "{:?}", h.state().notice);
-    drag(&mut h, (150.0, 200.0), (50.0, 200.0)); // and from here on it is held
+    // And from here on it is held: out past the left edge (x = 100) in steps of 20 mm, it
+    // stops at the last one inside.
+    drag(&mut h, (150.0, 200.0), (50.0, 200.0));
     close(
         piece_of(&h, id).lines[0].vertices[0].pos,
-        Point2::new(150.0, 200.0),
+        Point2::new(110.0, 200.0),
     );
     assert!(notice_is(&h, OUTSIDE));
 }

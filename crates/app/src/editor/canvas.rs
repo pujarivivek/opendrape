@@ -120,12 +120,16 @@ pub(super) struct Drag {
     /// already sticks out (the outline was reshaped round it) may be moved freely, so it can
     /// be brought back in a point at a time.
     line_was_inside: bool,
+    /// The stored piece as the last frame the pointer's movement was accepted left it. A move
+    /// that takes the line out of its piece is held back to this, not to where the drag began,
+    /// so the line stays where it last was inside.
+    last_accepted: Piece,
 }
 
 impl Drag {
     /// The stored piece after the pointer moved `d` (in the dragged shape's coordinates), and
     /// whether the move was held back because it would take an internal line out of its piece:
-    /// the piece is then as it was when the drag began.
+    /// the piece is then as the last accepted move left it.
     fn moved(&self, d: Point2) -> (Piece, bool) {
         let o = &self.original;
         let mut p = o.clone();
@@ -160,7 +164,7 @@ impl Drag {
                 let to = o.lines[l].vertices[k].pos + ds;
                 move_line_vertex(&mut p.lines[l], k, to);
                 if self.line_was_inside && !line_inside(&p, l) {
-                    return (o.clone(), true);
+                    return (self.last_accepted.clone(), true);
                 }
             }
             Hit::LineHandle(_, l, e, end) => {
@@ -176,14 +180,14 @@ impl Drag {
                         }
                     }
                     if self.line_was_inside && !line_inside(&p, l) {
-                        return (o.clone(), true);
+                        return (self.last_accepted.clone(), true);
                     }
                 }
             }
             Hit::Line(_, l) => {
                 p.lines[l].translate(ds);
                 if self.line_was_inside && !line_inside(&p, l) {
-                    return (o.clone(), true);
+                    return (self.last_accepted.clone(), true);
                 }
             }
         }
@@ -524,11 +528,18 @@ impl PatternEditor {
                 edge,
                 from_end,
             } => {
-                let len = self
+                // The box remembers the edge it was opened on. If the piece has changed under it
+                // (a point was deleted from the properties panel, say) that edge may be gone:
+                // the box closes with nothing added.
+                let Some(len) = self
                     .doc
                     .project()
                     .piece(source)
-                    .map_or(0.0, |p| geom::edge_length(p, edge));
+                    .filter(|p| edge < p.len())
+                    .map(|p| geom::edge_length(p, edge))
+                else {
+                    return;
+                };
                 let d = Units::parse(&number_box.first)
                     .map(|v| units.to_mm(v))
                     .filter(|d| d.is_finite() && (0.0..=len).contains(d));
@@ -567,6 +578,7 @@ impl PatternEditor {
                     _ => true,
                 };
                 self.canvas.drag = Some(Drag {
+                    last_accepted: original.clone(),
                     original,
                     hit,
                     grab,
@@ -581,11 +593,18 @@ impl PatternEditor {
         {
             let (moved, held_back) = drag.moved(now - drag.grab);
             let id = moved.id;
+            let accepted = moved.clone();
             self.doc.gesture_edit(|p| {
                 if let Some(piece) = p.piece_mut(id) {
                     *piece = moved;
                 }
             });
+            if !held_back
+                && !self.doc.last_change_refused()
+                && let Some(drag) = &mut self.canvas.drag
+            {
+                drag.last_accepted = accepted;
+            }
             // The move was refused (a point dragged over a fold line, or too large a piece) or
             // held back (a line dragged out of its piece): say so, as a typed change would,
             // but only the first time in this drag.
