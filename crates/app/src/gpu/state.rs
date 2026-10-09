@@ -119,8 +119,6 @@ pub enum LockOutcome {
     Unavailable,
 }
 
-/// Reads and writes `gpu.json`. I/O failures are ignored on purpose: on a locked-down
-/// lab PC the app must still start, it just cannot remember anything.
 /// The per-machine config folder (`%LOCALAPPDATA%` on Windows, not the roaming profile:
 /// a fallback forced by one lab PC's driver must not follow the student to the next PC).
 /// The graphics settings and the recovery copy of unsaved work both live here.
@@ -129,6 +127,8 @@ pub(crate) fn config_dir() -> Option<PathBuf> {
     dirs.map(|d| d.config_local_dir().to_path_buf())
 }
 
+/// Reads and writes `gpu.json`. I/O failures are ignored on purpose: on a locked-down
+/// lab PC the app must still start, it just cannot remember anything.
 #[derive(Clone, Debug)]
 pub struct StateStore {
     path: Option<PathBuf>,
@@ -141,7 +141,7 @@ impl StateStore {
         }
     }
 
-    /// In [`config_dir`].
+    /// In the per-machine config folder (`config_dir`).
     pub fn default_location() -> Self {
         Self::new(config_dir().as_deref())
     }
