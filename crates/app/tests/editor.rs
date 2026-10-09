@@ -452,6 +452,10 @@ fn a_flat_or_zero_size_rectangle_is_refused() {
     h.get_by_role_and_label(Role::TextInput, "Width")
         .type_text("0");
     h.run();
+    key(&mut h, Key::Tab);
+    h.get_by_role_and_label(Role::TextInput, "Height")
+        .type_text("60");
+    h.run();
     key(&mut h, Key::Enter);
     assert!(h.state().doc.project().pieces.is_empty());
     assert!(h.state().notice.is_some());
