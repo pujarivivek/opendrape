@@ -1,0 +1,19 @@
+[package]
+name = "opendrape"
+description = "Free, open-source 3D garment design for students"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+eframe.workspace = true
+egui.workspace = true
+
+[dev-dependencies]
+egui_kittest.workspace = true
+
+[lints]
+workspace = true
