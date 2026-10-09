@@ -871,3 +871,119 @@ fn escape_in_a_field_keeps_the_selection() {
     assert_eq!(piece_of(&h, id), untouched_rectangle(id));
     assert_eq!(field_text(&h, "Length"), "30.0");
 }
+
+/// A piece with the most points a piece may have, as a ring round (400, 300) mm.
+fn full_ring(h: &mut H) -> PieceId {
+    let n = opendrape_core::MAX_VERTICES_PER_PIECE;
+    let corners: Vec<Point2> = (0..n)
+        .map(|k| {
+            let a = k as f64 / n as f64 * std::f64::consts::TAU;
+            Point2::new(400.0 + 250.0 * a.cos(), 300.0 + 250.0 * a.sin())
+        })
+        .collect();
+    let id = h
+        .state_mut()
+        .doc
+        .edit(|p| p.add_piece(Piece::polygon(PieceId(0), "Ring", &corners)));
+    h.run();
+    id
+}
+
+/// The most pieces a project may hold, all far off to the right of where the tests click.
+fn fill_with_pieces(h: &mut H) {
+    h.state_mut().doc.edit(|p| {
+        for i in 0..opendrape_core::MAX_PIECES {
+            p.add_piece(Piece::rectangle(
+                PieceId(0),
+                format!("P{i}"),
+                Point2::new(5000.0 + 30.0 * i as f64, 5000.0),
+                20.0,
+                20.0,
+            ));
+        }
+    });
+    h.run();
+    assert!(!h.state().doc.last_change_refused());
+}
+
+fn refused_notice(h: &H) -> bool {
+    h.state()
+        .notice
+        .as_deref()
+        .is_some_and(|n| n.contains("can't be made"))
+}
+
+#[test]
+fn adding_a_point_to_a_full_piece_is_refused_with_a_notice() {
+    let mut h = harness();
+    let id = full_ring(&mut h);
+    let before = piece_of(&h, id);
+    assert_eq!(before.len(), opendrape_core::MAX_VERTICES_PER_PIECE);
+    key(&mut h, Key::X);
+    let mid = before.vertices[0].pos.lerp(before.vertices[1].pos, 0.5);
+    click(&mut h, mid.x, mid.y);
+    assert_eq!(piece_of(&h, id), before, "the piece is unchanged");
+    assert!(refused_notice(&h), "{:?}", h.state().notice);
+    assert_eq!(h.state().selection, Selection::None);
+}
+
+#[test]
+fn a_refused_piece_keeps_the_pen_draft() {
+    let mut h = harness();
+    fill_with_pieces(&mut h);
+    key(&mut h, Key::H);
+    for (x, y) in &SQUARE[..3] {
+        click(&mut h, *x, *y);
+    }
+    key(&mut h, Key::Enter);
+    assert_eq!(h.state().doc.project().pieces.len(), 500, "no 501st piece");
+    assert_eq!(h.state().pen().len(), 3, "the student's points are kept");
+    assert!(refused_notice(&h), "{:?}", h.state().notice);
+}
+
+#[test]
+fn a_refused_typed_closing_edge_says_so_and_keeps_the_pen_draft() {
+    let mut h = harness();
+    fill_with_pieces(&mut h);
+    key(&mut h, Key::H);
+    for (x, y) in [
+        (100.0, 100.0),
+        (500.0, 100.0),
+        (500.0, 300.0),
+        (100.0, 300.0),
+    ] {
+        click(&mut h, x, y);
+    }
+    type_segment(&mut h, "20", "270"); // back onto the first point: would close the piece
+    assert_eq!(h.state().pen().len(), 4);
+    assert!(
+        refused_notice(&h),
+        "not 'too close': {:?}",
+        h.state().notice
+    );
+}
+
+#[test]
+fn a_refused_rectangle_says_so() {
+    let mut h = harness();
+    fill_with_pieces(&mut h);
+    key(&mut h, Key::S);
+    drag(&mut h, (100.0, 100.0), (400.0, 500.0));
+    assert_eq!(h.state().doc.project().pieces.len(), 500);
+    assert!(refused_notice(&h), "{:?}", h.state().notice);
+    assert_eq!(h.state().selection, Selection::None);
+}
+
+#[test]
+fn a_refused_name_says_so() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    click(&mut h, 250.0, 300.0);
+    type_into(
+        &mut h,
+        "Name",
+        &"a".repeat(opendrape_core::MAX_NAME_CHARS + 1),
+    );
+    assert_eq!(piece_of(&h, id).name, "Front");
+    assert!(refused_notice(&h), "{:?}", h.state().notice);
+}

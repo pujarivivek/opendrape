@@ -36,6 +36,20 @@ pub(super) struct CanvasState {
     pub drag: Option<Drag>,
 }
 
+/// What placing a pen point did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Placed {
+    /// A point was added to the draft.
+    Added,
+    /// The point closed the draft into a new piece.
+    Finished,
+    /// The point should have closed the draft, but the piece was refused (a notice says why).
+    /// The draft is kept.
+    Kept,
+    /// The spot is already a point of the draft: nothing was added.
+    Duplicate,
+}
+
 /// Something under the pointer, in the order the edit tool prefers them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Hit {
@@ -184,7 +198,7 @@ impl PatternEditor {
             && let Some(at) = press
         {
             let at = self.snap(at, tol, shift);
-            self.canvas.pen_dragging = self.pen_place(at, tol);
+            self.canvas.pen_dragging = self.pen_place(at, tol) == Placed::Added;
         }
         if self.canvas.pen_dragging
             && response.dragged_by(PointerButton::Primary)
@@ -205,38 +219,46 @@ impl PatternEditor {
     }
 
     /// Adds a pen point at `at`, or finishes the piece when `at` is on its first or last point.
-    /// Returns whether a point was added.
-    fn pen_place(&mut self, at: Point2, tol: f64) -> bool {
+    fn pen_place(&mut self, at: Point2, tol: f64) -> Placed {
         let pen = &self.canvas.pen;
         let on_first = pen.first().is_some_and(|p| p.pos.distance(at) <= tol);
         let on_last = pen.last().is_some_and(|p| p.pos.distance(at) <= tol);
         if pen.len() >= 3 && (on_first || on_last) {
-            self.finish_pen();
-            return false;
+            return if self.finish_pen() {
+                Placed::Finished
+            } else {
+                Placed::Kept
+            };
         }
         if pen.iter().any(|p| p.pos.distance(at) <= tol) {
-            return false; // the same spot again: nothing to add
+            return Placed::Duplicate;
         }
         self.canvas.pen.push(PenPoint {
             pos: at,
             handle: None,
         });
-        true
+        Placed::Added
     }
 
-    fn finish_pen(&mut self) {
+    /// Turns the pen points into a piece. Returns false, with a notice and the points kept,
+    /// when that isn't possible (fewer than 3 points, or the pattern would become too large).
+    fn finish_pen(&mut self) -> bool {
         if self.canvas.pen.len() < 3 {
             self.notice = Some(tr!("notice-need-three-points"));
-            return;
+            return false;
         }
         let mut piece = pen_piece(&self.canvas.pen);
-        self.canvas.pen.clear();
-        self.canvas.length_box = None;
         let id = self.doc.edit(|p| {
             piece.name = p.next_piece_name(&tr!("piece-default-name"));
             p.add_piece(piece)
         });
+        if self.note_if_refused() {
+            return false; // keep the draft: the student's points are not lost
+        }
+        self.canvas.pen.clear();
+        self.canvas.length_box = None;
         self.selection = Selection::Piece(id);
+        true
     }
 
     fn rectangle_tool(
@@ -384,9 +406,8 @@ impl PatternEditor {
                         let r = degrees.to_radians();
                         let pos = last.pos + Point2::new(r.cos(), r.sin()) * mm;
                         // Accepted like a click: closing on the first or last point finishes
-                        // the piece, and landing on any other pen point is refused. A finished
-                        // piece empties the pen, so a non-empty pen that did not grow was refused.
-                        if !self.pen_place(pos, TYPED_SNAP_MM) && !self.canvas.pen.is_empty() {
+                        // the piece, and landing on any other pen point is refused.
+                        if self.pen_place(pos, TYPED_SNAP_MM) == Placed::Duplicate {
                             self.notice = Some(tr!("notice-too-close"));
                         }
                     }
@@ -485,13 +506,17 @@ impl PatternEditor {
         match self.selection {
             Selection::Piece(id) => {
                 self.doc.edit(|p| p.remove_piece(id));
-                self.selection = Selection::None;
+                if !self.note_if_refused() {
+                    self.selection = Selection::None;
+                }
             }
             Selection::Vertex(id, i) => {
-                if self
+                let removed = self
                     .doc
-                    .edit(|p| p.piece_mut(id).is_some_and(|piece| piece.remove_vertex(i)))
-                {
+                    .edit(|p| p.piece_mut(id).is_some_and(|piece| piece.remove_vertex(i)));
+                if self.note_if_refused() {
+                    // The notice says why.
+                } else if removed {
                     self.selection = Selection::Piece(id);
                 } else {
                     self.notice = Some(tr!("notice-min-points"));
@@ -516,12 +541,15 @@ impl PatternEditor {
             && let Some(at) = pointer
             && let Some((id, i, t)) = nearest_edge(self.doc.project(), at, tol)
         {
-            match self.doc.edit(|p| {
+            let split = self.doc.edit(|p| {
                 p.piece_mut(id)
                     .and_then(|piece| geom::split_edge(piece, i, t))
-            }) {
-                Some(v) => self.selection = Selection::Vertex(id, v),
-                None => self.notice = Some(tr!("notice-too-close")),
+            });
+            if !self.note_if_refused() {
+                match split {
+                    Some(v) => self.selection = Selection::Vertex(id, v),
+                    None => self.notice = Some(tr!("notice-too-close")),
+                }
             }
         }
     }
@@ -531,7 +559,9 @@ impl PatternEditor {
             let name = p.next_piece_name(&tr!("piece-default-name"));
             p.add_piece(Piece::rectangle(PieceId(0), name, min, width, height))
         });
-        self.selection = Selection::Piece(id);
+        if !self.note_if_refused() {
+            self.selection = Selection::Piece(id);
+        }
     }
 }
 

@@ -16,6 +16,8 @@ pub struct Document {
     gesture: Option<Project>,
     /// The project as last saved or opened, to tell whether there are unsaved changes.
     saved: Project,
+    /// The last [`Self::edit`] or [`Self::gesture_edit`] was refused.
+    refused: bool,
     /// Where the project was last saved or opened from.
     pub path: Option<PathBuf>,
 }
@@ -34,6 +36,7 @@ impl Document {
             undo: Vec::new(),
             redo: Vec::new(),
             gesture: None,
+            refused: false,
             path,
         }
     }
@@ -42,18 +45,26 @@ impl Document {
     }
     /// Changes the project as one undo step. A change that leaves the project as it was adds
     /// no step. A change that leaves the project invalid (see [`Project::check`]) is refused:
-    /// the project is left as it was and no step is added.
+    /// the project is left as it was and no step is added. Ask [`Self::last_change_refused`]
+    /// to tell a refusal from a change that simply did nothing: the closure's result is
+    /// returned either way.
     pub fn edit<R>(&mut self, f: impl FnOnce(&mut Project) -> R) -> R {
         self.end_gesture();
         let before = self.project.clone();
         let result = f(&mut self.project);
-        if self.project.check().is_err() {
+        self.refused = self.project.check().is_err();
+        if self.refused {
             // Never keep a project that could not be saved and opened again.
             self.project = before;
         } else if self.project != before {
             self.push_undo(before);
         }
         result
+    }
+    /// The last [`Self::edit`] or [`Self::gesture_edit`] was refused because it would have left
+    /// the project invalid (too many points, say), and so was undone at once.
+    pub fn last_change_refused(&self) -> bool {
+        self.refused
     }
     /// Starts a drag: everything changed with [`Self::gesture_edit`] until [`Self::end_gesture`]
     /// is one undo step.
@@ -68,7 +79,8 @@ impl Document {
         self.begin_gesture();
         let before = self.project.clone();
         let result = f(&mut self.project);
-        if self.project.check().is_err() {
+        self.refused = self.project.check().is_err();
+        if self.refused {
             self.project = before;
         }
         result
@@ -221,6 +233,43 @@ mod tests {
         assert_eq!(doc.path, Some(PathBuf::from("skirt.odp")));
         doc.undo();
         assert!(doc.is_dirty());
+    }
+
+    #[test]
+    fn last_change_refused_tells_a_refusal_from_a_no_op() {
+        let mut doc = Document::default();
+        assert!(!doc.last_change_refused());
+        let id = doc.edit(|p| p.add_piece(rect()));
+        assert!(!doc.last_change_refused());
+        doc.edit(|p| p.remove_piece(PieceId(99)));
+        assert!(!doc.last_change_refused(), "a change that did nothing");
+        doc.edit(|p| p.piece_mut(id).unwrap().vertices.truncate(2));
+        assert!(doc.last_change_refused());
+        doc.edit(|p| p.piece_mut(id).unwrap().name = "Back".into());
+        assert!(!doc.last_change_refused(), "the next change starts afresh");
+
+        doc.begin_gesture();
+        doc.gesture_edit(|p| p.piece_mut(id).unwrap().vertices.truncate(2));
+        assert!(doc.last_change_refused());
+        doc.gesture_edit(|p| {
+            p.piece_mut(id)
+                .unwrap()
+                .move_vertex(0, Point2::new(1.0, 1.0))
+        });
+        assert!(!doc.last_change_refused());
+        doc.end_gesture();
+    }
+
+    #[test]
+    fn the_501st_piece_is_refused() {
+        let mut doc = Document::default();
+        for _ in 0..opendrape_core::MAX_PIECES {
+            doc.edit(|p| p.add_piece(rect()));
+            assert!(!doc.last_change_refused());
+        }
+        doc.edit(|p| p.add_piece(rect()));
+        assert!(doc.last_change_refused());
+        assert_eq!(doc.project().pieces.len(), opendrape_core::MAX_PIECES);
     }
 
     #[test]

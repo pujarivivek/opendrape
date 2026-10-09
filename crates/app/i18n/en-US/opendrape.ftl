@@ -56,6 +56,7 @@ notice-bad-number = Please type a valid number. Lengths must be at least 0.1 mm 
 notice-too-close = Too close to an existing point.
 notice-name-empty = A piece needs a name.
 notice-min-points = A piece needs at least 3 points, so this point can't be deleted.
+notice-refused = That change can't be made: the pattern would become too large or invalid.
 
 panel-title = Properties
 panel-hint = Select a piece, a point or an edge to see and change its measurements.

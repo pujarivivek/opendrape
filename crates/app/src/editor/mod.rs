@@ -154,6 +154,17 @@ impl PatternEditor {
         self.doc = Document::new(project, path);
     }
 
+    /// Shows the "can't be made" notice when the document refused the last change (it would
+    /// have made the pattern too large or invalid); returns whether it did. Call it straight
+    /// after the change.
+    pub(super) fn note_if_refused(&mut self) -> bool {
+        let refused = self.doc.last_change_refused();
+        if refused {
+            self.notice = Some(tr!("notice-refused"));
+        }
+        refused
+    }
+
     pub fn set_tool(&mut self, tool: Tool) {
         if tool == self.tool {
             return;
@@ -261,6 +272,7 @@ impl PatternEditor {
             ] {
                 if ui.selectable_label(units == u, label).clicked() && units != u {
                     self.doc.edit(|p| p.units = u);
+                    self.note_if_refused();
                 }
             }
             ui.separator();

@@ -65,6 +65,7 @@ impl PatternEditor {
                                 pc.name = name;
                             }
                         });
+                        self.note_if_refused();
                     }
                 }
                 let grain = self.field(
@@ -125,6 +126,7 @@ impl PatternEditor {
                     pc.set_curved(i, curved);
                 }
             });
+            self.note_if_refused();
         }
     }
 
@@ -173,6 +175,7 @@ impl PatternEditor {
                     pc.set_vertex_kind(i, kind);
                 }
             });
+            self.note_if_refused();
         }
         ui.add_space(6.0);
         if ui.button(tr!("panel-delete-point")).clicked() {
@@ -199,8 +202,9 @@ impl PatternEditor {
     }
 
     /// Applies a typed number as one undo step. Lengths (`is_length`) are typed in the current
-    /// units and passed on in millimetres. `apply` returns false to refuse the value: the
-    /// pattern stays unchanged and a notice says why.
+    /// units and passed on in millimetres. `apply` returns false to refuse the value, and the
+    /// document may refuse the result: either way the pattern stays unchanged and a notice
+    /// says why.
     fn apply_typed(
         &mut self,
         typed: Option<String>,
@@ -210,7 +214,12 @@ impl PatternEditor {
         let Some(text) = typed else { return };
         let units = self.doc.project().units;
         let value = Units::parse(&text).map(|v| if is_length { units.to_mm(v) } else { v });
-        if !value.is_some_and(|v| self.doc.edit(|p| apply(p, v))) {
+        let Some(value) = value else {
+            self.notice = Some(tr!("notice-bad-number"));
+            return;
+        };
+        let applied = self.doc.edit(|p| apply(p, value));
+        if !self.note_if_refused() && !applied {
             self.notice = Some(tr!("notice-bad-number"));
         }
     }
