@@ -1,6 +1,7 @@
 //! OpenDrape desktop application.
 
 pub mod gpu;
+pub mod i18n;
 
 pub struct OpenDrapeApp;
 

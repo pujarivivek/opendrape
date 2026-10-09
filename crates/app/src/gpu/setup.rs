@@ -33,15 +33,12 @@ pub fn native_options(choice: GpuChoice) -> eframe::NativeOptions {
 
 /// Tell the user the graphics could not start (dialog on Windows/macOS, stderr everywhere).
 pub fn show_startup_error(details: &str) {
-    let body = format!(
-        "OpenDrape could not start its 3D graphics. Try updating your graphics driver, \
-         or start OpenDrape with --gpu=safe.\n\nDetails: {details}"
-    );
+    let body = crate::tr!("startup-failed", error = details.to_owned());
     eprintln!("{body}");
     #[cfg(any(windows, target_os = "macos"))]
     {
         let _ = rfd::MessageDialog::new()
-            .set_title("OpenDrape")
+            .set_title(crate::tr!("app-name"))
             .set_description(body)
             .set_level(rfd::MessageLevel::Error)
             .show();
