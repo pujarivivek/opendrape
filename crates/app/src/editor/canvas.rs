@@ -7,6 +7,10 @@ use egui::{Event, Key, PointerButton, Response, Sense, vec2};
 use opendrape_core::{Edge, Piece, PieceId, Point2, Units, VertexKind};
 use opendrape_geom as geom;
 
+/// How close (mm) a typed pen point may land to an existing pen point and still count as being
+/// on it. Typed lengths are exact, so there is no screen-point tolerance to borrow from clicks.
+const TYPED_SNAP_MM: f64 = 1.0;
+
 /// A point placed with the pen.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PenPoint {
@@ -306,7 +310,12 @@ impl PatternEditor {
                     (Some(mm), Some(degrees), Some(last)) => {
                         let r = degrees.to_radians();
                         let pos = last.pos + Point2::new(r.cos(), r.sin()) * mm;
-                        self.canvas.pen.push(PenPoint { pos, handle: None });
+                        // Accepted like a click: closing on the first or last point finishes
+                        // the piece, and landing on any other pen point is refused. A finished
+                        // piece empties the pen, so a non-empty pen that did not grow was refused.
+                        if !self.pen_place(pos, TYPED_SNAP_MM) && !self.canvas.pen.is_empty() {
+                            self.notice = Some(tr!("notice-too-close"));
+                        }
                     }
                     _ => self.notice = Some(tr!("notice-bad-number")),
                 }
@@ -328,8 +337,9 @@ impl PatternEditor {
     }
 }
 
+/// A typed length the pattern can hold: the same range `geom::set_edge_length` accepts.
 fn valid_length(mm: f64) -> bool {
-    mm.is_finite() && mm > 0.0 && mm <= geom::MAX_EDGE_MM
+    mm.is_finite() && (geom::MIN_EDGE_MM..=geom::MAX_EDGE_MM).contains(&mm)
 }
 
 /// The closed piece the pen points make. A point with a handle is smooth: the edge leaving it

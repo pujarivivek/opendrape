@@ -247,7 +247,13 @@ fn typed_angle_sets_the_direction() {
 
 #[test]
 fn typed_length_rejects_nonsense() {
-    for (first, rest) in [("3", "abc"), ("0", ""), ("1", "e9"), ("5", ",,")] {
+    for (first, rest) in [
+        ("3", "abc"),
+        ("0", ""),
+        ("1", "e9"),
+        ("5", ",,"),
+        ("0", ".001"),
+    ] {
         let mut h = harness();
         key(&mut h, Key::H);
         click(&mut h, 100.0, 100.0);
@@ -262,6 +268,59 @@ fn typed_length_rejects_nonsense() {
         assert!(h.state().notice.is_some(), "{first}{rest}");
         assert!(!h.state().length_box_open());
     }
+}
+
+/// With the pen on a point, types `length` (in the current units) at `degrees` and presses Enter.
+fn type_segment(h: &mut H, length: &str, degrees: &str) {
+    type_number(h, length);
+    key(h, Key::Tab);
+    cmd(h, Key::A);
+    h.get_by_role_and_label(Role::TextInput, "Angle")
+        .type_text(degrees);
+    h.run();
+    key(h, Key::Enter);
+}
+
+#[test]
+fn typing_the_closing_edge_finishes_the_piece() {
+    let mut h = harness();
+    key(&mut h, Key::H);
+    for (x, y) in [
+        (100.0, 100.0),
+        (500.0, 100.0),
+        (500.0, 300.0),
+        (100.0, 300.0),
+    ] {
+        click(&mut h, x, y);
+    }
+    type_segment(&mut h, "20", "270"); // 20 cm straight down: back onto the first point
+    let ed = h.state();
+    assert!(!ed.length_box_open());
+    assert!(ed.pen().is_empty());
+    let [piece] = &ed.doc.project().pieces[..] else {
+        panic!("one piece")
+    };
+    assert_eq!(
+        piece.vertices.len(),
+        4,
+        "no extra point on top of the first"
+    );
+    assert_eq!(ed.selection, Selection::Piece(piece.id));
+}
+
+#[test]
+fn typed_point_on_an_earlier_point_is_refused() {
+    let mut h = harness();
+    key(&mut h, Key::H);
+    for (x, y) in [(100.0, 100.0), (300.0, 100.0), (300.0, 300.0)] {
+        click(&mut h, x, y);
+    }
+    type_segment(&mut h, "20", "270"); // lands on (300, 100): neither the first nor the last point
+    let ed = h.state();
+    assert!(!ed.length_box_open());
+    assert_eq!(ed.pen().len(), 3);
+    assert!(ed.notice.is_some());
+    assert!(ed.doc.project().pieces.is_empty());
 }
 
 #[test]
