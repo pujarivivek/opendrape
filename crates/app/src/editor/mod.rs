@@ -288,6 +288,24 @@ impl PatternEditor {
     }
 }
 
+/// Selects all `chars` characters of a pre-filled text field the moment it gains focus, so
+/// typing replaces the number instead of being added to the end of it (egui would put the
+/// cursor where it was clicked, or at the end after Tab).
+fn select_all_on_focus(
+    ctx: &egui::Context,
+    output: &mut egui::text_edit::TextEditOutput,
+    chars: usize,
+) {
+    if output.response.gained_focus() {
+        let all = egui::text::CCursorRange::two(
+            egui::text::CCursor::new(0),
+            egui::text::CCursor::new(chars),
+        );
+        output.state.cursor.set_char_range(Some(all));
+        output.state.clone().store(ctx, output.response.id);
+    }
+}
+
 /// The smallest box (mm) holding every piece.
 fn project_bounds(project: &Project) -> Option<(Point2, Point2)> {
     let mut points = project

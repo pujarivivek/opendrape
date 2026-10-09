@@ -50,6 +50,15 @@ fn shift_click(h: &mut H, x: f64, y: f64) {
     h.run();
 }
 
+/// A click as a real mouse makes it: the press and the release arrive in different frames.
+fn slow_click(h: &mut H, pos: Pos2) {
+    h.hover_at(pos);
+    button(h, pos, true, Modifiers::NONE);
+    h.step();
+    button(h, pos, false, Modifiers::NONE);
+    h.run();
+}
+
 /// Press at `from`, move there in steps, release at `to` (all in mm).
 fn drag(h: &mut H, from: (f64, f64), to: (f64, f64)) {
     let (a, b) = (at(h, from.0, from.1), at(h, to.0, to.1));
@@ -231,7 +240,6 @@ fn typed_angle_sets_the_direction() {
         h.get_by_role_and_label(Role::TextInput, "Angle")
             .is_focused()
     );
-    cmd(&mut h, Key::A);
     h.get_by_role_and_label(Role::TextInput, "Angle")
         .type_text("90");
     h.run();
@@ -274,7 +282,6 @@ fn typed_length_rejects_nonsense() {
 fn type_segment(h: &mut H, length: &str, degrees: &str) {
     type_number(h, length);
     key(h, Key::Tab);
-    cmd(h, Key::A);
     h.get_by_role_and_label(Role::TextInput, "Angle")
         .type_text(degrees);
     h.run();
@@ -636,7 +643,6 @@ fn field_text(h: &H, label: &str) -> String {
 fn type_into(h: &mut H, label: &str, text: &str) {
     h.get_by_role_and_label(Role::TextInput, label).click();
     h.run();
-    cmd(h, Key::A);
     h.get_by_role_and_label(Role::TextInput, label)
         .type_text(text);
     h.run();
@@ -775,7 +781,6 @@ fn clicking_away_applies_the_typed_length_to_the_right_edge() {
     click(&mut h, 250.0, 100.0);
     h.get_by_role_and_label(Role::TextInput, "Length").click();
     h.run();
-    cmd(&mut h, Key::A);
     h.get_by_role_and_label(Role::TextInput, "Length")
         .type_text("45");
     h.run();
@@ -809,7 +814,6 @@ fn clicking_from_one_field_to_another_applies_the_first() {
     click(&mut h, 100.0, 100.0);
     h.get_by_role_and_label(Role::TextInput, "X").click();
     h.run();
-    cmd(&mut h, Key::A);
     h.get_by_role_and_label(Role::TextInput, "X")
         .type_text("12");
     h.run();
@@ -831,7 +835,6 @@ fn a_refused_value_keeps_its_notice_after_clicking_away() {
     click(&mut h, 250.0, 100.0);
     h.get_by_role_and_label(Role::TextInput, "Length").click();
     h.run();
-    cmd(&mut h, Key::A);
     h.get_by_role_and_label(Role::TextInput, "Length")
         .type_text("abc");
     h.run();
@@ -861,7 +864,6 @@ fn escape_in_a_field_keeps_the_selection() {
     click(&mut h, 250.0, 100.0);
     h.get_by_role_and_label(Role::TextInput, "Length").click();
     h.run();
-    cmd(&mut h, Key::A);
     h.get_by_role_and_label(Role::TextInput, "Length")
         .type_text("45");
     h.run();
@@ -986,4 +988,77 @@ fn a_refused_name_says_so() {
     );
     assert_eq!(piece_of(&h, id).name, "Front");
     assert!(refused_notice(&h), "{:?}", h.state().notice);
+}
+
+#[test]
+fn typing_into_a_filled_field_replaces_its_number() {
+    // What the tester checklist says: click Length (it shows 30.0), type 45, press Return.
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    click(&mut h, 250.0, 100.0);
+    assert_eq!(field_text(&h, "Length"), "30.0");
+    h.get_by_role_and_label(Role::TextInput, "Length").click();
+    h.run();
+    h.get_by_role_and_label(Role::TextInput, "Length")
+        .type_text("45");
+    h.run();
+    assert_eq!(field_text(&h, "Length"), "45", "not 30.045");
+    key(&mut h, Key::Enter);
+    let p = piece_of(&h, id);
+    assert!((opendrape_geom::edge_length(&p, 0) - 450.0).abs() < 1e-9);
+}
+
+#[test]
+fn tabbing_into_a_filled_field_replaces_its_number_too() {
+    let mut h = harness();
+    with_rectangle(&mut h);
+    click(&mut h, 100.0, 100.0);
+    h.get_by_role_and_label(Role::TextInput, "X").click();
+    h.run();
+    key(&mut h, Key::Tab);
+    assert!(h.get_by_role_and_label(Role::TextInput, "Y").is_focused());
+    h.get_by_role_and_label(Role::TextInput, "Y").type_text("7");
+    h.run();
+    assert_eq!(field_text(&h, "Y"), "7", "not 10.07");
+}
+
+#[test]
+fn a_second_click_in_a_field_places_the_cursor_instead_of_selecting_all() {
+    let mut h = harness();
+    with_rectangle(&mut h);
+    click(&mut h, 250.0, 100.0);
+    h.get_by_role_and_label(Role::TextInput, "Length").click();
+    h.run();
+    // Already focused: clicking again must not select everything again. Clicking the field's
+    // far right edge puts the cursor at the end, so typing appends.
+    let field = h.get_by_role_and_label(Role::TextInput, "Length");
+    let right = field.rect().right_center() - vec2(3.0, 0.0);
+    h.hover_at(right);
+    button(&h, right, true, Modifiers::NONE);
+    button(&h, right, false, Modifiers::NONE);
+    h.run();
+    h.get_by_role_and_label(Role::TextInput, "Length")
+        .type_text("5");
+    h.run();
+    assert_eq!(field_text(&h, "Length"), "30.05");
+}
+
+#[test]
+fn a_real_two_frame_click_into_a_filled_field_also_selects_it() {
+    let mut h = harness();
+    with_rectangle(&mut h);
+    click(&mut h, 250.0, 100.0);
+    let centre = h
+        .get_by_role_and_label(Role::TextInput, "Length")
+        .rect()
+        .center();
+    slow_click(&mut h, centre);
+    assert!(
+        h.get_by_role_and_label(Role::TextInput, "Length")
+            .is_focused()
+    );
+    h.get_by_role_and_label(Role::TextInput, "Length")
+        .type_text("45");
+    h.run();
+    assert_eq!(field_text(&h, "Length"), "45");
 }

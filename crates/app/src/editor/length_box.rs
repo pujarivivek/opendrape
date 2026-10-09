@@ -1,6 +1,7 @@
 //! The small box that appears by the pointer for typing exact numbers: an edge's length and
 //! angle while drawing with the pen, or a rectangle's width and height.
 
+use super::select_all_on_focus;
 use crate::tr;
 use egui::{Id, Key, Pos2};
 use opendrape_core::{Point2, Units};
@@ -60,9 +61,13 @@ impl LengthBox {
                             .labelled_by(la.id);
                         ui.label(units.suffix());
                         let lb = ui.label(second_label);
-                        let b = ui
-                            .add(egui::TextEdit::singleline(&mut self.second).desired_width(48.0))
-                            .labelled_by(lb.id);
+                        let mut second_out = egui::TextEdit::singleline(&mut self.second)
+                            .desired_width(48.0)
+                            .show(ui);
+                        // The first field is opened by a typed digit and keeps its cursor at
+                        // the end; the second arrives pre-filled (an angle), so Tab selects it.
+                        select_all_on_focus(ui.ctx(), &mut second_out, self.second.chars().count());
+                        let b = second_out.response.response.labelled_by(lb.id);
                         ui.label(second_unit);
                         if focus {
                             a.request_focus();

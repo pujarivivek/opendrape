@@ -1,7 +1,7 @@
 //! The properties panel (measurements of the selected piece, edge or point, editable by
 //! typing) and the status bar.
 
-use super::{PatternEditor, Selection, Tool};
+use super::{PatternEditor, Selection, Tool, select_all_on_focus};
 use crate::tr;
 use egui::{Id, Key};
 use opendrape_core::{Edge, PieceId, Point2, Project, Units, VertexKind};
@@ -268,13 +268,12 @@ fn text_field(
         .cloned()
         .unwrap_or_else(|| value.to_owned());
     let l = ui.label(label);
-    let r = ui
-        .add(
-            egui::TextEdit::singleline(&mut text)
-                .id(id)
-                .desired_width(80.0),
-        )
-        .labelled_by(l.id);
+    let mut output = egui::TextEdit::singleline(&mut text)
+        .id(id)
+        .desired_width(80.0)
+        .show(ui);
+    select_all_on_focus(ui.ctx(), &mut output, text.chars().count());
+    let r = output.response.response.labelled_by(l.id);
     if r.lost_focus() {
         // egui reports the loss for two frames; only the first has an entry to apply.
         let escaped = ui.input(|i| i.key_pressed(Key::Escape));
