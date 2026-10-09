@@ -164,6 +164,8 @@ hint-sew-extend = Shift-click to add edges to the second side, or click an edge 
 notice-already-sewn = This edge is already sewn.
 notice-sew-not-next = Shift-click an edge right next to this side, on the same piece.
 notice-sew-same-edge = Pick a different edge for the other side of the seam.
+notice-sew-fold = The fold line is inside the piece and can't be sewn.
+notice-mirror-sewn = That seam's mirror image would sew an edge that is already sewn.
 
 panel-seam = Seam { $number }
 panel-seam-side = Side { $side }: { $length }

@@ -975,7 +975,7 @@ pub(super) fn take_typed_digits(ui: &egui::Ui) -> String {
 }
 
 /// Distance (mm) from `p` to the segment `a`–`b`.
-fn segment_distance(p: Point2, a: Point2, b: Point2) -> f64 {
+pub(super) fn segment_distance(p: Point2, a: Point2, b: Point2) -> f64 {
     let ab = b - a;
     let len2 = ab.x * ab.x + ab.y * ab.y;
     let t = if len2 < 1e-18 {

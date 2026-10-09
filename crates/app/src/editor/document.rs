@@ -1,6 +1,6 @@
 //! The open project and its undo history.
 
-use opendrape_core::Project;
+use opendrape_core::{ModelError, Project};
 use std::path::PathBuf;
 
 /// Undo steps kept; older ones are dropped.
@@ -16,8 +16,8 @@ pub struct Document {
     gesture: Option<Project>,
     /// The project as last saved or opened, to tell whether there are unsaved changes.
     saved: Project,
-    /// The last [`Self::edit`] or [`Self::gesture_edit`] was refused.
-    refused: bool,
+    /// Why the last [`Self::edit`] or [`Self::gesture_edit`] was refused; None if it was not.
+    refused: Option<ModelError>,
     /// Where the project was last saved or opened from.
     pub path: Option<PathBuf>,
 }
@@ -36,7 +36,7 @@ impl Document {
             undo: Vec::new(),
             redo: Vec::new(),
             gesture: None,
-            refused: false,
+            refused: None,
             path,
         }
     }
@@ -59,8 +59,8 @@ impl Document {
         self.end_gesture();
         let before = self.project.clone();
         let result = f(&mut self.project);
-        self.refused = self.project.check().is_err();
-        if self.refused {
+        self.refused = self.project.check().err();
+        if self.refused.is_some() {
             // Never keep a project that could not be saved and opened again.
             self.project = before;
         } else if self.project != before {
@@ -71,7 +71,11 @@ impl Document {
     /// The last [`Self::edit`] or [`Self::gesture_edit`] was refused because it would have left
     /// the project invalid (too many points, say), and so was undone at once.
     pub fn last_change_refused(&self) -> bool {
-        self.refused
+        self.refused.is_some()
+    }
+    /// What was wrong with the project the last change would have made, when it was refused.
+    pub fn last_refusal(&self) -> Option<&ModelError> {
+        self.refused.as_ref()
     }
     /// Starts a drag: everything changed with [`Self::gesture_edit`] until [`Self::end_gesture`]
     /// is one undo step.
@@ -86,8 +90,8 @@ impl Document {
         self.begin_gesture();
         let before = self.project.clone();
         let result = f(&mut self.project);
-        self.refused = self.project.check().is_err();
-        if self.refused {
+        self.refused = self.project.check().err();
+        if self.refused.is_some() {
             self.project = before;
         }
         result
@@ -269,8 +273,10 @@ mod tests {
         assert!(!doc.last_change_refused(), "a change that did nothing");
         doc.edit(|p| p.piece_mut(id).unwrap().vertices.truncate(2));
         assert!(doc.last_change_refused());
+        assert!(doc.last_refusal().is_some(), "and why");
         doc.edit(|p| p.piece_mut(id).unwrap().name = "Back".into());
         assert!(!doc.last_change_refused(), "the next change starts afresh");
+        assert_eq!(doc.last_refusal(), None);
 
         doc.begin_gesture();
         doc.gesture_edit(|p| p.piece_mut(id).unwrap().vertices.truncate(2));

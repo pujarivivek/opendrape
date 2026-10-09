@@ -251,29 +251,38 @@ impl PatternEditor {
         self.tool = tool;
     }
 
-    /// Undo. While a line or a piece is being drawn, removes its last point instead.
+    /// Undo. While a line or a piece is being drawn, removes its last point instead; while a
+    /// seam has only its first side, cancels that.
     pub fn undo(&mut self) {
         if self.canvas.line.pop().is_some() {
             if self.canvas.line.is_empty() {
                 self.canvas.line_owner = None;
             }
-        } else if self.canvas.pen.pop().is_none() {
+        } else if self.canvas.pen.pop().is_none() && !self.cancel_half_made_seam() {
             self.canvas.drag = None;
             self.doc.undo();
         }
         self.selection = self.selection.validated(self.doc.project());
+        self.drop_stale_sew();
     }
 
+    /// Redo. Waits while a line or a piece is being drawn. A seam with only its first side is
+    /// dropped: what is redone may change the edges it points at.
     pub fn redo(&mut self) {
         if self.canvas.pen.is_empty() && self.canvas.line.is_empty() {
             self.canvas.drag = None;
+            self.cancel_half_made_seam();
             self.doc.redo();
         }
         self.selection = self.selection.validated(self.doc.project());
+        self.drop_stale_sew();
     }
 
     pub fn can_undo(&self) -> bool {
-        !self.canvas.pen.is_empty() || !self.canvas.line.is_empty() || self.doc.can_undo()
+        !self.canvas.pen.is_empty()
+            || !self.canvas.line.is_empty()
+            || self.has_half_made_seam()
+            || self.doc.can_undo()
     }
 
     pub fn can_redo(&self) -> bool {
@@ -326,6 +335,7 @@ impl PatternEditor {
             self.shortcuts(ui);
         }
         self.selection = self.selection.validated(self.doc.project());
+        self.drop_stale_sew();
         egui::Panel::top("pattern_tools").show(ui, |ui| self.toolbar(ui));
         egui::Panel::bottom("pattern_status").show(ui, |ui| self.status_bar(ui));
         egui::Panel::right("pattern_properties")
