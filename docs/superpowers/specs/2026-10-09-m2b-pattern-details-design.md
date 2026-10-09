@@ -4,7 +4,7 @@
 
 **Status:**
 - Approved in conversation.
-- The written document is waiting for the user's review.
+- The written document: approved 2026-10-09; implemented on branch `m2b-pattern-details`.
 
 **Builds on:**
 - M2a (pattern editor core), merged and published as `0e74aff`.

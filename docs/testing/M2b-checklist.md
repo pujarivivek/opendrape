@@ -6,7 +6,7 @@ in M3.
 
 ## Check these
 
-- [ ] Every piece shows a light grey band around it: the 1 cm seam allowance. The outer line
+- [ ] Every piece shows a light blue band around it: the 1 cm seam allowance. The outer line
       is where you cut. **Show seam allowance** at the top hides and shows it.
 - [ ] Click a piece. In **Properties**, change **Seam allowance** to **1.5**: the band
       widens all round.
@@ -23,11 +23,15 @@ in M3.
       near an edge and type **5**, then **Return** (Enter): a notch exactly 5 cm from the
       nearer end. Click a notch with **Edit (Z)**, then try **Double** and **V** in
       Properties.
+- [ ] Untick **Show seam allowance**: the notches move onto the edge of the piece (5 mm
+      deep, pointing in) and can still be clicked there. Tick it again: they go back out.
 - [ ] Press **Delete** right after placing a notch: it disappears, without switching tools.
 - [ ] A notch placed exactly on a corner doesn't stop you grabbing and moving that corner.
 - [ ] Press **L** (Internal line). Click inside a piece twice and press **Return**: a dashed
       line. Click three points and then the first again: a closed shape. Choose **Cut-out**
       for it in Properties. Lines can't leave their piece.
+- [ ] Draw a curved line (press and drag while drawing). Select it with **Edit (Z)** and drag
+      its handles: the line bends, and it still can't leave the piece.
 - [ ] On a folded piece, start a line right on the fold line: it is accepted, whichever side
       of the fold your first click lands on.
 - [ ] Press **Delete** with a finished line selected in the **Internal line** tool: the line
@@ -48,6 +52,10 @@ in M3.
 ## Known limits in this build
 
 - Cmd+H (hide OpenDrape) does not work in this build.
+- Internal lines aren't checked again when you reshape their piece, so move them back inside
+  yourself if needed.
+- Very large pieces with thousands of curved edges can take a moment to show their seam
+  allowance.
 
 If anything looks wrong, take a screenshot, then choose Help → About OpenDrape and
 click **Copy diagnostics**.
