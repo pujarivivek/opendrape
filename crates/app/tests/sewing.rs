@@ -434,13 +434,16 @@ fn a_change_to_the_outline_drops_a_half_made_seam() {
     let back = with_back(&mut h);
     key(&mut h, Key::W);
     click(&mut h, 401.0, 150.0); // the front's right edge, edge 1 of 4: half made
+    h.get_by_label_contains("Click the edge to sew it to");
     // The bottom edge gains a point (a panel, an undo, a redo: anything that renumbers the
     // edges): edge 1 is now the right half of the bottom edge.
     h.state_mut()
         .doc
         .edit(|p| opendrape_geom::split_edge_in(p, front, 0, 0.5));
-    h.run();
+    h.step();
     assert_eq!(piece_of(&h, front).len(), 5);
+    // The hint, which is drawn before the canvas, already knows.
+    h.get_by_label_contains("Click an edge to start a seam");
     click(&mut h, 599.0, 150.0); // starts a new seam; it does not finish the old one
     assert!(seams(&h).is_empty(), "no seam on the wrong edge");
     click(&mut h, 401.0, 150.0); // the front's right edge, now edge 2
