@@ -151,3 +151,8 @@ panel-line-kind = Kind
 panel-line-marking = Marking
 panel-line-cutout = Cut-out
 panel-delete-line = Delete line
+
+recovery-title = Restore unsaved work?
+recovery-body = OpenDrape closed last time with unsaved work. Restore it?
+recovery-restore = Restore
+recovery-discard = Discard

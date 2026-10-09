@@ -198,6 +198,12 @@ impl PatternEditor {
         self.doc = Document::new(project, path);
     }
 
+    /// Like [`Self::set_project`], for work restored from a recovery copy: it stays unsaved.
+    pub fn set_recovered(&mut self, project: Project, path: Option<PathBuf>) {
+        self.set_project(Project::new(), None);
+        self.doc = Document::recovered(project, path);
+    }
+
     /// Shows the "can't be made" notice when the document refused the last change (it would
     /// have made the pattern too large or invalid); returns whether it did. Call it straight
     /// after the change.

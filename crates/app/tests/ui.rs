@@ -4,7 +4,7 @@ use egui_kittest::{
 };
 use opendrape::editor::{Selection, Tool};
 use opendrape::gpu::{Decision, GpuChoice, GpuState, Reason, StateStore};
-use opendrape::{FileDialogs, OpenDrapeApp, Shared, SharedState, Startup};
+use opendrape::{FileDialogs, OpenDrapeApp, Recovery, Shared, SharedState, Startup};
 use opendrape_core::{Piece, PieceId, Point2, Project};
 use std::{path::Path, rc::Rc};
 
@@ -29,6 +29,7 @@ fn harness_with(
         smoke_test: false,
         autoplay: false,
         file_dialogs,
+        recovery: Recovery::new(None),
     };
     Harness::builder()
         .with_size(egui::vec2(1000.0, 700.0))
@@ -115,6 +116,7 @@ fn tiny_window_does_not_crash() {
         smoke_test: false,
         autoplay: false,
         file_dialogs: FileDialogs::always_cancel(),
+        recovery: Recovery::new(None),
     };
     let mut h = Harness::builder()
         .with_size(egui::vec2(120.0, 40.0)) // the menu bar leaves almost no room for the 3D panel
@@ -141,6 +143,7 @@ fn crash_marker_is_cleared_only_after_frames_were_presented() {
         smoke_test: false,
         autoplay: false,
         file_dialogs: FileDialogs::always_cancel(),
+        recovery: Recovery::new(None),
     };
     let app_shared = shared.clone();
     // The harness draws one frame plus at most `max_steps` more while it is being built.
@@ -752,4 +755,256 @@ fn cmd_q_works_while_a_text_field_has_focus() {
     h.run();
     h.get_by_label("Save your changes?");
     assert!(!h.state().is_closing());
+}
+
+fn harness_recovering(config_dir: &Path, recovery_dir: &Path) -> Harness<'static, OpenDrapeApp> {
+    let startup = Startup {
+        decision: SAVED_AUTO,
+        previous: GpuState::default(),
+        store: StateStore::new(Some(config_dir)),
+        smoke_test: false,
+        autoplay: false,
+        file_dialogs: FileDialogs::always_cancel(),
+        recovery: Recovery::new(Some(recovery_dir)),
+    };
+    Harness::builder()
+        .with_size(egui::vec2(1000.0, 700.0))
+        .wgpu()
+        .build_eframe(move |cc| OpenDrapeApp::new(cc, startup, SharedState::default()))
+}
+
+#[test]
+fn quitting_without_asking_keeps_a_copy_that_is_offered_next_time() {
+    use eframe::App as _;
+    let (config, rescue) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut h = harness_recovering(config.path(), rescue.path());
+    h.run();
+    add_piece(&mut h);
+    h.state_mut().on_exit(); // what the Dock's Quit, logout and shutdown lead to
+    assert!(rescue.path().join("recovery.odp").exists());
+    drop(h);
+
+    let mut h = harness_recovering(config.path(), rescue.path());
+    h.run();
+    h.get_by_label("Restore unsaved work?");
+    h.get_by_label("Restore").click();
+    h.run();
+    assert_eq!(pieces(&h), 1);
+    assert!(
+        h.state().editor().doc.is_dirty(),
+        "restored work is still unsaved"
+    );
+    assert!(!rescue.path().join("recovery.odp").exists());
+}
+
+#[test]
+fn dont_save_leaves_no_copy() {
+    use eframe::App as _;
+    let (config, rescue) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut h = harness_recovering(config.path(), rescue.path());
+    h.run();
+    add_piece(&mut h);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Q);
+    h.run();
+    h.get_by_label("Don't save").click();
+    h.run();
+    assert!(h.state().is_closing());
+    h.state_mut().on_exit();
+    assert!(!rescue.path().join("recovery.odp").exists());
+}
+
+#[test]
+fn a_saved_project_leaves_no_copy() {
+    use eframe::App as _;
+    let (config, rescue) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut h = harness_recovering(config.path(), rescue.path());
+    h.run();
+    h.state_mut().on_exit(); // nothing changed
+    assert!(!rescue.path().join("recovery.odp").exists());
+}
+
+#[test]
+fn discarding_the_copy_deletes_it() {
+    let (config, rescue) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut project = opendrape_core::Project::new();
+    project.add_piece(Piece::rectangle(
+        PieceId(0),
+        "Front",
+        Point2::new(0.0, 0.0),
+        300.0,
+        500.0,
+    ));
+    Recovery::new(Some(rescue.path())).write(&project, None);
+    let mut h = harness_recovering(config.path(), rescue.path());
+    h.run();
+    h.get_by_label("Discard").click();
+    h.run();
+    assert_eq!(pieces(&h), 0);
+    assert!(!rescue.path().join("recovery.odp").exists());
+}
+
+// The brief's tests above cover the main paths. The ones below pin down the rest of the
+// behaviour it describes: the file the work came from, every other way of quitting, the pattern
+// keys, and a copy that will not open.
+
+#[test]
+fn restored_work_remembers_its_file_and_save_writes_there() {
+    use eframe::App as _;
+    let (config, rescue) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let original = config.path().join("skirt.odp");
+    let mut h = harness_recovering(config.path(), rescue.path());
+    h.run();
+    add_piece(&mut h);
+    h.state_mut().editor_mut().doc.path = Some(original.clone());
+    h.state_mut().on_exit();
+    assert!(rescue.path().join("recovery-origin.txt").exists());
+    drop(h);
+
+    let mut h = harness_recovering(config.path(), rescue.path());
+    h.run();
+    h.get_by_label("Restore").click();
+    h.run();
+    assert_eq!(h.state().editor().doc.path, Some(original.clone()));
+    assert_eq!(h.state().window_title(), "• skirt.odp — OpenDrape");
+    assert!(!original.exists());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+    h.run();
+    assert_eq!(opendrape_io::load(&original).unwrap().pieces.len(), 1);
+    assert!(!h.state().editor().doc.is_dirty());
+}
+
+#[test]
+fn restored_untitled_work_has_no_file() {
+    use eframe::App as _;
+    let (config, rescue) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut h = harness_recovering(config.path(), rescue.path());
+    h.run();
+    add_piece(&mut h);
+    h.state_mut().on_exit();
+    drop(h);
+
+    let mut h = harness_recovering(config.path(), rescue.path());
+    h.run();
+    h.get_by_label("Restore").click();
+    h.run();
+    assert_eq!(h.state().editor().doc.path, None);
+    assert_eq!(h.state().window_title(), "• Untitled — OpenDrape");
+}
+
+#[test]
+fn a_cancelled_quit_still_keeps_a_copy_when_the_app_is_ended_anyway() {
+    use eframe::App as _;
+    let (config, rescue) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut h = harness_recovering(config.path(), rescue.path());
+    h.run();
+    add_piece(&mut h);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Q);
+    h.run();
+    h.get_by_label("Cancel").click();
+    h.run();
+    assert!(!h.state().is_closing());
+    h.state_mut().on_exit();
+    assert!(rescue.path().join("recovery.odp").exists());
+}
+
+#[test]
+fn saving_then_quitting_leaves_no_copy() {
+    use eframe::App as _;
+    let (config, rescue) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut h = harness_recovering(config.path(), rescue.path());
+    h.run();
+    add_piece(&mut h);
+    let file = config.path().join("skirt.odp");
+    h.state_mut().editor_mut().doc.path = Some(file.clone());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Q);
+    h.run();
+    h.get_by_label("Save").click();
+    h.run();
+    assert!(h.state().is_closing());
+    assert!(file.exists());
+    h.state_mut().on_exit();
+    assert!(!rescue.path().join("recovery.odp").exists());
+}
+
+#[test]
+fn switching_graphics_without_saving_leaves_no_copy() {
+    use eframe::App as _;
+    let (config, rescue) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut h = harness_recovering(config.path(), rescue.path());
+    h.run();
+    add_piece(&mut h);
+    h.state_mut().choose_graphics(GpuChoice::Software);
+    h.run();
+    h.get_by_label("Don't save").click();
+    h.run();
+    assert!(h.state().is_closing());
+    h.state_mut().on_exit();
+    assert!(!rescue.path().join("recovery.odp").exists());
+}
+
+#[test]
+fn the_pattern_ignores_keys_while_the_restore_question_is_shown() {
+    let (config, rescue) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut project = opendrape_core::Project::new();
+    project.add_piece(Piece::rectangle(
+        PieceId(0),
+        "Back",
+        Point2::new(0.0, 0.0),
+        300.0,
+        500.0,
+    ));
+    Recovery::new(Some(rescue.path())).write(&project, None);
+    let mut h = harness_recovering(config.path(), rescue.path());
+    h.run();
+    add_piece(&mut h);
+    h.state_mut().editor_mut().selection = Selection::Piece(PieceId(1));
+    h.get_by_label("Restore unsaved work?");
+    h.key_press(egui::Key::Delete);
+    h.run();
+    assert_eq!(
+        pieces(&h),
+        1,
+        "Delete reached the pattern behind the question"
+    );
+    h.get_by_label("Discard").click();
+    h.run();
+    h.key_press(egui::Key::Delete);
+    h.run();
+    assert_eq!(pieces(&h), 0);
+}
+
+#[test]
+fn a_copy_that_will_not_open_is_dropped_without_a_question() {
+    let (config, rescue) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    std::fs::write(rescue.path().join("recovery.odp"), b"not a zip file").unwrap();
+    std::fs::write(rescue.path().join("recovery-origin.txt"), "/work/skirt.odp").unwrap();
+    let mut h = harness_recovering(config.path(), rescue.path());
+    h.run();
+    assert!(h.query_by_label("Restore unsaved work?").is_none());
+    assert!(!rescue.path().join("recovery.odp").exists());
+    assert!(!rescue.path().join("recovery-origin.txt").exists());
+    assert_eq!(pieces(&h), 0);
+}
+
+#[test]
+fn quitting_with_the_restore_question_unanswered_keeps_the_copy() {
+    use eframe::App as _;
+    let (config, rescue) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut project = opendrape_core::Project::new();
+    project.add_piece(Piece::rectangle(
+        PieceId(0),
+        "Front",
+        Point2::new(0.0, 0.0),
+        300.0,
+        500.0,
+    ));
+    Recovery::new(Some(rescue.path())).write(&project, None);
+    let mut h = harness_recovering(config.path(), rescue.path());
+    h.run();
+    h.get_by_label("Restore unsaved work?");
+    h.state_mut().on_exit(); // the student never answered, and nothing in the editor is unsaved
+    assert!(
+        rescue.path().join("recovery.odp").exists(),
+        "the waiting copy must survive"
+    );
 }

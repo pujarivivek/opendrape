@@ -2,6 +2,7 @@ use crate::diagnostics::Diagnostics;
 use crate::editor::{self, PatternEditor};
 use crate::file_dialogs::{DialogKind, FileDialogs};
 use crate::gpu::{Decision, GpuChoice, GpuState, Os, StateStore, confirmed_state};
+use crate::recovery::Recovery;
 use crate::sim_runner::{SimFrame, SimRunner};
 use crate::tr;
 use crate::viewport::Viewport;
@@ -24,6 +25,8 @@ pub struct Startup {
     pub autoplay: bool,
     /// Where Open and Save get file names: the system dialogs, or a script in tests.
     pub file_dialogs: FileDialogs,
+    /// Where unsaved work is kept when quitting can't ask first.
+    pub recovery: Recovery,
 }
 
 /// Results main() reads after the window closes.
@@ -114,6 +117,11 @@ pub struct OpenDrapeApp {
     closing: bool,
     /// The window title last sent, so it is sent only when it changes.
     title: String,
+    /// Where unsaved work is kept when quitting can't ask first.
+    recovery: Recovery,
+    /// Work a quit without asking left behind, and the file it came from: waiting for the
+    /// student to restore or discard it.
+    offered: Option<(Project, Option<PathBuf>)>,
 }
 
 impl OpenDrapeApp {
@@ -130,6 +138,9 @@ impl OpenDrapeApp {
                 ctx.request_repaint()
             })
         });
+        // Read before `startup` moves into the app below.
+        let recovery = startup.recovery.clone();
+        let offered = recovery.take();
         Self {
             viewport: render_state.map(Viewport::new),
             diagnostics: Diagnostics::collect(info.as_ref(), startup.decision),
@@ -146,6 +157,8 @@ impl OpenDrapeApp {
             error: None,
             closing: false,
             title: String::new(),
+            recovery,
+            offered,
         }
     }
 
@@ -567,6 +580,34 @@ impl OpenDrapeApp {
         }
     }
 
+    /// Offers back the work a quit without asking left behind (see `crate::recovery`).
+    fn recovery_modal(&mut self, ctx: &egui::Context) {
+        if self.offered.is_none() || self.pending.is_some() {
+            return;
+        }
+        let mut answer = None;
+        egui::Modal::new(egui::Id::new("recovery")).show(ctx, |ui| {
+            ui.set_max_width(360.0);
+            ui.heading(tr!("recovery-title"));
+            ui.label(tr!("recovery-body"));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button(tr!("recovery-restore")).clicked() {
+                    answer = Some(true);
+                }
+                if ui.button(tr!("recovery-discard")).clicked() {
+                    answer = Some(false);
+                }
+            });
+        });
+        let Some(restore) = answer else { return };
+        if let (true, Some((project, from))) = (restore, self.offered.take()) {
+            self.editor.set_recovered(project, from);
+        }
+        self.offered = None;
+        self.recovery.discard();
+    }
+
     fn update_title(&mut self, ctx: &egui::Context) {
         let title = self.window_title();
         if title != self.title {
@@ -676,13 +717,25 @@ impl eframe::App for OpenDrapeApp {
             .show(ui, |ui| self.view_3d(ui, frame));
         // Decided here, before the question or message box below has run: when one of them is
         // closed by Escape this frame, that Escape must not reach the pattern table too.
-        let keys_for_pattern = self.pending.is_none() && self.error.is_none();
+        let keys_for_pattern =
+            self.pending.is_none() && self.error.is_none() && self.offered.is_none();
         egui::CentralPanel::default().show(ui, |ui| self.editor.ui_with_keys(ui, keys_for_pattern));
         self.unsaved_changes_modal(frame, &ctx);
         self.error_modal(&ctx);
+        self.recovery_modal(&ctx);
         self.poll_dialog(frame, &ctx);
         self.update_title(&ctx);
         self.confirm_first_frame(&ctx);
+    }
+
+    /// The last chance to save anything. Quitting from the Dock, logout and shutdown end the app
+    /// without a close request, so nobody could be asked about unsaved work: keep a copy.
+    /// Quitting through OpenDrape's own question sets `closing` first and leaves no copy.
+    fn on_exit(&mut self) {
+        if !self.closing && self.editor.doc.is_dirty() {
+            self.recovery
+                .write(self.editor.doc.project(), self.editor.doc.path.as_deref());
+        }
     }
 }
 

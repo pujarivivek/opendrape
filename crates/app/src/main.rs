@@ -62,6 +62,12 @@ fn main() -> ExitCode {
         smoke_test: cli.smoke_test,
         autoplay: true,
         file_dialogs: opendrape::FileDialogs::Native,
+        // A second copy of OpenDrape keeps no recovery file, so the two never overwrite each other's.
+        recovery: if another_instance_running {
+            opendrape::Recovery::new(None)
+        } else {
+            opendrape::Recovery::default_location()
+        },
     };
     let app_shared = shared.clone();
     stage("opening the window");

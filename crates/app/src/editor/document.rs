@@ -40,6 +40,13 @@ impl Document {
             path,
         }
     }
+    /// Work brought back from a recovery copy: unsaved, and Save writes it to `path` (the file
+    /// it came from) when there is one.
+    pub fn recovered(project: Project, path: Option<PathBuf>) -> Self {
+        let mut doc = Self::new(project, path);
+        doc.saved = Project::new();
+        doc
+    }
     pub fn project(&self) -> &Project {
         &self.project
     }
@@ -153,6 +160,23 @@ mod tests {
         assert!(doc.redo());
         assert!(doc.project().piece(id).is_some());
         assert!(!doc.redo());
+    }
+
+    #[test]
+    fn recovered_work_is_unsaved_and_belongs_to_the_file_it_came_from() {
+        let mut project = Project::new();
+        project.add_piece(rect());
+        let from = PathBuf::from("/work/skirt.odp");
+        let doc = Document::recovered(project.clone(), Some(from.clone()));
+        assert!(doc.is_dirty());
+        assert_eq!(doc.project(), &project);
+        assert_eq!(doc.path, Some(from.clone()));
+        assert!(!doc.can_undo(), "no history comes back with it");
+        let mut doc = doc;
+        doc.mark_saved(from);
+        assert!(!doc.is_dirty(), "saving makes it clean like any other work");
+        assert!(Document::recovered(project.clone(), None).is_dirty());
+        assert!(!Document::new(project, None).is_dirty());
     }
 
     #[test]
