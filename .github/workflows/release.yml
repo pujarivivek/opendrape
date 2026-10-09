@@ -1,0 +1,84 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install --locked cargo-packager@0.11.8
+      - id: name
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then echo "suffix=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else echo "suffix=nightly-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"; fi
+      - run: ./scripts/package-macos.sh "${{ steps.name.outputs.suffix }}"
+      - name: Smoke test (opens a window, draws one 3D frame, quits)
+        run: target/universal-apple-darwin/release/OpenDrape.app/Contents/MacOS/opendrape --smoke-test
+        timeout-minutes: 2
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*
+
+  windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install --locked cargo-packager@0.11.8
+      - id: name
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then echo "suffix=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else echo "suffix=nightly-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"; fi
+      - run: ./scripts/package-windows.ps1 "${{ steps.name.outputs.suffix }}"
+        shell: pwsh
+      - name: Smoke test (best effort, CI desktops may not allow windows)
+        continue-on-error: true
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $p = Start-Process target/release/opendrape.exe -ArgumentList '--smoke-test' -PassThru -Wait
+          "exit code: $($p.ExitCode)"
+          exit $p.ExitCode
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*
+
+  publish:
+    needs: [macos, windows]
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish nightly pre-release
+        if: github.ref_type == 'branch'
+        run: |
+          gh release delete nightly --yes --cleanup-tag || true
+          gh release create nightly dist/* --prerelease --target "$GITHUB_SHA" \
+            --title "Nightly build (${GITHUB_SHA::7})" --notes-file docs/testing/nightly-notes.md
+      - name: Publish tagged release
+        if: github.ref_type == 'tag'
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --title "OpenDrape $GITHUB_REF_NAME" --generate-notes
