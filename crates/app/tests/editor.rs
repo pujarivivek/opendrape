@@ -1085,3 +1085,28 @@ fn switching_units_does_not_change_how_a_pending_typed_length_is_read() {
     );
     assert_eq!(h.state().doc.project().units, opendrape_core::Units::Inch);
 }
+
+#[test]
+fn text_typed_in_a_field_survives_the_window_losing_focus() {
+    let mut h = harness();
+    let id = with_rectangle(&mut h);
+    click(&mut h, 250.0, 100.0);
+    h.get_by_role_and_label(Role::TextInput, "Length").click();
+    h.run();
+    h.get_by_role_and_label(Role::TextInput, "Length")
+        .type_text("45");
+    h.run();
+    // The student switches to another app for a moment, then comes back.
+    h.input_mut().focused = false;
+    h.run_steps(3);
+    h.input_mut().focused = true;
+    h.run_steps(3);
+    assert_eq!(
+        field_text(&h, "Length"),
+        "45",
+        "their typing is still there"
+    );
+    key(&mut h, Key::Enter);
+    let p = piece_of(&h, id);
+    assert!((opendrape_geom::edge_length(&p, 0) - 450.0).abs() < 1e-9);
+}

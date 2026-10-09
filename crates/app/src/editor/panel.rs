@@ -280,7 +280,10 @@ fn text_field(
         let had_entry = editing.remove(&id).is_some();
         return (had_entry && !escaped && text != value).then_some(text);
     }
-    if r.has_focus() {
+    // Asked of the memory, not `Response::has_focus`: that is also false while the window is in
+    // the background, which would throw away what was typed when the student looks at another
+    // app for a moment.
+    if ui.memory(|m| m.has_focus(id)) {
         editing.insert(id, text);
     } else {
         editing.remove(&id);
