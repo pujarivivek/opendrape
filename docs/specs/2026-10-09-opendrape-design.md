@@ -181,6 +181,12 @@ Each milestone ends with a **GitHub Release** (installers + portable ZIP) and a 
   - **Draping:** Play/Reset drapes the student's own pattern on the simulation thread, with notes for problems.
   - **Files:** project format v3 (v1 and v2 files upgrade).
   - **The drafted-skirt gate:** 0.00 mm penetration, seams welded, strain p99 6.3%.
+- **M4b Sew & drape, part 2: complete (2026-10-10).**
+  - **Sewing:** Free Sew (F) joins any two points of outlines; notches pair up across seams; whole-edge sewing (W) is unchanged; Fit moves to Cmd+0.
+  - **Arranging:** arm lines found on the form; Place at → Left arm / Right arm.
+  - **Draping:** pins (saved) and grabs in 3D; edits while draping carry the drape on, warm-started and coalesced on the simulation thread.
+  - **Files:** project format v4 (v1 to v3 files upgrade).
+  - **The drafted-T-shirt gate:** 0.00 mm penetration, seams welded, the cap notch on the shoulder seam, strain p99 4.5%.
 
 ## On approval: next steps
 1. `git init` in `/Users/vivekpuajri/Developer/vibe-clo3d`, delete the stray `firebase-debug.log`, and save this plan as `docs/specs/2026-10-09-opendrape-design.md`.

@@ -8,7 +8,7 @@ OpenDrape exists because commercial 3D fashion tools cost hundreds of dollars a 
 and need gaming-class graphics cards, which shuts out most students in India, Africa
 and elsewhere. Digital samples also replace muslin toiles, so less fabric is wasted.
 
-**Status:** early development (milestone M4a: sew and drape, part 1: sew pattern edges together, arrange the pieces round the body in 3D, and drape the skirt you drafted). Next: dress forms (M3), and M4b: sleeves, sewing part of an edge, pinning fabric and the T-shirt.
+**Status:** early development (milestone M4b: sew and drape, part 2: sew part of an edge, put sleeves on the arms, pull and pin the fabric while it drapes, and drape the T-shirt you drafted). Next: dress forms (M3).
 See `docs/specs/2026-10-09-opendrape-design.md` for the full plan.
 
 ## Download

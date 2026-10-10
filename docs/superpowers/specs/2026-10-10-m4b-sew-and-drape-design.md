@@ -2,7 +2,15 @@
 
 **Date:** 2026-10-10.
 
-**Status:** approved by the user on 2026-10-10. The design summary was answered with "Yes, build it". Scope was set by three choices: "Everything for a T-shirt", "Click start and end points" for free sewing, and "Saved, and editable" pins.
+**Status:**
+- Approved by the user on 2026-10-10. The design summary was answered with "Yes, build it". Scope was set by three choices: "Everything for a T-shirt", "Click start and end points" for free sewing, and "Saved, and editable" pins.
+- Implemented on branch `m4b-sew-and-drape`. The plan's "Where the spec's assumptions met the evidence" section records where the evidence refined the spec:
+  - no stored axis: the placement's own frame wraps the sleeve round the arm;
+  - the sleeve is centred on the arm's outer side, measured where the arm hangs free, and lowered until clear;
+  - arm lines come from cross-sections;
+  - Fit is on Cmd+0;
+  - the warm start welds at once only when every seam starts closed;
+  - pins left off their piece go with the edit.
 
 **Builds on:**
 - M4a (Sew & drape, part 1), merged and published as `fbc4023`. M4a's spec is `docs/superpowers/specs/2026-10-09-m4a-sew-and-drape-design.md`, and everything in it still holds unless this document changes it.
