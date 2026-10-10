@@ -29,6 +29,13 @@ Sustainability claims stay qualitative, because the 70–90% figures in circulat
 | UI language | English only; every string goes through Fluent so translations can be added later |
 | Windows testing | User has a Mac only → Windows is covered by CI (WARP smoke renders) plus recruited testers |
 
+### Direction from 2026-10-10
+The app is organised into five workspaces (Modeling · Finishing · Texturing · Rendering ·
+Animation). AI rendering and animation are optional plug-ins the user chooses, and a connector
+lets coding agents and Blender work with OpenDrape. See
+`docs/superpowers/specs/2026-10-10-m5-workspaces-design.md` for the direction and the order of
+the next milestones.
+
 ## Architecture
 
 ### Core technical choices (all deps GPL-3.0-compatible, versions verified 2026-10-09)
@@ -187,6 +194,8 @@ Each milestone ends with a **GitHub Release** (installers + portable ZIP) and a 
   - **Draping:** pins (saved) and grabs in 3D; edits while draping carry the drape on, warm-started and coalesced on the simulation thread.
   - **Files:** project format v4 (v1 to v3 files upgrade).
   - **The drafted-T-shirt gate:** 0.00 mm penetration, seams welded, the cap notch on the shoulder seam, strain p99 4.5%.
+
+- **M5 Workspaces: complete (2026-10-10).** Five workspace tabs (Cmd+1…5 and a View menu); Modeling holds everything above in a tidier layout: a tool strip of icons down the left of the pattern table, view options above it, a scrolling properties panel, and icon buttons for Play/Pause/Reset. The other four workspaces show what they will hold. One theme module holds the style and every colour; Phosphor icons (MIT).
 
 ## On approval: next steps
 1. `git init` in `/Users/vivekpuajri/Developer/vibe-clo3d`, delete the stray `firebase-debug.log`, and save this plan as `docs/specs/2026-10-09-opendrape-design.md`.
