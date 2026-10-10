@@ -3,9 +3,9 @@ use glam::{Mat4, Vec3};
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct Vertex {
-    position: [f32; 3],
-    normal: [f32; 3],
+pub(crate) struct Vertex {
+    pub(crate) position: [f32; 3],
+    pub(crate) normal: [f32; 3],
 }
 
 #[repr(C)]

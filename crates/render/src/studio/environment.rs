@@ -31,6 +31,11 @@ pub fn irradiance(n: Vec3) -> Vec3 {
         .fold(Vec3::ZERO, |e, (y, c)| e + Vec3::from_array(c) * *y)
 }
 
+/// The baked soft-light coefficients (irradiance/π, bands 0 to 2, RGB).
+pub fn sh() -> [[f32; 3]; 9] {
+    SH
+}
+
 /// Unit vector towards the key light.
 pub fn key_dir() -> Vec3 {
     Vec3::from_array(KEY_DIR)

@@ -38,10 +38,17 @@ impl OrbitCamera {
     }
 
     pub fn view_proj(&self, aspect: f32) -> Mat4 {
-        let view = glam::camera::rh::view::look_at_mat4(self.eye(), self.target, Vec3::Y);
-        let proj =
-            glam::camera::rh::proj::directx::perspective(self.fov_y, aspect.max(1e-3), 0.05, 100.0);
-        proj * view
+        self.proj(aspect) * self.view()
+    }
+
+    /// World to camera space (right-handed, looking down −Z).
+    pub fn view(&self) -> Mat4 {
+        glam::camera::rh::view::look_at_mat4(self.eye(), self.target, Vec3::Y)
+    }
+
+    /// Camera space to clip space, with wgpu's 0..1 depth.
+    pub fn proj(&self, aspect: f32) -> Mat4 {
+        glam::camera::rh::proj::directx::perspective(self.fov_y, aspect.max(1e-3), 0.05, 100.0)
     }
 }
 

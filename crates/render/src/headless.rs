@@ -5,6 +5,8 @@ pub struct HeadlessGpu {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub info: wgpu::AdapterInfo,
+    /// What the device was made from: asked which texture formats it can draw into.
+    pub adapter: wgpu::Adapter,
 }
 
 /// Any working adapter: a real GPU if there is one, otherwise a software one
@@ -47,6 +49,7 @@ pub fn headless_device_with(backends: wgpu::Backends) -> Option<HeadlessGpu> {
             device,
             queue,
             info: adapter.get_info(),
+            adapter,
         })
     })
 }
