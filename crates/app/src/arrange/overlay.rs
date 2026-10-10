@@ -3,15 +3,12 @@
 //! dragged, is drawn bright.
 
 use super::gizmo::{Gizmo, Handle, SQUARE_PT, ScreenCamera};
-use egui::{Color32, Painter, Pos2, Rect, Stroke, StrokeKind, pos2, vec2};
+use egui::{Painter, Pos2, Rect, Stroke, StrokeKind, pos2, vec2};
 use glam::DVec2;
 
-const AXIS_COLOURS: [Color32; 3] = [
-    Color32::from_rgb(220, 60, 60),
-    Color32::from_rgb(60, 170, 70),
-    Color32::from_rgb(60, 110, 235),
-];
-const BRIGHT: Color32 = Color32::from_rgb(255, 200, 0);
+use crate::theme::{
+    AXIS_COLOURS, GIZMO_BRIGHT as BRIGHT, GIZMO_OUTLINE, GIZMO_SQUARE, READOUT_TEXT,
+};
 
 fn screen(p: DVec2) -> Pos2 {
     pos2(p.x as f32, p.y as f32)
@@ -57,13 +54,13 @@ pub fn paint(painter: &Painter, cam: &ScreenCamera, gizmo: &Gizmo, lit: Option<H
     let fill = if lit == Some(Handle::Plane) {
         BRIGHT
     } else {
-        Color32::from_white_alpha(170)
+        GIZMO_SQUARE
     };
     painter.rect(
         square,
         2.0,
         fill,
-        Stroke::new(1.0, Color32::from_gray(60)),
+        Stroke::new(1.0, GIZMO_OUTLINE),
         StrokeKind::Middle,
     );
 }
@@ -82,7 +79,7 @@ pub fn paint_pins(
         let colour = if selected == Some(k) {
             BRIGHT
         } else {
-            crate::editor::PIN_COLOUR
+            crate::theme::PIN
         };
         painter.circle_filled(screen(at), 3.0, colour);
         painter.circle_stroke(screen(at), 7.0, Stroke::new(2.0, colour));
@@ -96,6 +93,6 @@ pub fn paint_readout(painter: &Painter, at: Pos2, text: String) {
         egui::Align2::LEFT_BOTTOM,
         text,
         egui::FontId::proportional(14.0),
-        Color32::from_gray(30),
+        READOUT_TEXT,
     );
 }

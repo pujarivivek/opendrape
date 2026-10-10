@@ -27,6 +27,7 @@ arc-swap = "1"
 eframe = { version = "=0.36.2", default-features = false, features = ["wgpu", "accesskit", "default_fonts", "wayland", "x11"] }
 egui = "=0.36.2"
 egui-wgpu = "=0.36.2"
+egui-phosphor = { version = "=0.14.0", default-features = false, features = ["regular"] }
 egui_kittest = { version = "=0.36.2", features = ["wgpu", "eframe"] }
 wgpu = "=30.0.1"
 glam = { version = "0.33", features = ["bytemuck"] }

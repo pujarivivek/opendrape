@@ -22,6 +22,7 @@ arc-swap.workspace = true
 crossbeam-channel.workspace = true
 eframe.workspace = true
 egui.workspace = true
+egui-phosphor.workspace = true
 egui-wgpu.workspace = true
 wgpu.workspace = true
 serde.workspace = true

@@ -15,62 +15,7 @@ use std::rc::Rc;
 /// so a dash cut off at the edge of the canvas still reaches it.
 const CLIP_MARGIN: f32 = 20.0;
 
-/// A pin's marker, on the pattern table and in the 3D view.
-pub(crate) const PIN_COLOUR: Color32 = Color32::from_rgb(200, 30, 60);
-
-struct Palette {
-    table: Color32,
-    minor: Color32,
-    major: Color32,
-    ink: Color32,
-    fill: Color32,
-    selected: Color32,
-    handle: Color32,
-    label: Color32,
-    /// The seam allowance band.
-    band: Color32,
-    /// The cut line.
-    cut: Color32,
-    /// The outline and fill of the pale half of a cut-on-fold piece.
-    pale: Color32,
-    pale_fill: Color32,
-}
-
-impl Palette {
-    fn new(dark: bool) -> Self {
-        if dark {
-            Self {
-                table: Color32::from_gray(30),
-                minor: Color32::from_gray(42),
-                major: Color32::from_gray(64),
-                ink: Color32::from_gray(220),
-                fill: Color32::from_rgba_unmultiplied(120, 160, 230, 46),
-                selected: Color32::from_rgb(255, 150, 90),
-                handle: Color32::from_rgb(120, 170, 255),
-                label: Color32::from_gray(190),
-                band: Color32::from_rgba_unmultiplied(120, 160, 230, 20),
-                cut: Color32::from_gray(120),
-                pale: Color32::from_gray(110),
-                pale_fill: Color32::from_rgba_unmultiplied(120, 160, 230, 22),
-            }
-        } else {
-            Self {
-                table: Color32::from_gray(250),
-                minor: Color32::from_gray(232),
-                major: Color32::from_gray(205),
-                ink: Color32::from_rgb(40, 40, 60),
-                fill: Color32::from_rgba_unmultiplied(70, 110, 200, 40),
-                selected: Color32::from_rgb(220, 90, 30),
-                handle: Color32::from_rgb(50, 110, 220),
-                label: Color32::from_gray(70),
-                band: Color32::from_rgba_unmultiplied(70, 110, 200, 18),
-                cut: Color32::from_gray(150),
-                pale: Color32::from_gray(165),
-                pale_fill: Color32::from_rgba_unmultiplied(70, 110, 200, 20),
-            }
-        }
-    }
-}
+use crate::theme::{PIN as PIN_COLOUR, PatternPalette as Palette};
 
 impl PatternEditor {
     pub(super) fn paint(&self, painter: &Painter, rect: Rect, dark: bool, drawn: &[Rc<Drawn>]) {
@@ -111,7 +56,7 @@ impl PatternEditor {
                         Align2::CENTER_CENTER,
                         line.id.0.to_string(),
                         FontId::proportional(10.0),
-                        Color32::WHITE,
+                        crate::theme::SEAM_BADGE_TEXT,
                     );
                 }
             }

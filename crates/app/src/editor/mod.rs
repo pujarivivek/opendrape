@@ -17,7 +17,6 @@ mod view;
 
 pub use canvas::PenPoint;
 pub use document::{Document, PinShift, UNDO_LIMIT};
-pub(crate) use paint::PIN_COLOUR;
 pub use placing::DEFAULT_SHOULDER_M;
 pub use view::View;
 

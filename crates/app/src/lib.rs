@@ -10,10 +10,12 @@ pub mod file_dialogs;
 pub mod gpu;
 #[doc(hidden)]
 pub mod i18n;
+pub mod icons;
 pub mod recovery;
 pub mod sim_runner;
 pub mod smoke_test;
 pub mod startup_log;
+pub mod theme;
 mod viewport;
 
 pub use app::{OpenDrapeApp, Shared, SharedState, Startup};

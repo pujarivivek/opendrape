@@ -142,6 +142,7 @@ pub struct OpenDrapeApp {
 
 impl OpenDrapeApp {
     pub fn new(cc: &eframe::CreationContext<'_>, startup: Startup, shared: SharedState) -> Self {
+        crate::theme::install(&cc.egui_ctx);
         let render_state = cc.wgpu_render_state.as_ref();
         let info = render_state.map(|rs| rs.adapter.get_info());
         crate::startup_log::stage(format_args!(
@@ -461,7 +462,7 @@ impl OpenDrapeApp {
                 egui::Align2::LEFT_TOP,
                 Self::stats_text(fps, f.step_ms, f.positions.len()),
                 egui::FontId::proportional(13.0),
-                egui::Color32::from_gray(60),
+                crate::theme::STATS_TEXT,
             );
         }
     }

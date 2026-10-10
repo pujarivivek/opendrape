@@ -7,10 +7,7 @@ use opendrape_render::{GpuMesh, MeshRenderer, OrbitCamera, RenderTarget, target_
 use std::rc::Rc;
 use std::sync::Arc;
 
-/// Mid-brown skin tone, a cotton blue, and the selected piece's warmer blue.
-const SKIN: [f32; 3] = [0.62, 0.45, 0.36];
-const FABRIC: [f32; 3] = [0.17, 0.36, 0.70];
-const SELECTED_FABRIC: [f32; 3] = [0.95, 0.55, 0.25];
+use crate::theme::{FABRIC, SELECTED_FABRIC, SKIN};
 
 struct ClothOnGpu {
     mesh: GpuMesh,

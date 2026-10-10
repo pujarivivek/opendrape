@@ -12,17 +12,7 @@ use opendrape_geom::{self as geom, Shape, ShapeKind};
 /// still be clicked.
 pub(super) const INSET_PX: f64 = 5.0;
 
-/// Each seam's colour, in turn.
-pub(super) const SEAM_COLOURS: [Color32; 8] = [
-    Color32::from_rgb(0, 150, 136),
-    Color32::from_rgb(156, 39, 176),
-    Color32::from_rgb(33, 120, 243),
-    Color32::from_rgb(67, 160, 71),
-    Color32::from_rgb(216, 27, 96),
-    Color32::from_rgb(121, 85, 72),
-    Color32::from_rgb(63, 81, 181),
-    Color32::from_rgb(190, 145, 0),
-];
+pub(super) use crate::theme::SEAM_COLOURS;
 
 /// A seam or a mirror image, ready to draw and pick.
 pub(super) struct SeamLine {
