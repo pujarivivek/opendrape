@@ -14,6 +14,8 @@ pub(crate) struct Targets {
     /// The AO prepass: depth (read by the AO search and the main pass) and view normals.
     pub prepass_depth: wgpu::TextureView,
     pub normals: wgpu::TextureView,
+    /// The running average of still frames, kept in turn in one and then the other.
+    pub averages: [wgpu::TextureView; 2],
 }
 
 pub(crate) fn texture(
@@ -81,6 +83,15 @@ impl Targets {
                 super::ao::NORMALS,
                 U::RENDER_ATTACHMENT | U::TEXTURE_BINDING,
             )),
+            averages: [0, 1].map(|_| {
+                view(texture(
+                    device,
+                    "studio average",
+                    size,
+                    format,
+                    U::RENDER_ATTACHMENT | U::TEXTURE_BINDING,
+                ))
+            }),
         }
     }
 

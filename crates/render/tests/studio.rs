@@ -522,3 +522,155 @@ fn ao_runs_at_every_quality_and_size() {
         }
     }
 }
+
+fn still_frames(q: Quality) -> u32 {
+    q.settings().still_frames
+}
+
+/// Once nothing changes, the view adds up its still frames and then stops drawing.
+#[test]
+fn a_still_view_finishes_and_then_does_nothing() {
+    let g = gpu();
+    let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::Medium);
+    let target = RenderTarget::new(&g.device, 64, 64);
+    let c = mesh(&mut r, &g, card(1.0, 0.0, 0.6), [0.5; 3], Material::Cloth);
+    let camera = front_camera(1.5);
+    let n = still_frames(Quality::Medium);
+    // One moving frame, then n still ones.
+    for call in 1..=n + 1 {
+        let done = r
+            .render(&g.device, &g.queue, &target, &camera, &[&c])
+            .still_done;
+        assert_eq!(done, call == n + 1, "call {call}");
+    }
+    let drawn = r.stats().frames_drawn;
+    let again = r.render(&g.device, &g.queue, &target, &camera, &[&c]);
+    assert!(!again.drew && again.still_done);
+    assert_eq!(r.stats().frames_drawn, drawn, "nothing drawn once finished");
+}
+
+#[test]
+fn moving_the_camera_starts_over() {
+    let g = gpu();
+    let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::Basic);
+    let target = RenderTarget::new(&g.device, 64, 64);
+    let c = mesh(&mut r, &g, card(1.0, 0.0, 0.6), [0.5; 3], Material::Cloth);
+    let mut camera = front_camera(1.5);
+    render_still(&mut r, &g, &target, &camera, &[&c]);
+    camera.yaw += 0.01;
+    let after = r.render(&g.device, &g.queue, &target, &camera, &[&c]);
+    assert!(after.drew && !after.still_done);
+}
+
+/// Selecting a piece recolours it: the finished image must not keep the old colour.
+#[test]
+fn changing_a_colour_starts_over() {
+    let g = gpu();
+    let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::Basic);
+    let target = RenderTarget::new(&g.device, 64, 64);
+    let mut c = mesh(&mut r, &g, card(1.0, 0.0, 0.6), [0.5; 3], Material::Cloth);
+    let camera = front_camera(1.5);
+    render_still(&mut r, &g, &target, &camera, &[&c]);
+    c.set_colour([0.9, 0.4, 0.1]);
+    let after = r.render(&g.device, &g.queue, &target, &camera, &[&c]);
+    assert!(after.drew && !after.still_done);
+}
+
+/// Luminance-weighted centre of what differs from the backdrop's top-left pixel.
+fn centroid(img: &image::RgbaImage) -> (f32, f32) {
+    let back = luminance(img.get_pixel(0, 0));
+    let (mut sx, mut sy, mut sw) = (0.0, 0.0, 0.0);
+    for (x, y, p) in img.enumerate_pixels() {
+        let w = (luminance(p) - back).abs();
+        sx += w * x as f32;
+        sy += w * y as f32;
+        sw += w;
+    }
+    (sx / sw, sy / sw)
+}
+
+/// The sub-pixel shifts that smooth edges when still don't move the picture.
+#[test]
+fn jitter_does_not_shift_the_image() {
+    let g = gpu();
+    let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::Medium);
+    r.set_overrides(plain());
+    let target = RenderTarget::new(&g.device, 128, 128);
+    let c = mesh(&mut r, &g, card(1.0, 0.0, 0.4), [0.2; 3], Material::Form);
+    let camera = front_camera(1.5);
+    r.render(&g.device, &g.queue, &target, &camera, &[&c]);
+    let moving = centroid(&read_back(&g.device, &g.queue, &target));
+    let still = centroid(&render_still(&mut r, &g, &target, &camera, &[&c]));
+    assert!(
+        (moving.0 - still.0).abs() < 0.25 && (moving.1 - still.1).abs() < 0.25,
+        "{moving:?} vs {still:?}"
+    );
+}
+
+/// A card turned 20°, so its edges are slanted.
+fn slanted_card() -> (Vec<Vec3>, Vec<[u32; 3]>) {
+    let (p, t) = card(1.0, 0.0, 0.5);
+    let turn = glam::Quat::from_rotation_z(20f32.to_radians());
+    let centre = Vec3::new(0.0, 1.0, 0.0);
+    (
+        p.into_iter()
+            .map(|v| turn * (v - centre) + centre)
+            .collect(),
+        t,
+    )
+}
+
+/// Shades between the card and the backdrop along its slanted edges: more of them once still
+/// (the edges were averaged over many sub-pixel positions).
+fn edge_shades(img: &image::RgbaImage) -> usize {
+    let mut shades = std::collections::BTreeSet::new();
+    let (back, card) = (
+        luminance(img.get_pixel(2, 2)),
+        luminance(img.get_pixel(64, 64)),
+    );
+    let (lo, hi) = (back.min(card) + 3.0, back.max(card) - 3.0);
+    for p in img.pixels() {
+        let l = luminance(p);
+        if l > lo && l < hi {
+            shades.insert(l.round() as i32);
+        }
+    }
+    shades.len()
+}
+
+#[test]
+fn still_edges_are_smoother_than_moving_ones() {
+    let g = gpu();
+    let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::Basic);
+    r.set_overrides(plain());
+    let target = RenderTarget::new(&g.device, 128, 128);
+    let c = mesh(&mut r, &g, slanted_card(), [0.1; 3], Material::Form);
+    let camera = front_camera(1.5);
+    r.render(&g.device, &g.queue, &target, &camera, &[&c]);
+    let moving = edge_shades(&read_back(&g.device, &g.queue, &target));
+    let still = edge_shades(&render_still(&mut r, &g, &target, &camera, &[&c]));
+    assert!(
+        still > moving + 4,
+        "edge shades: moving {moving}, still {still}"
+    );
+}
+
+#[test]
+fn resizing_restarts_cleanly() {
+    let g = gpu();
+    let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::High);
+    let c = mesh(&mut r, &g, card(1.0, 0.0, 0.6), [0.5; 3], Material::Cloth);
+    let camera = front_camera(1.5);
+    let scope = g.device.push_error_scope(wgpu::ErrorFilter::Validation);
+    for (w, h) in [(200, 100), (1, 1), (300, 300)] {
+        let target = RenderTarget::new(&g.device, w, h);
+        let first = r.render(&g.device, &g.queue, &target, &camera, &[&c]);
+        assert!(first.drew && !first.still_done, "{w}×{h} starts over");
+        render_still(&mut r, &g, &target, &camera, &[&c]);
+        assert!(
+            r.render(&g.device, &g.queue, &target, &camera, &[&c])
+                .still_done
+        );
+    }
+    assert!(pollster::block_on(scope.pop()).is_none());
+}

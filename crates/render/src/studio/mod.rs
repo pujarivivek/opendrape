@@ -22,14 +22,14 @@ use crate::target::RenderTarget;
 use ao::{AoPass, AoTarget};
 use frame::FrameUniforms;
 use glam::{Mat4, Vec2, Vec3};
-use output::OutputPass;
+use output::{OutputPass, Show, Source};
 use quality::{AoSettings, Quality, ShadowSettings};
 use shadow::Shadows;
 use targets::{DEPTH, Targets, texture};
 
 /// Test switches: force an effect on or off whatever the quality says, or the LDR path.
 #[doc(hidden)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Overrides {
     pub ao: Option<bool>,
     pub key_shadows: Option<bool>,
@@ -76,6 +76,17 @@ fn forced<T>(wanted: Option<bool>, now: Option<T>, fallback: T) -> Option<T> {
     }
 }
 
+/// The `i`th number (from 1) of the Halton sequence in `base`: evenly spread over 0..1.
+fn halton(mut i: u32, base: u32) -> f32 {
+    let (mut f, mut r) = (1.0, 0.0);
+    while i > 0 {
+        f /= base as f32;
+        r += f * (i % base) as f32;
+        i /= base;
+    }
+    r
+}
+
 /// The format the lit scene is drawn in: half-float HDR where the GPU can draw into it.
 const HDR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const LDR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -117,6 +128,11 @@ pub struct StudioRenderer {
     targets_quality: Option<Quality>,
     shadows: Shadows,
     frames_drawn: u64,
+    /// The last frame's signature: the same again means the view is still.
+    last_signature: Option<u64>,
+    /// Still frames averaged so far, and whether that's all of them.
+    still_count: u32,
+    still_done: bool,
     pipelines: Option<Pipelines>,
     targets: Option<Targets>,
     output: OutputPass,
@@ -275,6 +291,9 @@ impl StudioRenderer {
             targets_quality: None,
             shadows: Shadows::new(device),
             frames_drawn: 0,
+            last_signature: None,
+            still_count: 0,
+            still_done: false,
             pipelines: None,
             targets: None,
             output: OutputPass::new(device),
@@ -454,7 +473,9 @@ impl StudioRenderer {
             return;
         }
         let targets = Targets::new(device, width, height, format);
-        self.output.bind(device, &targets.colour_view);
+        let averages = [&targets.averages[0], &targets.averages[1]];
+        self.output
+            .bind(device, &targets.colour_view, averages, format);
         let s = self.quality.settings();
         let mut resolutions: Vec<bool> = [s.ao_moving, Some(s.ao_still)]
             .into_iter()
@@ -493,6 +514,30 @@ impl StudioRenderer {
             shadow: forced(self.overrides.key_shadows, shadow, s.shadow_still),
             contact: self.overrides.contact.unwrap_or(true),
         }
+    }
+
+    /// Everything that decides what the image looks like: the same as last frame means the
+    /// view is still.
+    fn signature(
+        &self,
+        camera: &OrbitCamera,
+        target: &RenderTarget,
+        meshes: &[&StudioMesh],
+    ) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let c = camera;
+        for v in [
+            c.target.x, c.target.y, c.target.z, c.yaw, c.pitch, c.distance, c.fov_y,
+        ] {
+            v.to_bits().hash(&mut h);
+        }
+        (target.width, target.height).hash(&mut h);
+        (self.quality, self.overrides, self.geometry_epoch).hash(&mut h);
+        for m in meshes {
+            (m.id, m.colour.map(f32::to_bits), m.material).hash(&mut h);
+        }
+        h.finish()
     }
 
     pub fn stats(&self) -> Stats {
@@ -612,6 +657,19 @@ impl StudioRenderer {
         camera: &OrbitCamera,
         meshes: &[&StudioMesh],
     ) -> Rendered {
+        let signature = self.signature(camera, target, meshes);
+        let still = self.last_signature == Some(signature);
+        self.last_signature = Some(signature);
+        if still && self.still_done {
+            return Rendered {
+                drew: false,
+                still_done: true,
+            };
+        }
+        if !still {
+            self.still_count = 0;
+            self.still_done = false;
+        }
         let format = self.colour_format();
         self.ensure_pipelines(device, format);
         self.ensure_targets(device, target.width, target.height, format);
@@ -630,7 +688,7 @@ impl StudioRenderer {
                 Material::Floor,
             ));
         }
-        let effects = self.effects(false);
+        let effects = self.effects(still);
         let settings = self.quality.settings();
         let remade = self.shadows.ensure_maps(
             device,
@@ -642,7 +700,15 @@ impl StudioRenderer {
             self.bind_textures(device);
         }
         let size = (target.width, target.height);
-        let uniforms = self.frame_uniforms(camera, size, Vec2::ZERO, effects, 0);
+        // Each still frame is shifted a different fraction of a pixel (Halton 2, 3) and turns
+        // the shadow and AO noise, so their average has smooth edges and smooth shading.
+        let (jitter, index) = if still {
+            let i = self.still_count + 1;
+            (Vec2::new(halton(i, 2) - 0.5, halton(i, 3) - 0.5), i)
+        } else {
+            (Vec2::ZERO, 0)
+        };
+        let uniforms = self.frame_uniforms(camera, size, jitter, effects, index);
         queue.write_buffer(&self.frame_uniforms, 0, bytemuck::bytes_of(&uniforms));
         let floor = self.floor.as_ref().expect("made above");
         for m in meshes.iter().copied().chain([floor]) {
@@ -725,18 +791,30 @@ impl StudioRenderer {
             pass.set_pipeline(&pipelines.backdrop);
             pass.draw(0..3, 0..1);
         }
-        self.output.draw(
-            queue,
-            &mut encoder,
-            &target.color_view,
-            environment::exposure(),
-            format == LDR,
-        );
+        let source = if still {
+            let into = (self.still_count % 2) as usize;
+            let weight = 1.0 / (self.still_count + 1) as f32;
+            self.output
+                .accumulate(queue, &mut encoder, into, &targets.averages[into], weight);
+            self.still_count += 1;
+            self.still_done = self.still_count >= settings.still_frames;
+            Source::Average(into)
+        } else {
+            Source::Scene
+        };
+        let show = Show {
+            source,
+            exposure: environment::exposure(),
+            ldr: format == LDR,
+            fxaa: !still && settings.fxaa_moving,
+        };
+        self.output
+            .draw(queue, &mut encoder, &target.color_view, show);
         queue.submit([encoder.finish()]);
         self.frames_drawn += 1;
         Rendered {
             drew: true,
-            still_done: false,
+            still_done: self.still_done,
         }
     }
 }
