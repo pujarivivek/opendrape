@@ -8,7 +8,7 @@ OpenDrape exists because commercial 3D fashion tools cost hundreds of dollars a 
 and need gaming-class graphics cards, which shuts out most students in India, Africa
 and elsewhere. Digital samples also replace muslin toiles, so less fabric is wasted.
 
-**Status:** early development (milestone M5: five workspaces. **Modeling** holds drafting, sewing and draping; Finishing, Texturing, Rendering and Animation are coming). Next: dress forms (M3), then the connector for AI tools and Blender.
+**Status:** early development (milestone M5b: a photo-studio 3D view with studio lighting, soft shadows, soft darkening in folds, fabric sheen and colour-accurate output, on top of M5's five workspaces). Next: dress forms (M3), then the connector for AI tools and Blender.
 See `docs/specs/2026-10-09-opendrape-design.md` for the full plan.
 
 ## Download

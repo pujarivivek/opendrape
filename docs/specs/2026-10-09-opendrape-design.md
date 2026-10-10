@@ -197,6 +197,17 @@ Each milestone ends with a **GitHub Release** (installers + portable ZIP) and a 
 
 - **M5 Workspaces: complete (2026-10-10).** Five workspace tabs (Cmd+1…5 and a View menu); Modeling holds everything above in a tidier layout: a tool strip of icons down the left of the pattern table, view options above it, a scrolling properties panel, and icon buttons for Play/Pause/Reset. The other four workspaces show what they will hold. One theme module holds the style and every colour; Phosphor icons (MIT).
 
+- **M5b Studio view: complete (2026-10-10).** The 3D view is drawn by a studio renderer:
+  - a soft grey studio with a shadow-catching floor;
+  - the CC0 HDRI "Studio Small 08" baked to SH9 plus a soft key light;
+  - Khronos PBR Neutral tone mapping, so a matte fabric facing the camera shows its colour within CIEDE2000 1.05;
+  - cloth sheen and a lining shade;
+  - soft key-light shadows and a floor contact shadow;
+  - ambient occlusion at half resolution;
+  - edge smoothing while moving, then about 16 sub-pixel-jittered frames averaged when still, after which drawing stops.
+
+  View → 3D quality offers Auto, Basic, Medium and High; Auto follows the graphics chip, and the choice is remembered. Spec: `docs/superpowers/specs/2026-10-10-m5b-studio-view-design.md`.
+
 ## On approval: next steps
 1. `git init` in `/Users/vivekpuajri/Developer/vibe-clo3d`, delete the stray `firebase-debug.log`, and save this plan as `docs/specs/2026-10-09-opendrape-design.md`.
 2. Save memory notes: user is a non-developer and Claude writes all code; OpenDrape key decisions.
