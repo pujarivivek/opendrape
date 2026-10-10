@@ -31,8 +31,8 @@ TAU5 = round(2 * math.pi, 5)  # 6.28319: an angle that rounds to this is 2 pi, i
 
 def angle5(phi):
     """phi (radians, 0 <= phi < 2 pi) rounded to 5 decimals for the file. A value just under 2 pi
-    rounds up to 2 pi (the file format keeps angles below it), so it is stored as 0, the same
-    direction."""
+    rounds up to 6.28319, which is past 2 pi and refused by the loader, so it is stored as 0, the
+    same direction."""
     phi = round(phi, 5)
     return 0.0 if phi >= TAU5 else phi
 

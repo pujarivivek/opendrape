@@ -16,10 +16,10 @@ pub const RIBBON_LIFT: f64 = 0.0005;
 pub struct Tape {
     pub name: String,
     pub closed: bool,
-    /// (angle, v) of each sample. The angle phi stays within [0, 2π): it never runs past 2π
-    /// (a file may say exactly 2π, which is centre front too), it wraps back to 0 instead. Where
-    /// the tape crosses centre front, phi therefore jumps by nearly 2π between neighbouring
-    /// samples. Anyone interpolating along the tape must unwrap it first.
+    /// (angle, v) of each sample. The angle phi stays within [0, 2π] and is never wrapped: the
+    /// exporter writes centre front as 0, but a file may say 2π, and the mirror copy of a sample
+    /// at 0 is 2π. Where the tape crosses centre front, phi jumps by nearly 2π between
+    /// neighbouring samples. Anyone interpolating along the tape must unwrap it first.
     pub uv: Vec<DVec2>,
     /// Each sample on the form's surface.
     pub points: Vec<DVec3>,
