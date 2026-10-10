@@ -139,7 +139,9 @@ impl SelfContacts {
         // A triangle's nearest point may be this far from a particle before the next look,
         // and its nearest corner at most a circumradius (0.71 edge lengths) further.
         let reach = self.distance + 2.0 * self.margin;
-        let corner_reach = reach + 0.75 * c.spacing;
+        // Any point of a triangle is within half its longest edge of a corner, and the band
+        // along an outline has longer edges than the lattice's cells.
+        let corner_reach = reach + 0.5 * c.longest_edge;
         let cell = corner_reach;
         let table = (2 * n).max(1);
         let key = |p: DVec3| hash(coords(p, cell), table);
@@ -175,6 +177,9 @@ impl SelfContacts {
         let mut pairs = std::mem::take(&mut self.pairs);
         let mut stamp = std::mem::take(&mut self.stamp);
         pairs.clear();
+        // A stamp left from the last look would hide a triangle from the particle that was
+        // the last to look at it then and the first now: the leading edge of a sliding layer.
+        stamp.fill(u32::MAX);
         for i in 0..n {
             if !c.alive[i] {
                 continue;
@@ -184,7 +189,16 @@ impl SelfContacts {
             for dx in -1..=1 {
                 for dy in -1..=1 {
                     for dz in -1..=1 {
-                        let k = hash([cx + dx, cy + dy, cz + dz], table);
+                        // Wrapping: a coordinate blown up past i64 saturates, and the frame's
+                        // finite check reports that, not a panic here.
+                        let k = hash(
+                            [
+                                cx.wrapping_add(dx),
+                                cy.wrapping_add(dy),
+                                cz.wrapping_add(dz),
+                            ],
+                            table,
+                        );
                         let slots = self.cell_start[k] as usize..self.cell_start[k + 1] as usize;
                         for &j in &self.cell_entries[slots] {
                             let j = j as usize;
@@ -561,6 +575,31 @@ mod tests {
         assert_eq!(sc.builds, 2);
         sc.invalidate();
         assert!(sc.refresh(&c), "forgotten");
+    }
+
+    #[test]
+    fn a_layer_sliding_over_another_keeps_the_pairs_at_its_leading_edge() {
+        // Two level sheets 1 cm apart. The upper slides a cell and a half along -x and then
+        // along -z, each slide far enough that the pairs are found again: what the lazy
+        // look finds must be what a fresh look finds (a stamp left from the last look once
+        // hid the triangles ahead of the leading edge from their only reacher).
+        let mut b = ClothBuilder::new(0.15);
+        b.add_panel(&sheet(4, 4, 0.02, 0.0, 0.0, 0.0), 1.0);
+        b.add_panel(&sheet(4, 4, 0.02, 0.0, 0.01, 0.0), 1.0);
+        let mut c = b.build();
+        let d = self_collision_distance(&Params::default(), c.spacing());
+        let mut lazy = SelfContacts::new(d);
+        assert!(lazy.refresh(&c));
+        for slide in [DVec3::new(-0.03, 0.0, 0.0), DVec3::new(0.0, 0.0, -0.03)] {
+            for p in c.x[25..].iter_mut() {
+                *p += slide;
+            }
+            assert!(lazy.refresh(&c), "slid past the margin");
+            let mut fresh = SelfContacts::new(d);
+            fresh.refresh(&c);
+            assert!(!fresh.pairs.is_empty());
+            assert_eq!(lazy.pairs, fresh.pairs);
+        }
     }
 
     #[test]

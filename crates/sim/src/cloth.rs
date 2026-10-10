@@ -55,6 +55,9 @@ pub struct Cloth {
     pub(crate) rest: Vec<DVec3>,
     /// The fabric's typical edge length (m): the mean structural rest length.
     pub(crate) spacing: f64,
+    /// The longest triangle edge on the pattern (m): no point of a triangle is further than
+    /// half of it from a corner.
+    pub(crate) longest_edge: f64,
     /// Pairs across a seam (each stitched pair, and the neighbours of either end) that are
     /// never pushed apart by self-collision, sorted.
     pub(crate) excluded: Vec<(u32, u32)>,
@@ -273,6 +276,13 @@ impl ClothBuilder {
         } else {
             c.stretch.iter().map(|l| l.rest).sum::<f64>() / c.stretch.len() as f64
         };
+        let rest = &c.rest;
+        c.longest_edge = c
+            .triangles
+            .iter()
+            .flat_map(|t| (0..3).map(move |k| (t[k] as usize, t[(k + 1) % 3] as usize)))
+            .map(|(a, b)| rest[a].distance(rest[b]))
+            .fold(0.0, f64::max);
         // Each stitched pair, and the neighbours of either end, are never pushed apart: a weld
         // joins them.
         let mut ring: Vec<Vec<u32>> = vec![Vec::new(); c.x.len()];
@@ -473,6 +483,15 @@ impl Cloth {
             self.v[b] = DVec3::ZERO;
         }
         let m = |k: u32| root(&map, k);
+        // The pairs left alone across seams follow the merged particles too, so a corner where
+        // seams meet keeps every exclusion it had.
+        self.excluded = std::mem::take(&mut self.excluded)
+            .into_iter()
+            .map(|(a, b)| edge_key(m(a), m(b)))
+            .filter(|(a, b)| a != b)
+            .collect();
+        self.excluded.sort_unstable();
+        self.excluded.dedup();
         // Seams still open follow their merged particles; a pair this weld has already joined
         // (through a seam that meets it at a corner) is done.
         let open: Vec<(Link, u32)> = std::mem::take(&mut self.stitches)
@@ -751,6 +770,14 @@ mod tests {
         assert_eq!(pairs, vec![(0, 6), (4, 7)]);
         assert_eq!(cloth.open_seam_gaps(), vec![(2, 0.05)]);
         assert_eq!(cloth.weld_closed(0.002), vec![], "not closed yet");
+        // Seam 2's exclusions now reach A's corner, which took over B's.
+        assert!(cloth.excluded.contains(&(0, 6)), "{:?}", cloth.excluded);
+        assert!(
+            cloth
+                .excluded
+                .iter()
+                .all(|&(a, b)| a < b && cloth.is_alive(a as usize))
+        );
         cloth.weld_stitches();
         assert!(!cloth.has_open_stitches());
         assert_eq!((0..cloth.len()).filter(|&i| cloth.is_alive(i)).count(), 5);
