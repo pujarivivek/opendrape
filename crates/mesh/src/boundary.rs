@@ -37,7 +37,11 @@ pub(crate) fn outline(shape: &Shape, sides: &[(SeamSide, usize)], h: f64) -> Opt
     // Side samples that land on a corner: (side, sample, corner).
     let mut on_corner = Vec::new();
     for (s, (side, steps)) in sides.iter().enumerate() {
-        let runs = geom::side_edges(shape, side)?;
+        // Whole edges only, as the Sew tool makes them (free sides come with their own layout).
+        let runs: Vec<(usize, bool)> = geom::side_runs(shape, side)?
+            .iter()
+            .map(|r| (r.edge, r.from > r.to))
+            .collect();
         for (j, _) in &runs {
             sewn[*j] = true;
         }

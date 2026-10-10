@@ -46,8 +46,7 @@ fn skirt(stage: &Stage) -> Project {
     let twin = pr
         .add_twin(back, "Back right".into(), p(1500.0, 0.0))
         .unwrap();
-    let side =
-        |shape, first_edge, forward| SeamSide::new(shape, Half::Drawn, first_edge, 1, forward);
+    let side = |shape, edge, forward| SeamSide::edges(shape, Half::Drawn, edge, edge, forward);
     pr.add_seam(side(front, 1, true), side(back, 3, false));
     pr.add_seam(side(back, 1, true), side(twin, 1, true));
     assert_eq!(pr.check(), Ok(()));

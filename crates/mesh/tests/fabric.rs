@@ -14,8 +14,9 @@ fn p(x: f64, y: f64) -> Point2 {
     Point2::new(x, y)
 }
 
-fn side(shape: PieceId, half: Half, first_edge: usize, edges: usize, forward: bool) -> SeamSide {
-    SeamSide::new(shape, half, first_edge, edges, forward)
+/// Whole stored edges `first` to `last` of a shape.
+fn side(shape: PieceId, half: Half, first: usize, last: usize, forward: bool) -> SeamSide {
+    SeamSide::edges(shape, half, first, last, forward)
 }
 
 /// The skirt a student drafts: a front on the fold (half: hem 300, waist 177.5, 550 long, with
@@ -54,7 +55,7 @@ fn skirt() -> (Project, [PieceId; 3]) {
         .unwrap();
     pr.add_seam(
         side(front, Half::Drawn, 1, 1, true),
-        side(back, Half::Drawn, 3, 1, false),
+        side(back, Half::Drawn, 3, 3, false),
     );
     pr.add_seam(
         side(back, Half::Drawn, 1, 1, true),
@@ -301,11 +302,11 @@ fn seam_sides_always_get_the_same_count() {
     // piece's top and left edges (300 mm, two edges) to the long one's bottom and right (336).
     let ease = pr.add_seam(
         side(short, Half::Drawn, 1, 1, true),
-        side(long, Half::Drawn, 3, 1, false),
+        side(long, Half::Drawn, 3, 3, false),
     );
     pr.add_seam(
-        side(short, Half::Drawn, 2, 2, true),
-        side(long, Half::Drawn, 0, 2, false),
+        side(short, Half::Drawn, 2, 3, true),
+        side(long, Half::Drawn, 0, 1, false),
     );
     let mesh = build(&pr, &MeshParams::default());
     assert!(mesh.notes.iter().any(|n| matches!(
@@ -406,7 +407,7 @@ fn an_outline_that_crosses_itself_is_left_out_with_its_seams() {
     // The bow's edge 1, (200,200) to (200,0), is as long as the back's bottom edge.
     pr.add_seam(
         side(bow, Half::Drawn, 1, 1, true),
-        side(other, Half::Drawn, 0, 1, true),
+        side(other, Half::Drawn, 0, 0, true),
     );
     let mesh = build(&pr, &MeshParams::default());
     assert_eq!(mesh.notes, vec![MeshNote::CrossesItself(bow)]);
@@ -454,8 +455,8 @@ fn multi_edge_and_wrapping_sides_pair_start_to_start() {
         let a = rect(&mut pr, 0.0);
         let b = rect(&mut pr, 300.0);
         pr.add_seam(
-            side(a, Half::Drawn, first_a, 2, true),
-            side(b, Half::Drawn, first_b, 2, forward_b),
+            side(a, Half::Drawn, first_a, (first_a + 1) % 4, true),
+            side(b, Half::Drawn, first_b, (first_b + 1) % 4, forward_b),
         );
         assert_eq!(pr.check(), Ok(()));
         let mesh = build(&pr, &MeshParams::default());
@@ -800,7 +801,7 @@ fn a_seam_whose_shape_is_left_out_has_no_length_note() {
     // The bow's edge 1 is 200 mm; the back's bottom edge is 300 mm.
     pr.add_seam(
         side(bow, Half::Drawn, 1, 1, true),
-        side(other, Half::Drawn, 0, 1, true),
+        side(other, Half::Drawn, 0, 0, true),
     );
     let mesh = build(&pr, &MeshParams::default());
     assert_eq!(mesh.notes, vec![MeshNote::CrossesItself(bow)]);
@@ -864,7 +865,7 @@ fn a_short_edge_sewn_to_a_long_one_cannot_overflow_the_particle_budget() {
     ));
     pr.add_seam(
         side(a, Half::Drawn, 1, 1, true),
-        side(b, Half::Drawn, 0, 1, true),
+        side(b, Half::Drawn, 0, 0, true),
     );
     let at_12 = build(
         &pr,
@@ -991,9 +992,11 @@ fn random_patterns_never_panic() {
             let (a, na) = ids[(rnd() * ids.len() as f64) as usize];
             let (b, nb) = ids[(rnd() * ids.len() as f64) as usize];
             let mut tried = pr.clone();
+            let (ea, fa) = ((rnd() * na as f64) as usize, rnd() < 0.5);
+            let (eb, fb) = ((rnd() * nb as f64) as usize, rnd() < 0.5);
             tried.add_seam(
-                side(a, Half::Drawn, (rnd() * na as f64) as usize, 1, rnd() < 0.5),
-                side(b, Half::Drawn, (rnd() * nb as f64) as usize, 1, rnd() < 0.5),
+                side(a, Half::Drawn, ea, ea, fa),
+                side(b, Half::Drawn, eb, eb, fb),
             );
             if tried.check().is_ok() {
                 pr = tried;

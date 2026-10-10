@@ -65,8 +65,10 @@ pub(super) fn seam_lines(
 fn inset_side(shape: &Shape, side: &SeamSide, inset: f64, tolerance: f64) -> Option<Vec<Point2>> {
     let ccw = geom::is_counter_clockwise(&shape.piece);
     let mut out = Vec::new();
-    for (j, against) in geom::side_edges(shape, side)? {
-        let points = geom::edge_points(&shape.piece, j, tolerance);
+    for run in geom::side_runs(shape, side)? {
+        let (j, against) = (run.edge, run.from > run.to);
+        let (lo, hi) = (run.from.min(run.to), run.from.max(run.to));
+        let points = geom::edge_points_between(&shape.piece, j, lo, hi, tolerance);
         let last = points.len() - 1;
         let mut moved: Vec<Point2> = (0..points.len())
             .map(|k| {

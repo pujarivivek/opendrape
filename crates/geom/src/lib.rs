@@ -17,7 +17,7 @@ pub use marks::{
     distance_along, edge_label_anchor, edge_label_anchors, is_counter_clockwise, line_length,
     line_points, nearest_line, notch_marks, notch_marks_on_stitching, point_at_distance,
 };
-pub use seams::{side_edges, side_length, side_points};
+pub use seams::{Run, edge_points_between, side_length, side_notches, side_points, side_runs};
 pub use shapes::{ON_OUTLINE_MM, Shape, ShapeKind, shape_of, shapes, unfolded};
 
 /// Accuracy (mm) of curve lengths and nearest-point searches.
@@ -257,25 +257,38 @@ pub fn remove_vertex(piece: &mut Piece, i: usize) -> bool {
     piece.remove_vertex(i, prev_len)
 }
 
-/// [`split_edge`] on stored piece `id` of `project`, keeping its seams sewn: a side on the
-/// split edge covers both parts (see `Project::seams_after_split`).
+/// [`split_edge`] on stored piece `id` of `project`, keeping its seams sewn: a side's ends stay
+/// on the same points of the outline (see `Project::seams_after_split`).
 pub fn split_edge_in(project: &mut Project, id: PieceId, i: usize, t: f64) -> Option<usize> {
-    let v = split_edge(project.piece_mut(id)?, i, t)?;
-    project.seams_after_split(id, i);
+    let piece = project.piece_mut(id)?;
+    let total = edge_length(piece, i);
+    let first = distance_along(piece, i, t);
+    let v = split_edge(piece, i, t)?;
+    project.seams_after_split(id, i, if total > 1e-12 { first / total } else { 0.5 });
     Some(v)
 }
 
-/// [`remove_vertex`] on stored piece `id` of `project`, keeping its seams valid (see
+/// [`remove_vertex`] on stored piece `id` of `project`, keeping its seams valid: side ends on the
+/// two joined edges keep their share of the joined edge's length (see
 /// `Project::seams_after_removal`).
 pub fn remove_vertex_in(project: &mut Project, id: PieceId, i: usize) -> bool {
     let Some(piece) = project.piece_mut(id) else {
         return false;
     };
     let n = piece.len();
+    if i >= n {
+        return false;
+    }
+    let (before, after) = (edge_length(piece, piece.prev(i)), edge_length(piece, i));
     if !remove_vertex(piece, i) {
         return false;
     }
-    project.seams_after_removal(id, i, n);
+    let f = if before + after > 1e-12 {
+        before / (before + after)
+    } else {
+        0.5
+    };
+    project.seams_after_removal(id, i, n, f);
     true
 }
 
@@ -561,16 +574,10 @@ mod tests {
         let mut pr = Project::new();
         let a = pr.add_piece(square());
         let b = pr.add_piece(square());
-        let side = |shape, first_edge, edges| {
-            opendrape_core::SeamSide::new(
-                shape,
-                opendrape_core::Half::Drawn,
-                first_edge,
-                edges,
-                true,
-            )
+        let side = |shape, first, last| {
+            opendrape_core::SeamSide::edges(shape, opendrape_core::Half::Drawn, first, last, true)
         };
-        let seam = pr.add_seam(side(a, 1, 1), side(b, 3, 1));
+        let seam = pr.add_seam(side(a, 1, 1), side(b, 3, 3));
         assert_eq!(split_edge_in(&mut pr, a, 1, 0.5), Some(2));
         assert_eq!(pr.seam(seam).unwrap().a, side(a, 1, 2));
         assert_eq!(split_edge_in(&mut pr, PieceId(9), 0, 0.5), None);
@@ -578,5 +585,55 @@ mod tests {
         assert_eq!(pr.seam(seam).unwrap().a, side(a, 1, 1));
         assert_eq!(pr.check(), Ok(()));
         assert!(!remove_vertex_in(&mut pr, PieceId(9), 0));
+    }
+
+    #[test]
+    fn splitting_a_curve_keeps_free_side_ends_on_the_same_points() {
+        let mut pr = Project::new();
+        let mut a = square();
+        a.set_curved(1, true);
+        a.set_handle(1, opendrape_core::HandleEnd::Start, p(160.0, 20.0));
+        let a = pr.add_piece(a);
+        let b = pr.add_piece(Piece::rectangle(
+            PieceId(0),
+            "B",
+            p(300.0, 0.0),
+            100.0,
+            100.0,
+        ));
+        let free = |shape, t0, t1| opendrape_core::SeamSide {
+            shape,
+            half: opendrape_core::Half::Drawn,
+            from: opendrape_core::OutlinePos::new(1, t0),
+            to: opendrape_core::OutlinePos::new(1, t1),
+            forward: t1 > t0,
+        };
+        // Either side of where the curve is split (curve parameter 0.5 is not its middle by
+        // length), and one end exactly at the point the split lands on.
+        let seams = [
+            pr.add_seam(free(a, 0.1, 0.3), free(b, 0.0, 0.2)),
+            pr.add_seam(free(a, 0.8, 0.4), free(b, 0.3, 0.8)),
+        ];
+        let ends = |pr: &Project| -> Vec<Point2> {
+            let all = shapes(pr);
+            seams
+                .iter()
+                .flat_map(|id| {
+                    let side = pr.seam(*id).unwrap().a;
+                    let pts = side_points(&all[0], &side, 0.01).unwrap();
+                    [pts[0], *pts.last().unwrap()]
+                })
+                .collect()
+        };
+        let before = ends(&pr);
+        assert_eq!(split_edge_in(&mut pr, a, 1, 0.5), Some(2));
+        assert_eq!(pr.check(), Ok(()));
+        // Lengths are measured to 0.0001 mm.
+        for (p, q) in before.iter().zip(ends(&pr)) {
+            assert!(p.distance(q) < 1e-3, "{p:?} moved to {q:?}");
+        }
+        // The second seam now runs round the new point, over both parts.
+        let side = pr.seam(seams[1]).unwrap().a;
+        assert_eq!((side.from.edge, side.to.edge), (2, 1));
     }
 }

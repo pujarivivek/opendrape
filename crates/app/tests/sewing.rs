@@ -36,8 +36,9 @@ fn with_back(h: &mut H) -> PieceId {
     id
 }
 
-fn side(shape: PieceId, half: Half, first_edge: usize, edges: usize, forward: bool) -> SeamSide {
-    SeamSide::new(shape, half, first_edge, edges, forward)
+/// Whole stored edges `first` to `last` of a shape, as the Sew tool makes them.
+fn side(shape: PieceId, half: Half, first: usize, last: usize, forward: bool) -> SeamSide {
+    SeamSide::edges(shape, half, first, last, forward)
 }
 
 fn sew(h: &mut H, a: SeamSide, b: SeamSide) -> SeamId {
@@ -58,7 +59,7 @@ fn adding_and_deleting_points_keeps_seams_sewn() {
     let seam = sew(
         &mut h,
         side(front, Half::Drawn, 1, 1, true),
-        side(back, Half::Drawn, 3, 1, false),
+        side(back, Half::Drawn, 3, 3, false),
     );
     key(&mut h, Key::X);
     click(&mut h, 401.0, 300.0); // the front's right edge, halfway
@@ -84,7 +85,7 @@ fn unfolding_keeps_the_seams_on_both_halves() {
     let seam = sew(
         &mut h,
         side(front, Half::Pale, 1, 1, true),
-        side(back, Half::Drawn, 3, 1, false),
+        side(back, Half::Drawn, 3, 3, false),
     );
     click(&mut h, 375.0, 250.0); // inside the drawn half
     h.get_by_label("Unfold").click();
@@ -93,7 +94,7 @@ fn unfolding_keeps_the_seams_on_both_halves() {
     // The pale image of the right edge is the whole piece's edge 4, running the other way.
     assert_eq!(
         seam_of(&h, seam).unwrap().a,
-        side(front, Half::Drawn, 4, 1, false)
+        side(front, Half::Drawn, 4, 4, false)
     );
     assert!(
         h.query_by_label("Remove fold").is_none(),
@@ -108,7 +109,7 @@ fn a_sewn_edge_cannot_become_the_fold() {
     let back = with_back(&mut h);
     sew(
         &mut h,
-        side(front, Half::Drawn, 3, 1, true),
+        side(front, Half::Drawn, 3, 3, true),
         side(back, Half::Drawn, 1, 1, true),
     );
     click(&mut h, 100.0, 300.0); // the front's left edge (edge 3)
@@ -147,7 +148,7 @@ fn two_clicks_make_a_seam_whose_starts_meet() {
         vec![Seam {
             id: SeamId(1),
             a: side(front, Half::Drawn, 1, 1, true),
-            b: side(back, Half::Drawn, 3, 1, false),
+            b: side(back, Half::Drawn, 3, 3, false),
         }]
     );
     assert_eq!(h.state().selection, Selection::Seam(SeamId(1)));
@@ -171,17 +172,17 @@ fn shift_clicks_add_the_next_edges_to_either_side() {
     click(&mut h, 599.0, 150.0); // back edge 3, backwards
     shift_click(&mut h, 750.0, 501.0); // back edge 2, before it
     assert_eq!(seams(&h)[0].a, side(front, Half::Drawn, 1, 2, true));
-    assert_eq!(seams(&h)[0].b, side(back, Half::Drawn, 2, 2, false));
+    assert_eq!(seams(&h)[0].b, side(back, Half::Drawn, 2, 3, false));
     cmd(&mut h, Key::Z);
     assert_eq!(
         seams(&h)[0].b,
-        side(back, Half::Drawn, 3, 1, false),
+        side(back, Half::Drawn, 3, 3, false),
         "each edge added is a step"
     );
     // Clicking away from every edge ends extending: the next Shift-click starts a new side.
     click(&mut h, 250.0, 300.0);
     shift_click(&mut h, 750.0, 501.0);
-    assert_eq!(seams(&h)[0].b, side(back, Half::Drawn, 3, 1, false));
+    assert_eq!(seams(&h)[0].b, side(back, Half::Drawn, 3, 3, false));
 }
 
 #[test]
@@ -243,7 +244,7 @@ fn mirrored_seams_appear_by_themselves() {
     let all = h.state().doc.project().all_seams();
     assert_eq!(all.len(), 2);
     assert_eq!(all[1].0.a, side(front, Half::Pale, 1, 1, true));
-    assert_eq!(all[1].0.b, side(twin, Half::Drawn, 3, 1, false));
+    assert_eq!(all[1].0.b, side(twin, Half::Drawn, 3, 3, false));
     // The mirror image's edges are sewn too.
     click(&mut h, 149.0, 150.0); // the pale half's outer edge
     assert_eq!(notice(&h).as_deref(), Some("This edge is already sewn."));
@@ -258,8 +259,8 @@ fn mirrored_seams_appear_by_themselves() {
     click(&mut h, 1225.0, 99.0);
     click(&mut h, 187.5, 99.0);
     assert_eq!(seams(&h).len(), 2);
-    assert_eq!(seams(&h)[1].a, side(twin, Half::Drawn, 0, 1, true));
-    assert_eq!(seams(&h)[1].b, side(front, Half::Pale, 0, 1, false));
+    assert_eq!(seams(&h)[1].a, side(twin, Half::Drawn, 0, 0, true));
+    assert_eq!(seams(&h)[1].b, side(front, Half::Pale, 0, 0, false));
 }
 
 #[test]
@@ -321,8 +322,8 @@ fn undo_and_deletion_drop_a_seam_selection_and_a_half_made_seam() {
     click(&mut h, 401.0, 150.0); // front edge 1
     let made = seams(&h);
     assert_eq!(made.len(), 1, "the new side was kept as a half-made seam");
-    assert_eq!((made[0].a.shape, made[0].a.first_edge), (back, 2));
-    assert_eq!((made[0].b.shape, made[0].b.first_edge), (front, 1));
+    assert_eq!((made[0].a.shape, made[0].a.from.edge), (back, 2));
+    assert_eq!((made[0].b.shape, made[0].b.from.edge), (front, 1));
 
     // A half-made seam whose piece is deleted is dropped too.
     let mut h = harness();
@@ -338,8 +339,8 @@ fn undo_and_deletion_drop_a_seam_selection_and_a_half_made_seam() {
     click(&mut h, 750.0, 501.0); // back edge 2: finishes it
     let made = seams(&h);
     assert_eq!(made.len(), 1);
-    assert_eq!((made[0].a.shape, made[0].a.first_edge), (back, 3));
-    assert_eq!((made[0].b.shape, made[0].b.first_edge), (back, 2));
+    assert_eq!((made[0].a.shape, made[0].a.from.edge), (back, 3));
+    assert_eq!((made[0].b.shape, made[0].b.from.edge), (back, 2));
 }
 
 #[test]
@@ -350,7 +351,7 @@ fn undo_cancels_a_half_made_seam_before_it_undoes_anything() {
     sew(
         &mut h,
         side(front, Half::Drawn, 1, 1, true),
-        side(back, Half::Drawn, 3, 1, false),
+        side(back, Half::Drawn, 3, 3, false),
     );
     key(&mut h, Key::W);
     click(&mut h, 250.0, 99.0); // the front's bottom edge: a half-made seam
@@ -408,7 +409,7 @@ fn redo_drops_a_half_made_seam_and_redoes() {
     let seam = sew(
         &mut h,
         side(front, Half::Drawn, 1, 1, true),
-        side(back, Half::Drawn, 3, 1, false),
+        side(back, Half::Drawn, 3, 3, false),
     );
     cmd(&mut h, Key::Z); // the Edit tool: the seam goes
     assert!(seams(&h).is_empty());
@@ -449,8 +450,8 @@ fn a_change_to_the_outline_drops_a_half_made_seam() {
     click(&mut h, 401.0, 150.0); // the front's right edge, now edge 2
     let made = seams(&h);
     assert_eq!(made.len(), 1);
-    assert_eq!((made[0].a.shape, made[0].a.first_edge), (back, 3));
-    assert_eq!((made[0].b.shape, made[0].b.first_edge), (front, 2));
+    assert_eq!((made[0].a.shape, made[0].a.from.edge), (back, 3));
+    assert_eq!((made[0].b.shape, made[0].b.from.edge), (front, 2));
 }
 
 #[test]
@@ -476,8 +477,8 @@ fn a_seam_whose_mirror_image_would_sew_a_sewn_edge_says_so() {
     // neither has this seam: the back's own bottom edge stays free.
     let first = sew(
         &mut h,
-        side(twin, Half::Drawn, 0, 1, true),
-        side(sleeve, Half::Drawn, 2, 1, true),
+        side(twin, Half::Drawn, 0, 0, true),
+        side(sleeve, Half::Drawn, 2, 2, true),
     );
     h.state_mut().fit();
     h.run();
@@ -530,7 +531,7 @@ fn sewn_pair(h: &mut H, height: f64) -> (PieceId, PieceId, SeamId) {
     let seam = sew(
         h,
         side(front, Half::Drawn, 1, 1, true),
-        side(back, Half::Drawn, 3, 1, false),
+        side(back, Half::Drawn, 3, 3, false),
     );
     (front, back, seam)
 }
@@ -583,12 +584,12 @@ fn flip_turns_the_second_side_round_as_one_step() {
     h.run();
     assert_eq!(
         seam_of(&h, seam).unwrap().b,
-        side(back, Half::Drawn, 3, 1, true)
+        side(back, Half::Drawn, 3, 3, true)
     );
     cmd(&mut h, Key::Z);
     assert_eq!(
         seam_of(&h, seam).unwrap().b,
-        side(back, Half::Drawn, 3, 1, false)
+        side(back, Half::Drawn, 3, 3, false)
     );
 }
 
@@ -603,7 +604,7 @@ fn delete_seam_takes_its_mirror_image_too() {
     let seam = sew(
         &mut h,
         side(front, Half::Drawn, 1, 1, true),
-        side(back, Half::Drawn, 3, 1, false),
+        side(back, Half::Drawn, 3, 3, false),
     );
     assert_eq!(h.state().doc.project().all_seams().len(), 2);
     h.state_mut().selection = Selection::Seam(seam);
@@ -639,8 +640,8 @@ fn seams_draw_on_halves_twins_and_round_corners() {
     // Two edges round a corner of the pale half, and a twin's edges wrapping past its last.
     let seam = sew(
         &mut h,
-        side(front, Half::Pale, 0, 2, false),
-        side(twin, Half::Drawn, 3, 2, true),
+        side(front, Half::Pale, 0, 1, false),
+        side(twin, Half::Drawn, 3, 0, true),
     );
     for selection in [Selection::Seam(seam), Selection::None] {
         h.state_mut().selection = selection;

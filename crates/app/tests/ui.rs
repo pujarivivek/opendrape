@@ -202,8 +202,8 @@ fn add_sewn_pieces(h: &mut App) {
             300.0,
         ));
         p.add_seam(
-            SeamSide::new(a, Half::Drawn, 1, 1, true),
-            SeamSide::new(b, Half::Drawn, 3, 1, false),
+            SeamSide::edges(a, Half::Drawn, 1, 1, true),
+            SeamSide::edges(b, Half::Drawn, 3, 3, false),
         );
     });
     h.run();

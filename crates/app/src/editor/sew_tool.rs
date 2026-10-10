@@ -2,7 +2,8 @@
 //! Shift-click adds the next edge along the outline to the side being built: the first side,
 //! or, once the seam is made, its second. The end of an edge nearer the first click on it is
 //! where its side starts, and the two starts meet. Esc cancels a half-made seam; clicking away
-//! from every edge ends extending.
+//! from every edge ends extending. Its sides are whole edges: free sides that start and end at
+//! corners.
 
 use super::{PatternEditor, Selection};
 use crate::tr;
@@ -10,11 +11,56 @@ use egui::Response;
 use opendrape_core::{Half, ModelError, PieceId, Point2, Project, SeamId, SeamSide};
 use opendrape_geom as geom;
 
+/// Whole stored edges of one shape: `edges` of them from `first_edge` (wrapping), running the
+/// stored way when `forward`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct EdgeRun {
+    pub shape: PieceId,
+    pub half: Half,
+    pub first_edge: usize,
+    pub edges: usize,
+    pub forward: bool,
+}
+
+impl EdgeRun {
+    /// The seam side these edges make, on an outline of `n` edges.
+    pub fn side(&self, n: usize) -> SeamSide {
+        let last = (self.first_edge + self.edges - 1) % n.max(1);
+        SeamSide::edges(self.shape, self.half, self.first_edge, last, self.forward)
+    }
+
+    /// The whole edges `side` covers (on an outline of `n` edges); None when it covers only
+    /// part of one.
+    pub fn of(side: &SeamSide, n: usize) -> Option<Self> {
+        let spans = side.spans(n);
+        if spans.is_empty() || spans.iter().any(|s| s.t0 != 0.0 || s.t1 != 1.0) {
+            return None;
+        }
+        let first = if side.forward {
+            spans[0].edge
+        } else {
+            spans[spans.len() - 1].edge
+        };
+        Some(Self {
+            shape: side.shape,
+            half: side.half,
+            first_edge: first,
+            edges: spans.len(),
+            forward: side.forward,
+        })
+    }
+
+    /// Whether it covers stored edge `e` of an outline of `n` edges.
+    fn covers(&self, n: usize, e: usize) -> bool {
+        n > 0 && (e % n + n - self.first_edge % n) % n < self.edges
+    }
+}
+
 /// A seam being sewn.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct SewDraft {
     /// The first side, while it is built.
-    pub a: SeamSide,
+    pub a: EdgeRun,
     /// The seam the second click made: Shift-clicks now add edges to its second side.
     pub seam: Option<SeamId>,
     /// How many edges the first side's outline had when it was picked. The side counts its
@@ -37,9 +83,15 @@ pub(super) struct EdgeUnder {
 }
 
 impl EdgeUnder {
-    /// A side of just this edge, starting at its end nearer the pointer.
-    fn side(&self) -> SeamSide {
-        SeamSide::new(self.shape, self.half, self.edge, 1, self.forward)
+    /// Just this edge, starting at its end nearer the pointer.
+    fn run(&self) -> EdgeRun {
+        EdgeRun {
+            shape: self.shape,
+            half: self.half,
+            first_edge: self.edge,
+            edges: 1,
+            forward: self.forward,
+        }
     }
 }
 
@@ -69,17 +121,17 @@ pub(super) fn edge_under(project: &Project, w: Point2, tol: f64) -> Option<EdgeU
 
 /// `side` (on an outline of `n` edges) with stored edge `edge` added at whichever of its ends
 /// the edge is next to; None when it is next to neither, or the side is the whole outline.
-pub(super) fn extended(side: SeamSide, edge: usize, n: usize) -> Option<SeamSide> {
+pub(super) fn extended(side: EdgeRun, edge: usize, n: usize) -> Option<EdgeRun> {
     if side.edges >= n {
         return None;
     }
     if edge == (side.first_edge + side.edges) % n {
-        Some(SeamSide {
+        Some(EdgeRun {
             edges: side.edges + 1,
             ..side
         })
     } else if (edge + 1) % n == side.first_edge {
-        Some(SeamSide {
+        Some(EdgeRun {
             first_edge: edge,
             edges: side.edges + 1,
             ..side
@@ -199,7 +251,7 @@ impl PatternEditor {
             (Some(d @ SewDraft { seam: None, .. }), false) => self.make_seam(d, hit),
             _ => {
                 self.canvas.sew = Some(SewDraft {
-                    a: hit.side(),
+                    a: hit.run(),
                     seam: None,
                     outline_edges: n,
                 })
@@ -209,7 +261,14 @@ impl PatternEditor {
 
     /// Sews the draft's finished first side to the clicked edge, as one undo step.
     fn make_seam(&mut self, draft: SewDraft, hit: EdgeUnder) {
-        let id = self.doc.edit(|p| p.add_seam(draft.a, hit.side()));
+        let n = |p: &Project, id| p.owner(id).map_or(0, |(piece, _)| piece.len());
+        let id = self.doc.edit(|p| {
+            let (a, b) = (
+                draft.a.side(n(p, draft.a.shape)),
+                hit.run().side(n(p, hit.shape)),
+            );
+            p.add_seam(a, b)
+        });
         if self.doc.last_change_refused() {
             // Both edges are free (they were checked), so what refuses a seam is that its
             // mirror image would sew an edge that is already sewn; or, at the very limit, there
@@ -232,9 +291,11 @@ impl PatternEditor {
         let grown = self.doc.edit(|p| {
             let seam = p.seam_mut(id)?;
             let same_outline = seam.b.shape == hit.shape && seam.b.half == hit.half;
+            let run = EdgeRun::of(&seam.b, n)?;
             seam.b = same_outline
-                .then(|| extended(seam.b, hit.edge, n))
-                .flatten()?;
+                .then(|| extended(run, hit.edge, n))
+                .flatten()?
+                .side(n);
             Some(())
         });
         if !self.note_if_refused() && grown.is_none() {
@@ -246,7 +307,7 @@ impl PatternEditor {
     pub(super) fn sew_draft_side(&self) -> Option<SeamSide> {
         let draft = self.canvas.sew?;
         match draft.seam {
-            None => Some(draft.a),
+            None => Some(draft.a.side(draft.outline_edges)),
             Some(id) => self.doc.project().seam(id).map(|s| s.b),
         }
     }
@@ -261,21 +322,39 @@ mod tests {
         Point2::new(x, y)
     }
 
+    fn run(first_edge: usize, edges: usize) -> EdgeRun {
+        EdgeRun {
+            shape: PieceId(1),
+            half: Half::Drawn,
+            first_edge,
+            edges,
+            forward: true,
+        }
+    }
+
     #[test]
     fn a_side_grows_at_either_end_and_wraps() {
-        let side = SeamSide::new(PieceId(1), Half::Drawn, 0, 1, true);
-        assert_eq!(extended(side, 1, 4), Some(SeamSide { edges: 2, ..side }));
-        assert_eq!(
-            extended(side, 3, 4),
-            Some(SeamSide {
-                first_edge: 3,
-                edges: 2,
-                ..side
-            })
-        );
+        let side = run(0, 1);
+        assert_eq!(extended(side, 1, 4), Some(run(0, 2)));
+        assert_eq!(extended(side, 3, 4), Some(run(3, 2)));
         assert_eq!(extended(side, 2, 4), None, "not next to it");
-        let all = SeamSide::new(PieceId(1), Half::Drawn, 0, 4, true);
-        assert_eq!(extended(all, 0, 4), None, "already the whole outline");
+        assert_eq!(extended(run(0, 4), 0, 4), None, "already the whole outline");
+        // As a seam side it runs from the start of its first edge to the end of its last.
+        assert_eq!(
+            run(3, 2).side(4),
+            SeamSide::edges(PieceId(1), Half::Drawn, 3, 0, true)
+        );
+        assert_eq!(EdgeRun::of(&run(3, 2).side(4), 4), Some(run(3, 2)));
+        let backwards = EdgeRun {
+            forward: false,
+            ..run(3, 2)
+        };
+        assert_eq!(EdgeRun::of(&backwards.side(4), 4), Some(backwards));
+        let part = SeamSide {
+            to: opendrape_core::OutlinePos::new(0, 0.5),
+            ..run(3, 2).side(4)
+        };
+        assert_eq!(EdgeRun::of(&part, 4), None, "not whole edges");
     }
 
     /// A project with one of each kind of shape: a plain piece with a curved edge, a piece cut
@@ -372,7 +451,10 @@ mod tests {
             400.0,
         ));
         let first = SewDraft {
-            a: SeamSide::new(a, Half::Drawn, 1, 1, true),
+            a: EdgeRun {
+                shape: a,
+                ..run(1, 1)
+            },
             seam: None,
             outline_edges: 4,
         };
@@ -394,7 +476,11 @@ mod tests {
         folded.piece_mut(a).unwrap().fold = Some(1);
         assert!(!draft_fits(&folded, &first), "its edge became the fold");
         let pale = SewDraft {
-            a: SeamSide::new(a, Half::Pale, 0, 1, true),
+            a: EdgeRun {
+                shape: a,
+                half: Half::Pale,
+                ..run(0, 1)
+            },
             ..first
         };
         assert!(!draft_fits(&pr, &pale), "no pale half without a fold");
@@ -402,8 +488,8 @@ mod tests {
 
         // Once the seam is made, the seam is what the draft needs.
         let id = pr.add_seam(
-            SeamSide::new(a, Half::Drawn, 1, 1, true),
-            SeamSide::new(b, Half::Drawn, 3, 1, false),
+            SeamSide::edges(a, Half::Drawn, 1, 1, true),
+            SeamSide::edges(b, Half::Drawn, 3, 3, false),
         );
         let extending = SewDraft {
             seam: Some(id),

@@ -2,6 +2,7 @@
 //! millimetres with y up. Pure data with no geometry or GPU dependencies, so it is easy to
 //! save, compare and test.
 
+mod measure;
 mod piece;
 mod placement;
 mod project;
@@ -17,5 +18,7 @@ pub use placement::{MAX_CURVE_M, MAX_PLACEMENT_M, MIN_CURVE_M, Placement};
 pub use project::{
     MAX_PIECE_ID, MAX_PIECES, MAX_TOTAL_VERTICES, ModelError, Project, SCHEMA_VERSION,
 };
-pub use seam::{Half, MAX_SEAM_ID, MAX_SEAMS, Seam, SeamId, SeamSide};
+pub use seam::{
+    Half, MAX_SEAM_ID, MAX_SEAMS, MIN_SIDE_MM, OutlinePos, Seam, SeamId, SeamSide, Span,
+};
 pub use units::Units;

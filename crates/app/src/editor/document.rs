@@ -50,15 +50,17 @@ impl Document {
     pub fn project(&self) -> &Project {
         &self.project
     }
-    /// Changes the project as one undo step. A change that leaves the project as it was adds
-    /// no step. A change that leaves the project invalid (see [`Project::check`]) is refused:
-    /// the project is left as it was and no step is added. Ask [`Self::last_change_refused`]
-    /// to tell a refusal from a change that simply did nothing: the closure's result is
-    /// returned either way.
+    /// Changes the project as one undo step. What the change leaves unusable goes with it (a
+    /// seam side 1 mm long or less: see [`Project::drop_broken`]). A change that leaves the
+    /// project as it was adds no step. A change that leaves the project invalid (see
+    /// [`Project::check`]) is refused: the project is left as it was and no step is added. Ask
+    /// [`Self::last_change_refused`] to tell a refusal from a change that simply did nothing:
+    /// the closure's result is returned either way.
     pub fn edit<R>(&mut self, f: impl FnOnce(&mut Project) -> R) -> R {
         self.end_gesture();
         let before = self.project.clone();
         let result = f(&mut self.project);
+        self.project.drop_broken();
         self.refused = self.project.check().err();
         if self.refused.is_some() {
             // Never keep a project that could not be saved and opened again.
@@ -84,12 +86,13 @@ impl Document {
             self.gesture = Some(self.project.clone());
         }
     }
-    /// Changes the project as part of the current drag (starting one if needed). An invalid
-    /// result is refused, as in [`Self::edit`]: the project is left as it was.
+    /// Changes the project as part of the current drag (starting one if needed). What it leaves
+    /// unusable goes, and an invalid result is refused, as in [`Self::edit`].
     pub fn gesture_edit<R>(&mut self, f: impl FnOnce(&mut Project) -> R) -> R {
         self.begin_gesture();
         let before = self.project.clone();
         let result = f(&mut self.project);
+        self.project.drop_broken();
         self.refused = self.project.check().err();
         if self.refused.is_some() {
             self.project = before;
@@ -321,5 +324,42 @@ mod tests {
         assert_eq!(doc.project().piece(id).unwrap().len(), 4);
         assert!(doc.undo(), "only adding the piece was a step");
         assert!(!doc.can_undo());
+    }
+
+    #[test]
+    fn a_drag_that_leaves_a_seam_side_too_short_deletes_the_seam_in_the_same_step() {
+        use opendrape_core::{Half, OutlinePos, SeamSide};
+        let mut doc = Document::default();
+        let (a, b) = doc.edit(|p| (p.add_piece(rect()), p.add_piece(rect())));
+        // A's bottom edge (100 mm) from 10 to 20 mm, to B's left edge.
+        let part = SeamSide {
+            from: OutlinePos::new(0, 0.1),
+            to: OutlinePos::new(0, 0.2),
+            ..SeamSide::edges(a, Half::Drawn, 0, 0, true)
+        };
+        doc.edit(|p| p.add_seam(part, SeamSide::edges(b, Half::Drawn, 3, 3, false)));
+        let steps = |doc: &mut Document| {
+            let mut n = 0;
+            while doc.undo() {
+                n += 1;
+            }
+            for _ in 0..n {
+                doc.redo();
+            }
+            n
+        };
+        assert_eq!(steps(&mut doc), 2);
+        // Pull A's bottom-right corner in to 5 mm: the side would be 0.5 mm long.
+        doc.gesture_edit(|p| {
+            p.piece_mut(a)
+                .unwrap()
+                .move_vertex(1, Point2::new(5.0, 0.0))
+        });
+        doc.end_gesture();
+        assert!(!doc.last_change_refused(), "the edit is made");
+        assert!(doc.project().seams.is_empty(), "and the seam goes with it");
+        assert_eq!(steps(&mut doc), 3, "in the same step");
+        doc.undo();
+        assert_eq!(doc.project().seams.len(), 1, "undo brings both back");
     }
 }

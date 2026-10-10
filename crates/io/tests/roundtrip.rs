@@ -116,12 +116,12 @@ fn detailed_project() -> Project {
     // The bodice's right edge to the sleeve's pale half, run backwards; and the bodice's left
     // and bottom edges (wrapping past the last edge) to the sleeve's drawn bottom edge.
     project.add_seam(
-        SeamSide::new(bodice_id, Half::Drawn, 1, 1, true),
-        SeamSide::new(sleeve_id, Half::Pale, 1, 1, false),
+        SeamSide::edges(bodice_id, Half::Drawn, 1, 1, true),
+        SeamSide::edges(sleeve_id, Half::Pale, 1, 1, false),
     );
     project.add_seam(
-        SeamSide::new(bodice_id, Half::Drawn, 3, 2, true),
-        SeamSide::new(sleeve_id, Half::Drawn, 0, 1, true),
+        SeamSide::edges(bodice_id, Half::Drawn, 3, 0, true),
+        SeamSide::edges(sleeve_id, Half::Drawn, 0, 0, true),
     );
     project.set_placement(bodice_id, Some(Placement::at([0.0, 1.25, 0.4])));
     project.set_placement(
@@ -193,7 +193,7 @@ fn the_sample_really_uses_every_new_feature() {
     // placements on a piece, a twin and a curved piece.
     let sides: Vec<SeamSide> = project.seams.iter().flat_map(|s| [s.a, s.b]).collect();
     assert!(sides.iter().any(|s| s.half == Half::Pale) && sides.iter().any(|s| !s.forward));
-    assert!(sides.iter().any(|s| s.first_edge + s.edges > 4), "wraps");
+    assert!(sides.iter().any(|s| s.to.edge < s.from.edge), "wraps");
     assert!(bodice.placement.is_some() && bodice.twin.as_ref().unwrap().placement.is_some());
     assert!(
         project.pieces[1]

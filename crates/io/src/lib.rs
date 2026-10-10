@@ -101,8 +101,13 @@ fn read_from<R: Read + Seek>(r: R) -> Result<Project, OdpError> {
     }
     let text = std::str::from_utf8(&bytes).map_err(|e| OdpError::Corrupt(e.to_string()))?;
     let found = check_version(text)?;
-    let mut project: Project =
+    let mut document: serde_json::Value =
         serde_json::from_str(text).map_err(|e| OdpError::Corrupt(e.to_string()))?;
+    if found <= 3 {
+        upgrade_sides_from_v3(&mut document);
+    }
+    let mut project: Project =
+        serde_json::from_value(document).map_err(|e| OdpError::Corrupt(e.to_string()))?;
     if found == 1 {
         upgrade_from_v1(&mut project);
     }
@@ -111,6 +116,58 @@ fn read_from<R: Read + Seek>(r: R) -> Result<Project, OdpError> {
     project.schema_version = SCHEMA_VERSION;
     project.check().map_err(OdpError::Invalid)?;
     Ok(project)
+}
+
+/// Version 3 (M4a) stored a seam side as whole edges: `first_edge`, `edges` and `forward`. From
+/// version 4 a side runs between two points of the outline, so each becomes the free side from
+/// the start of its first edge to the end of its last (from the last's end to the first's start
+/// when it runs the other way). The edge count comes from the piece the side is on (a twin has
+/// its piece's). A side that names edges its piece doesn't have, or none, ends on an edge past
+/// the last, so the check that follows refuses it as before.
+fn upgrade_sides_from_v3(document: &mut serde_json::Value) {
+    use serde_json::{Value, json};
+    let mut edge_counts = std::collections::BTreeMap::new();
+    for piece in document["pieces"].as_array().into_iter().flatten() {
+        let n = piece["vertices"].as_array().map_or(0, Vec::len) as u64;
+        edge_counts.extend(piece["id"].as_u64().map(|id| (id, n)));
+        edge_counts.extend(piece["twin"]["id"].as_u64().map(|id| (id, n)));
+    }
+    let Some(seams) = document.get_mut("seams").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for seam in seams {
+        for key in ["a", "b"] {
+            let Some(side) = seam.get_mut(key).and_then(Value::as_object_mut) else {
+                continue;
+            };
+            let (Some(first), Some(edges), Some(forward)) = (
+                side.get("first_edge").and_then(Value::as_u64),
+                side.get("edges").and_then(Value::as_u64),
+                side.get("forward").and_then(Value::as_bool),
+            ) else {
+                continue;
+            };
+            let n = side
+                .get("shape")
+                .and_then(Value::as_u64)
+                .and_then(|id| edge_counts.get(&id).copied())
+                .unwrap_or(0);
+            let last = if first < n && (1..=n).contains(&edges) {
+                (first + edges - 1) % n
+            } else {
+                n.max(first + 1)
+            };
+            let (start, end) = (
+                json!({"edge": first, "t": 0.0}),
+                json!({"edge": last, "t": 1.0}),
+            );
+            let (from, to) = if forward { (start, end) } else { (end, start) };
+            side.remove("first_edge");
+            side.remove("edges");
+            side.insert("from".into(), from);
+            side.insert("to".into(), to);
+        }
+    }
 }
 
 /// Version 1 (M2a) had no seam allowances, notches, internal lines, folds or twins. Serde's
@@ -126,9 +183,9 @@ fn upgrade_from_v1(project: &mut Project) {
 /// from a newer format is reported as such even when its contents have changed shape. Returns
 /// the version found.
 ///
-/// Versions 1 to 3 parse directly into `Project` (the fields older versions lack take their
-/// defaults; see [`upgrade_from_v1`]). A future version that renames or reshapes fields will
-/// need a step that parses older documents as a `serde_json::Value` and rewrites them first.
+/// Versions 1 to 3 are read as a `serde_json::Value` first, so the seam sides of version 3 can be
+/// rewritten ([`upgrade_sides_from_v3`]); the fields older versions lack take their defaults (see
+/// [`upgrade_from_v1`]).
 fn check_version(text: &str) -> Result<u64, OdpError> {
     #[derive(Deserialize)]
     struct Version {

@@ -4,8 +4,8 @@
 //! so a change to how projects are saved cannot quietly change what these files mean.
 
 use opendrape_core::{
-    Edge, EdgeProps, Half, InternalLine, LineKind, Notch, NotchStyle, Piece, PieceId, Placement,
-    Point2, Project, Seam, SeamId, SeamSide, Twin, Units, Vertex, VertexKind,
+    Edge, EdgeProps, Half, InternalLine, LineKind, Notch, NotchStyle, OutlinePos, Piece, PieceId,
+    Placement, Point2, Project, Seam, SeamId, SeamSide, Twin, Units, Vertex, VertexKind,
 };
 use std::io::{Cursor, Write};
 use zip::ZipWriter;
@@ -105,7 +105,7 @@ fn format_v1_still_opens() {
     }
 
     assert_eq!(loaded, expected);
-    assert_eq!(loaded.schema_version, 3, "upgraded on load");
+    assert_eq!(loaded.schema_version, 4, "upgraded on load");
     assert_eq!(loaded.next_piece_name("Piece"), "Piece 7");
 }
 
@@ -206,7 +206,7 @@ fn format_v2_still_opens() {
         placement: None,
     });
     assert_eq!(loaded, expected);
-    assert_eq!(loaded.schema_version, 3, "upgraded on load");
+    assert_eq!(loaded.schema_version, 4, "upgraded on load");
     assert!(loaded.seams.is_empty());
     assert_eq!(loaded.name_of(PieceId(3)), Some("Back right"));
     assert_eq!(loaded.next_piece_name("Piece"), "Piece 4");
@@ -333,18 +333,24 @@ fn format_v3_still_opens() {
             curve: None,
         }),
     });
-    let side = |shape: u32, half: Half, first_edge: usize, edges: usize, forward: bool| SeamSide {
-        shape: PieceId(shape),
-        half,
-        first_edge,
-        edges,
-        forward,
+    // Version 3 sewed whole edges: each side is now the free side from its first edge's start
+    // to its last edge's end (the other way round when it ran backwards).
+    let side = |shape: u32, half: Half, first: usize, last: usize, forward: bool| {
+        let (start, end) = (OutlinePos::new(first, 0.0), OutlinePos::new(last, 1.0));
+        let (from, to) = if forward { (start, end) } else { (end, start) };
+        SeamSide {
+            shape: PieceId(shape),
+            half,
+            from,
+            to,
+            forward,
+        }
     };
     expected.seams = vec![
         Seam {
             id: SeamId(1),
             a: side(1, Half::Drawn, 1, 1, true),
-            b: side(2, Half::Drawn, 3, 1, false),
+            b: side(2, Half::Drawn, 3, 3, false),
         },
         Seam {
             id: SeamId(2),
@@ -353,12 +359,12 @@ fn format_v3_still_opens() {
         },
         Seam {
             id: SeamId(5),
-            a: side(4, Half::Drawn, 3, 2, true),
-            b: side(1, Half::Pale, 2, 1, false),
+            a: side(4, Half::Drawn, 3, 0, true),
+            b: side(1, Half::Pale, 2, 2, false),
         },
     ];
     assert_eq!(loaded, expected);
-    assert_eq!(loaded.schema_version, 3);
+    assert_eq!(loaded.schema_version, 4, "upgraded on load");
     assert_eq!(loaded.next_piece_name("Piece"), "Piece 5");
     // The first seam has a mirror image (front's pale half to the back's twin); the centre
     // back is its own; the pocket has none.

@@ -82,7 +82,7 @@ impl PatternEditor {
         if ui.button(tr!("panel-seam-flip")).clicked() {
             self.doc.edit(|p| {
                 if let Some(s) = p.seam_mut(id) {
-                    s.b.forward = !s.b.forward;
+                    s.b = s.b.flipped();
                 }
             });
             self.note_if_refused();
