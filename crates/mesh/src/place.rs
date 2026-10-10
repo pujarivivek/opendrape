@@ -340,9 +340,24 @@ pub fn place_at_arm(
         rotation: turn.to_array(),
         curve: Some(r),
     };
-    // Its points: along the outline, and a grid inside it, about a spacing apart.
+    let points = sample_points(shape, &outline);
+    let clear = |p: &Placement| !points.iter().any(|q| inside(apply(p, centre, *q)));
+    // At each height, the radius is settled as for Place at….
+    let at = |top: f64| placed(top, settle_radius(ARM_FALLBACK_RADIUS_M, |r| need(r, top)));
+    let steps = (tall.min(ARM_MAX_DROP_M) / ARM_STEP_M).floor() as usize;
+    (0..=steps)
+        .map(|k| at(k as f64 * ARM_STEP_M))
+        .find(clear)
+        .unwrap_or_else(|| at(0.0))
+}
+
+/// Points of `shape` (whose outline is `outline`) to check against the form: along the
+/// outline, and a grid inside it, about a spacing apart (at least [`CLEAR_SPACING_MM`], at most
+/// 41 across the piece's larger side).
+fn sample_points(shape: &Shape, outline: &[Point2]) -> Vec<Point2> {
+    let (lo, hi) = crate::bounds(outline);
     let spacing = CLEAR_SPACING_MM.max((hi.x - lo.x).max(hi.y - lo.y) / 40.0);
-    let mut points = along_outline(&outline, spacing);
+    let mut points = along_outline(outline, spacing);
     let steps = |a: f64, b: f64| ((b - a) / spacing).ceil() as usize;
     for i in 0..=steps(lo.x, hi.x) {
         for j in 0..=steps(lo.y, hi.y) {
@@ -352,14 +367,52 @@ pub fn place_at_arm(
             }
         }
     }
-    let clear = |p: &Placement| !points.iter().any(|q| inside(apply(p, centre, *q)));
-    // At each height, the radius is settled as for Place at….
-    let at = |top: f64| placed(top, settle_radius(ARM_FALLBACK_RADIUS_M, |r| need(r, top)));
-    let steps = (tall.min(ARM_MAX_DROP_M) / ARM_STEP_M).floor() as usize;
-    (0..=steps)
-        .map(|k| at(k as f64 * ARM_STEP_M))
-        .find(clear)
-        .unwrap_or_else(|| at(0.0))
+    points
+}
+
+/// A piece is moved out of a form when one of its points is closer to it than this (m)...
+pub const RESEAT_GAP_M: f64 = 0.005;
+/// ...in steps of this (m)...
+const RESEAT_STEP_M: f64 = 0.01;
+/// ...until all are [`PLACE_GAP_M`] clear, but no further than this (m).
+pub const RESEAT_MAX_M: f64 = 0.3;
+
+/// `placement` moved straight out, along the piece's front (`rotation` · +z), by the least
+/// multiple of [`RESEAT_STEP_M`] that puts every point of `shape` [`PLACE_GAP_M`] clear of
+/// the form (`distance` is its signed distance, negative inside). A curved piece's curve grows
+/// by the same amount, so it stays wrapped round the same axis. Unchanged when every point is
+/// [`RESEAT_GAP_M`] clear already, or when nothing within [`RESEAT_MAX_M`] clears it.
+pub fn moved_clear(
+    shape: &Shape,
+    placement: &Placement,
+    distance: &dyn Fn(DVec3) -> f64,
+) -> Placement {
+    let outline = geom::outline_points(&shape.piece, 0.5);
+    let (lo, hi) = crate::bounds(&outline);
+    let centre = lo.lerp(hi, 0.5);
+    let points = sample_points(shape, &outline);
+    let nearest = |p: &Placement| {
+        points
+            .iter()
+            .map(|q| distance(apply(p, centre, *q)))
+            .fold(f64::INFINITY, f64::min)
+    };
+    if nearest(placement) >= RESEAT_GAP_M {
+        return *placement;
+    }
+    let out = rotation(placement) * DVec3::Z;
+    let steps = (RESEAT_MAX_M / RESEAT_STEP_M).round() as usize;
+    (1..=steps)
+        .map(|k| {
+            let d = k as f64 * RESEAT_STEP_M;
+            Placement {
+                position: (position(placement) + out * d).to_array(),
+                curve: placement.curve.map(|r| r + d),
+                ..*placement
+            }
+        })
+        .find(|p| nearest(p) >= PLACE_GAP_M)
+        .unwrap_or(*placement)
 }
 
 /// Points round the closed polyline `outline`, no more than `spacing` (more than 0) apart.
@@ -1228,5 +1281,59 @@ mod tests {
         let level = level_for(&short, 0.04);
         let placed = place_at_arm(&short, &arm, &surface, &|q| q.y > level);
         assert!((top_of(&placed, &arm, 0.05) - 0.04).abs() < 1e-9);
+    }
+    /// One 400 × 300 mm rectangle, as a shape.
+    fn one_rect() -> Shape {
+        let mut pr = Project::new();
+        pr.add_piece(Piece::rectangle(
+            PieceId(0),
+            "Panel",
+            p(0.0, 0.0),
+            400.0,
+            300.0,
+        ));
+        geom::shapes(&pr).remove(0)
+    }
+
+    #[test]
+    fn moved_clear_moves_a_curved_piece_out_round_the_same_axis() {
+        let shape = one_rect();
+        let placed = Placement {
+            position: [0.0, 1.0, 0.15],
+            rotation: Placement::NO_ROTATION,
+            curve: Some(0.15),
+        };
+        // A cylinder of radius 0.2 round the y axis: the piece (wrapped at 0.15 round it) is
+        // inside it.
+        let distance = |q: DVec3| q.x.hypot(q.z) - 0.2;
+        let moved = moved_clear(&shape, &placed, &distance);
+        let r = moved.curve.unwrap();
+        assert!(
+            (moved.position[2] - r).abs() < 1e-9,
+            "the axis stays at z = 0"
+        );
+        assert!(
+            r >= 0.2 + PLACE_GAP_M - 1e-9 && r <= 0.2 + PLACE_GAP_M + RESEAT_STEP_M,
+            "{r}"
+        );
+        // Clear already: unchanged.
+        assert_eq!(moved_clear(&shape, &moved, &distance), moved);
+        // A flat piece moves along its front.
+        let flat = Placement::at([0.0, 1.0, 0.1]);
+        let plane = |q: DVec3| q.z - 0.15;
+        let out = moved_clear(&shape, &flat, &plane);
+        assert!((out.position[2] - 0.18).abs() < 1e-9, "{out:?}");
+        assert_eq!(
+            (out.position[0], out.position[1], out.curve),
+            (0.0, 1.0, None)
+        );
+    }
+
+    #[test]
+    fn moved_clear_gives_up_past_its_reach_and_leaves_the_piece() {
+        let shape = one_rect();
+        let placed = Placement::at([0.0, 1.0, 0.0]);
+        let everywhere = |_: DVec3| -1.0;
+        assert_eq!(moved_clear(&shape, &placed, &everywhere), placed);
     }
 }

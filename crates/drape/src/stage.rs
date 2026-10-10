@@ -235,6 +235,23 @@ impl Stage {
         self.torso.ray_exit(a.at(along), a.around(angle), ARM_RAY_M)
     }
 
+    /// Every piece and twin with a placement of its own, moved straight out of this form where
+    /// it would start inside it or touching it (see `place::moved_clear`). A twin that mirrors
+    /// its piece follows the piece. Run after the form changes, as part of the same edit.
+    pub fn reseat(&self, project: &mut Project) {
+        let moved: Vec<(PieceId, Placement)> = geom::shapes(project)
+            .iter()
+            .filter_map(|s| {
+                let own = project.placement_of(s.id)?;
+                let m = place::moved_clear(s, &own, &|q| self.signed_distance(q));
+                (m != own).then_some((s.id, m))
+            })
+            .collect();
+        for (id, m) in moved {
+            project.set_placement(id, Some(m));
+        }
+    }
+
     /// Place at… front, back or a side: where piece or twin `id` of `project` goes when it is
     /// wrapped round this form at `at`, at the height it has now. None when `project` has no
     /// such shape. The one place the form's rays are wired to `place::place_at`: the app's menu
@@ -938,5 +955,57 @@ mod tests {
                 assert!(d > 0.0, "arm {arm}: {d}");
             }
         }
+    }
+    #[test]
+    fn going_up_sizes_moves_placed_pieces_out_of_the_bigger_form() {
+        use opendrape_core::{Piece, Point2};
+        let small = form_stage(&FormChoice::default());
+        let big =
+            form_stage(&crate::choice::chart_choice("women-torso", "classic", "US 18").unwrap());
+        let mut pr = Project::new();
+        let front = pr.add_piece(Piece::rectangle(
+            PieceId(0),
+            "Front",
+            Point2::new(0.0, 0.0),
+            380.0,
+            600.0,
+        ));
+        let back = pr.add_piece(Piece::rectangle(
+            PieceId(0),
+            "Back",
+            Point2::new(500.0, 0.0),
+            380.0,
+            600.0,
+        ));
+        for (id, at) in [(front, PlaceAt::Front), (back, PlaceAt::Back)] {
+            let p = small.place_at(&pr, id, at).unwrap();
+            pr.set_placement(id, Some(p));
+        }
+        // The nearest any point of any placed piece comes to `stage` (negative: inside it).
+        let nearest = |stage: &Stage, pr: &Project| -> f64 {
+            geom::shapes(pr)
+                .iter()
+                .flat_map(|s| {
+                    let p = pr.placement_of(s.id).unwrap();
+                    let centre = place::centre_of(s);
+                    geom::outline_points(&s.piece, 0.5)
+                        .into_iter()
+                        .map(move |q| stage.signed_distance(place::apply(&p, centre, q)))
+                        .collect::<Vec<_>>()
+                })
+                .fold(f64::MAX, f64::min)
+        };
+        assert!(
+            nearest(&big, &pr) < 0.0,
+            "the test needs a piece inside the bigger form"
+        );
+        let before = pr.clone();
+        big.reseat(&mut pr);
+        assert!(nearest(&big, &pr) >= place::RESEAT_GAP_M - 1e-9);
+        assert_ne!(pr, before);
+        // Going back down leaves them where they are: they fall in when draped.
+        let mut down = pr.clone();
+        small.reseat(&mut down);
+        assert_eq!(down, pr);
     }
 }
