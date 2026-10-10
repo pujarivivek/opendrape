@@ -1,7 +1,8 @@
 //! Pattern pieces into fabric. Each shape on the pattern table (a piece, a whole cut-on-fold
 //! piece, a twin) becomes one panel: its stitching outline sampled into points (both sides of a
-//! seam with the same count) and filled with near-equilateral triangles. Seams become pairs of
-//! stitched points. Pure: no GPU, no windows.
+//! seam with the same count, laid out so that notches paired across the seam land on the same
+//! stitch) and filled with near-equilateral triangles. Seams become pairs of stitched points.
+//! Pure: no GPU, no windows.
 
 mod boundary;
 mod holes;
@@ -99,22 +100,101 @@ impl GarmentMesh {
     }
 }
 
+/// One side of a seam as the layout sees it: its length, its notches and the corners inside it,
+/// as distances (mm) from its start.
+struct SidePlan {
+    length: f64,
+    notches: Vec<f64>,
+    corners: Vec<f64>,
+}
+
+impl SidePlan {
+    fn new(shape: &Shape, side: &SeamSide) -> Option<Self> {
+        let runs = geom::side_runs(shape, side)?;
+        let mut corners = Vec::new();
+        let mut at = 0.0;
+        for run in &runs[..runs.len() - 1] {
+            at += run.length();
+            corners.push(at);
+        }
+        Some(Self {
+            length: at + runs[runs.len() - 1].length(),
+            notches: geom::side_notches(shape, side)?,
+            corners,
+        })
+    }
+}
+
 /// A seam to stitch, mirror images included: the shapes of its sides (indices into the shapes)
-/// and the lengths of its sides (mm).
+/// and what the layout needs of each side.
 struct SeamPlan {
     seam: Seam,
     shape_a: usize,
     shape_b: usize,
-    length_a: f64,
-    length_b: f64,
+    a: SidePlan,
+    b: SidePlan,
     mirrored: bool,
 }
 
 impl SeamPlan {
-    /// Both sides get this many steps at edge length `h`.
-    fn steps(&self, h: f64) -> usize {
-        ((self.length_a.max(self.length_b) / h).round() as usize).max(1)
+    /// Where each side's samples go at edge length `h` (mm from the side's start, the same
+    /// number on both sides). When the sides have as many notches as each other, the k-th
+    /// notch of one and the k-th of the other start a stretch each, and every pair of stretches
+    /// gets its own step count (at least one), so paired notches land on the same sample;
+    /// otherwise the whole sides are one stretch each, as before notches were matched. Each
+    /// corner inside a side then takes over the sample of its stretch nearest to it.
+    fn layout(&self, h: f64) -> (Vec<f64>, Vec<f64>) {
+        let breaks = |side: &SidePlan, matched: bool| {
+            let mut b = vec![0.0];
+            if matched {
+                b.extend(&side.notches);
+            }
+            b.push(side.length);
+            b
+        };
+        let matched = self.a.notches.len() == self.b.notches.len();
+        let (ba, bb) = (breaks(&self.a, matched), breaks(&self.b, matched));
+        let steps: Vec<usize> = ba
+            .windows(2)
+            .zip(bb.windows(2))
+            .map(|(a, b)| (((a[1] - a[0]).max(b[1] - b[0]) / h).round() as usize).max(1))
+            .collect();
+        (
+            samples(&ba, &steps, &self.a.corners),
+            samples(&bb, &steps, &self.b.corners),
+        )
     }
+}
+
+/// Samples along a side cut into stretches at `breaks` (its start, notches, its end), with
+/// `steps[j]` equal steps on stretch j. Each corner (a distance in `corners`) takes over the
+/// sample of its stretch nearest to it, never a stretch's own ends; a corner whose sample
+/// another corner took keeps none.
+fn samples(breaks: &[f64], steps: &[usize], corners: &[f64]) -> Vec<f64> {
+    let mut at = Vec::new();
+    let mut first = Vec::with_capacity(steps.len());
+    for (j, &n) in steps.iter().enumerate() {
+        first.push(at.len());
+        let (lo, hi) = (breaks[j], breaks[j + 1]);
+        at.extend((0..n).map(|k| lo + (hi - lo) * k as f64 / n as f64));
+    }
+    at.push(breaks[breaks.len() - 1]);
+    let mut taken = vec![false; at.len()];
+    for &c in corners {
+        let Some(j) = (0..steps.len()).find(|&j| c >= breaks[j] && c <= breaks[j + 1]) else {
+            continue;
+        };
+        let (n, lo, hi) = (steps[j], breaks[j], breaks[j + 1]);
+        if n < 2 || hi - lo <= 0.0 {
+            continue;
+        }
+        let k = first[j] + (((c - lo) / (hi - lo) * n as f64).round() as usize).clamp(1, n - 1);
+        if !taken[k] {
+            taken[k] = true;
+            at[k] = c;
+        }
+    }
+    at
 }
 
 /// What making the fabric at one edge length gave.
@@ -152,7 +232,7 @@ pub fn build(project: &Project, params: &MeshParams) -> GarmentMesh {
     }
     // A seam whose shape was left out is not built, so it has no length to warn about.
     for plan in &seams {
-        let differ = (plan.length_a - plan.length_b).abs();
+        let differ = (plan.a.length - plan.b.length).abs();
         if !plan.mirrored
             && differ > LENGTH_WARNING_MM
             && made.meshed[plan.shape_a]
@@ -185,8 +265,8 @@ fn seam_plans(project: &Project, shapes: &[Shape]) -> Vec<SeamPlan> {
                 seam,
                 shape_a,
                 shape_b,
-                length_a: geom::side_length(&shapes[shape_a], &seam.a)?,
-                length_b: geom::side_length(&shapes[shape_b], &seam.b)?,
+                a: SidePlan::new(&shapes[shape_a], &seam.a)?,
+                b: SidePlan::new(&shapes[shape_b], &seam.b)?,
                 mirrored,
             })
         })
@@ -202,14 +282,19 @@ fn mesh_shapes(shapes: &[Shape], seams: &[SeamPlan], h: f64, max_particles: usiz
     // For each shape: its panel's index, and where each of its sides' samples landed.
     let mut made: Vec<Option<(usize, Vec<Vec<u32>>)>> = Vec::with_capacity(shapes.len());
     let mut used = 0;
+    let layouts: Vec<(Vec<f64>, Vec<f64>)> = seams.iter().map(|plan| plan.layout(h)).collect();
     for (index, shape) in shapes.iter().enumerate() {
-        let sides: Vec<(SeamSide, usize)> = seams
+        let sides: Vec<(SeamSide, Vec<f64>)> = seams
             .iter()
-            .flat_map(|plan| {
-                [(plan.seam.a, plan.shape_a), (plan.seam.b, plan.shape_b)]
-                    .into_iter()
-                    .filter(|(_, s)| *s == index)
-                    .map(|(side, _)| (side, plan.steps(h)))
+            .zip(&layouts)
+            .flat_map(|(plan, (at_a, at_b))| {
+                [
+                    (plan.seam.a, plan.shape_a, at_a),
+                    (plan.seam.b, plan.shape_b, at_b),
+                ]
+                .into_iter()
+                .filter(|(_, s, _)| *s == index)
+                .map(|(side, _, at)| (side, at.clone()))
             })
             .collect();
         match panel(shape, &sides, h, max_particles.saturating_sub(used)) {
@@ -236,14 +321,14 @@ fn mesh_shapes(shapes: &[Shape], seams: &[SeamPlan], h: f64, max_particles: usiz
     // sides within each shape matches the order they were handed to `panel` above.
     let mut next_side = vec![0usize; shapes.len()];
     let mut stitches = Vec::new();
-    for plan in seams {
+    for (plan, (at_a, _)) in seams.iter().zip(&layouts) {
         let (sa, sb) = (plan.shape_a, plan.shape_b);
         let side_a = next_side[sa];
         next_side[sa] += 1;
         let side_b = next_side[sb];
         next_side[sb] += 1;
         if let (Some((pa, a)), Some((pb, b))) = (&made[sa], &made[sb]) {
-            for k in 0..=plan.steps(h) {
+            for k in 0..at_a.len() {
                 stitches.push(((*pa, a[side_a][k]), (*pb, b[side_b][k])));
             }
         }
@@ -311,7 +396,7 @@ struct Done {
 /// already have.
 fn panel(
     shape: &Shape,
-    sides: &[(SeamSide, usize)],
+    sides: &[(SeamSide, Vec<f64>)],
     h: f64,
     budget: usize,
 ) -> Result<Done, TriangulateError> {

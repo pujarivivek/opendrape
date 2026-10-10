@@ -1,16 +1,17 @@
-//! The points round one shape's outline that become the fabric's edge: every corner, points
-//! about `h` apart along free edges, and along each seam side the side's own count of points
-//! at equal steps, so both sides of a seam have the same number.
+//! The points round one shape's outline that become the fabric's edge: every corner; along each
+//! seam side, the side's own samples (so both sides of a seam have the same number); and along
+//! the stretches no side covers, points about `h` apart. Two sides that meet part-way along an
+//! edge share the point where they meet.
 
 use opendrape_core::{Point2, SeamSide};
-use opendrape_geom::{self as geom, Shape};
+use opendrape_geom::{self as geom, Run, Shape};
 
 /// A shape's outline as points (mm), and where things are among them.
 pub(crate) struct Outline {
     pub points: Vec<Point2>,
     /// For each outline edge: its start corner, the points along it, its end corner.
     pub edges: Vec<Vec<u32>>,
-    /// For each side asked for: the point of each of its `steps + 1` samples, from its start.
+    /// For each side asked for: the point of each of its samples, from its start.
     pub sides: Vec<Vec<u32>>,
 }
 
@@ -18,63 +19,61 @@ pub(crate) struct Outline {
 /// sample it is (side, sample), if any.
 type Along = (f64, Option<(usize, usize)>);
 
-/// One sample of a side: on outline edge `edge`, `along` mm from that edge's start.
-#[derive(Clone, Copy, Debug)]
-struct At {
-    edge: usize,
-    along: f64,
-}
-
-/// The outline of `shape` with each of `sides` (a side on this shape, and its step count)
-/// sampled at equal steps. None when a side does not fit the shape.
-pub(crate) fn outline(shape: &Shape, sides: &[(SeamSide, usize)], h: f64) -> Option<Outline> {
+/// The outline of `shape` with each of `sides` (a side on this shape, and its samples as
+/// distances along it from its start) in place. None when a side does not fit the shape.
+pub(crate) fn outline(shape: &Shape, sides: &[(SeamSide, Vec<f64>)], h: f64) -> Option<Outline> {
     let piece = &shape.piece;
     let m = piece.len();
     let lens: Vec<f64> = (0..m).map(|j| geom::edge_length(piece, j)).collect();
-    let mut sewn = vec![false; m];
-    // Per outline edge, the points along it.
+    let tiny = |j: usize| 1e-9 * lens[j].max(1.0);
+    // Per outline edge, the stretches sides cover, and the points along it.
+    let mut covered: Vec<Vec<(f64, f64)>> = vec![Vec::new(); m];
     let mut along: Vec<Vec<Along>> = vec![Vec::new(); m];
     // Side samples that land on a corner: (side, sample, corner).
     let mut on_corner = Vec::new();
-    for (s, (side, steps)) in sides.iter().enumerate() {
-        // Whole edges only, as the Sew tool makes them (free sides come with their own layout).
-        let runs: Vec<(usize, bool)> = geom::side_runs(shape, side)?
-            .iter()
-            .map(|r| (r.edge, r.from > r.to))
-            .collect();
-        for (j, _) in &runs {
-            sewn[*j] = true;
+    for (s, (side, at)) in sides.iter().enumerate() {
+        let runs = geom::side_runs(shape, side)?;
+        for r in &runs {
+            covered[r.edge].push((r.from.min(r.to), r.from.max(r.to)));
         }
-        for (k, at) in side_samples(&runs, &lens, *steps).into_iter().enumerate() {
-            let len = lens[at.edge];
-            let tiny = 1e-9 * len.max(1.0);
-            if at.along <= tiny {
-                on_corner.push((s, k, at.edge));
-            } else if at.along >= len - tiny {
-                on_corner.push((s, k, (at.edge + 1) % m));
+        for (k, d) in at.iter().enumerate() {
+            let (edge, x) = locate(&runs, *d);
+            if x <= tiny(edge) {
+                on_corner.push((s, k, edge));
+            } else if x >= lens[edge] - tiny(edge) {
+                on_corner.push((s, k, (edge + 1) % m));
             } else {
-                along[at.edge].push((at.along, Some((s, k))));
+                along[edge].push((x, Some((s, k))));
             }
         }
     }
     for j in 0..m {
-        if !sewn[j] {
-            let steps = ((lens[j] / h).round() as usize).max(1);
-            along[j].extend((1..steps).map(|q| (lens[j] * q as f64 / steps as f64, None)));
+        for (g0, g1) in gaps(&mut covered[j], lens[j], tiny(j)) {
+            let steps = (((g1 - g0) / h).round() as usize).max(1);
+            along[j].extend((1..steps).map(|q| (g0 + (g1 - g0) * q as f64 / steps as f64, None)));
         }
         along[j].sort_by(|a, b| a.0.total_cmp(&b.0));
     }
     let mut points = Vec::new();
     let mut corners = Vec::with_capacity(m);
     let mut inner: Vec<Vec<u32>> = vec![Vec::new(); m];
-    let mut side_points: Vec<Vec<u32>> = sides.iter().map(|(_, n)| vec![0; n + 1]).collect();
+    let mut side_points: Vec<Vec<u32>> = sides.iter().map(|(_, at)| vec![0; at.len()]).collect();
     for j in 0..m {
         corners.push(points.len() as u32);
         points.push(piece.vertices[j].pos);
+        // Points at the same place (where two sides meet) are one point.
+        let mut last: Option<(f64, u32)> = None;
         for &(d, sample) in &along[j] {
-            let index = points.len() as u32;
-            points.push(geom::point_at_distance(piece, j, d));
-            inner[j].push(index);
+            let index = match last {
+                Some((at, index)) if d - at <= tiny(j) => index,
+                _ => {
+                    let index = points.len() as u32;
+                    points.push(geom::point_at_distance(piece, j, d));
+                    inner[j].push(index);
+                    index
+                }
+            };
+            last = Some((d, index));
             if let Some((s, k)) = sample {
                 side_points[s][k] = index;
             }
@@ -98,42 +97,79 @@ pub(crate) fn outline(shape: &Shape, sides: &[(SeamSide, usize)], h: f64) -> Opt
     })
 }
 
-/// The `steps + 1` samples of a side made of `runs` (outline edge, and whether the side runs
-/// against it), at equal steps of arc length from the side's start. Each corner inside the
-/// side takes over the sample nearest to it, so no sample lies a sliver away from a corner;
-/// a corner whose nearest sample another corner took keeps no sample.
-fn side_samples(runs: &[(usize, bool)], lens: &[f64], steps: usize) -> Vec<At> {
-    let total: f64 = runs.iter().map(|(j, _)| lens[*j]).sum();
-    let step = total / steps as f64;
-    let mut at: Vec<f64> = (0..=steps).map(|k| k as f64 * step).collect();
-    at[steps] = total;
-    let mut taken = vec![false; steps + 1];
+/// Where distance `d` along a side made of `runs` is: the outline edge, and how far along it
+/// from its start. A distance at the end of one run is the start of the next (the same corner).
+fn locate(runs: &[Run], d: f64) -> (usize, f64) {
     let mut start = 0.0;
-    for (j, _) in &runs[..runs.len() - 1] {
-        start += lens[*j];
-        if steps >= 2 {
-            let k = ((start / step).round() as usize).clamp(1, steps - 1);
-            if !taken[k] {
-                taken[k] = true;
-                at[k] = start;
-            }
-        }
+    let mut r = 0;
+    while r + 1 < runs.len() && d >= start + runs[r].length() {
+        start += runs[r].length();
+        r += 1;
     }
-    at.into_iter()
-        .map(|s| {
-            // The run this sample is on: the last one starting at or before it.
-            let mut start = 0.0;
-            let mut r = 0;
-            while r + 1 < runs.len() && s >= start + lens[runs[r].0] {
-                start += lens[runs[r].0];
-                r += 1;
-            }
-            let (edge, against) = runs[r];
-            let local = (s - start).clamp(0.0, lens[edge]);
-            At {
-                edge,
-                along: if against { lens[edge] - local } else { local },
-            }
-        })
-        .collect()
+    let run = runs[r];
+    let local = (d - start).clamp(0.0, run.length());
+    let x = if run.to >= run.from {
+        run.from + local
+    } else {
+        run.from - local
+    };
+    (run.edge, x)
+}
+
+/// The stretches of an edge `len` mm long that none of `covered` covers, longer than `tiny`.
+fn gaps(covered: &mut [(f64, f64)], len: f64, tiny: f64) -> Vec<(f64, f64)> {
+    covered.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut out = Vec::new();
+    let mut at = 0.0;
+    for &(lo, hi) in covered.iter() {
+        if lo - at > tiny {
+            out.push((at, lo));
+        }
+        at = f64::max(at, hi);
+    }
+    if len - at > tiny {
+        out.push((at, len));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_stretches_nobody_sews_are_what_is_left_of_the_edge() {
+        let mut covered = vec![(60.0, 80.0), (10.0, 30.0), (30.0, 40.0)];
+        assert_eq!(
+            gaps(&mut covered, 100.0, 1e-9),
+            vec![(0.0, 10.0), (40.0, 60.0), (80.0, 100.0)]
+        );
+        assert_eq!(gaps(&mut [(0.0, 100.0)], 100.0, 1e-9), vec![]);
+        assert_eq!(gaps(&mut [], 100.0, 1e-9), vec![(0.0, 100.0)]);
+    }
+
+    #[test]
+    fn a_distance_along_a_side_is_found_on_its_runs() {
+        let runs = [
+            Run {
+                edge: 1,
+                from: 30.0,
+                to: 100.0,
+            },
+            Run {
+                edge: 2,
+                from: 50.0,
+                to: 0.0,
+            },
+        ];
+        assert_eq!(locate(&runs, 0.0), (1, 30.0));
+        assert_eq!(locate(&runs, 69.0), (1, 99.0));
+        assert_eq!(
+            locate(&runs, 70.0),
+            (2, 50.0),
+            "the corner, on the next run"
+        );
+        assert_eq!(locate(&runs, 100.0), (2, 20.0), "running backwards");
+        assert_eq!(locate(&runs, 120.0), (2, 0.0));
+    }
 }

@@ -3,10 +3,11 @@
 //! sampled with the same number of points.
 
 use opendrape_core::{
-    Edge, Half, InternalLine, LineKind, Piece, PieceId, Point2, Project, SeamSide,
+    Edge, Half, InternalLine, LineKind, Notch, OutlinePos, Piece, PieceId, Point2, Project,
+    SeamSide,
 };
 use opendrape_geom as geom;
-use opendrape_mesh::{MeshNote, MeshParams, PanelMesh, Stitch, build};
+use opendrape_mesh::{GarmentMesh, MeshNote, MeshParams, PanelMesh, Stitch, build};
 
 const H: f64 = 12.0;
 
@@ -1029,4 +1030,302 @@ fn random_patterns_never_panic() {
         meshed > 0 && left_out > 0,
         "{meshed} meshed, {left_out} left out"
     );
+}
+
+/// The stretch of a shape's outline from fraction `from.1` of stored edge `from.0` to fraction
+/// `to.1` of edge `to.0`.
+fn part(shape: PieceId, from: (usize, f64), to: (usize, f64), forward: bool) -> SeamSide {
+    SeamSide {
+        shape,
+        half: Half::Drawn,
+        from: OutlinePos::new(from.0, from.1),
+        to: OutlinePos::new(to.0, to.1),
+        forward,
+    }
+}
+
+/// Where a stitched point is on the pattern table (mm).
+fn at_mm(mesh: &GarmentMesh, (panel, i): (usize, u32)) -> Point2 {
+    let f = mesh.panels[panel].flat[i as usize];
+    p(f[0] * 1000.0, f[1] * 1000.0)
+}
+
+#[test]
+fn a_free_side_is_sampled_across_a_corner_and_the_rest_of_its_edges_too() {
+    let mut pr = Project::new();
+    let a = pr.add_piece(Piece::rectangle(PieceId(0), "A", p(0.0, 0.0), 200.0, 200.0));
+    let b = pr.add_piece(Piece::rectangle(
+        PieceId(0),
+        "B",
+        p(400.0, 0.0),
+        200.0,
+        200.0,
+    ));
+    // From halfway along A's bottom, round its bottom-right corner, halfway up its right edge;
+    // to B's left edge, running up from its bottom.
+    pr.add_seam(
+        part(a, (0, 0.5), (1, 0.5), true),
+        side(b, Half::Drawn, 3, 3, false),
+    );
+    assert_eq!(pr.check(), Ok(()));
+    let mesh = build(&pr, &MeshParams::default());
+    assert_eq!(mesh.notes, vec![]);
+    let steps = (200.0_f64 / H).round() as usize;
+    assert_eq!(mesh.stitches.len(), steps + 1);
+    let side_a = [p(100.0, 0.0), p(200.0, 0.0), p(200.0, 100.0)];
+    let side_b = [p(400.0, 0.0), p(400.0, 200.0)];
+    let mut corner_taken = false;
+    for (k, &(sa, sb)) in mesh.stitches.iter().enumerate() {
+        let (qa, qb) = (at_mm(&mesh, sa), at_mm(&mesh, sb));
+        let want = 200.0 * k as f64 / steps as f64;
+        let half_step = 0.5 * 200.0 / steps as f64;
+        assert!(
+            (arc_along(&side_a, qa) - want).abs() <= half_step + 1e-6,
+            "{k}: {qa:?}"
+        );
+        assert!((arc_along(&side_b, qb) - want).abs() < 1e-6, "{k}: {qb:?}");
+        corner_taken |= qa.distance(p(200.0, 0.0)) < 1e-9;
+    }
+    assert!(
+        corner_taken,
+        "the corner inside the side is one of its samples"
+    );
+    // The halves of A's bottom and right edges that nobody sews get points about h apart too:
+    // the bottom edge from x = 0 to 100, the right edge from y = 100 to 200.
+    let panel = &mesh.panels[mesh.panel_of(a).unwrap()];
+    let mm = |i: u32| {
+        p(
+            panel.flat[i as usize][0] * 1000.0,
+            panel.flat[i as usize][1] * 1000.0,
+        )
+    };
+    for (edge, free) in [(0, 0.0..=100.0), (1, 100.0..=200.0)] {
+        let points: Vec<Point2> = panel.edges[edge]
+            .iter()
+            .map(|&i| mm(i))
+            .filter(|q| free.contains(&if edge == 0 { q.x } else { q.y }))
+            .collect();
+        assert!(points.len() >= 9, "edge {edge}: {points:?}");
+        for w in points.windows(2) {
+            let d = w[0].distance(w[1]);
+            assert!(
+                d > 0.5 * H && d < 1.6 * H,
+                "edge {edge}: {d} mm between points"
+            );
+        }
+    }
+    let area: f64 = triangles_mm(panel).into_iter().map(area).sum();
+    assert!((area - 40_000.0).abs() < 1.0, "{area}");
+}
+
+/// A 300 mm bottom edge with notches `on_a` (mm from its start) sewn, start to start, to a
+/// 200 mm bottom edge with notches `on_b`.
+fn notched_seam(on_a: &[f64], on_b: &[f64]) -> (Project, GarmentMesh) {
+    let mut pr = Project::new();
+    let mut a = Piece::rectangle(PieceId(0), "A", p(0.0, 0.0), 300.0, 100.0);
+    a.notches = on_a.iter().map(|d| Notch::new(0, *d)).collect();
+    let mut b = Piece::rectangle(PieceId(0), "B", p(400.0, 0.0), 200.0, 100.0);
+    b.notches = on_b.iter().map(|d| Notch::new(0, *d)).collect();
+    let (a, b) = (pr.add_piece(a), pr.add_piece(b));
+    pr.add_seam(
+        side(a, Half::Drawn, 0, 0, true),
+        side(b, Half::Drawn, 0, 0, true),
+    );
+    assert_eq!(pr.check(), Ok(()));
+    let mesh = build(&pr, &MeshParams::default());
+    (pr, mesh)
+}
+
+#[test]
+fn notches_paired_across_a_seam_land_on_the_same_stitch() {
+    let (_, mesh) = notched_seam(&[100.0, 250.0], &[50.0, 150.0]);
+    // Stretches of 100/50, 150/100 and 50/50 mm: 8, 13 and 4 steps.
+    assert_eq!(mesh.stitches.len(), 8 + 13 + 4 + 1);
+    let x = |k: usize| {
+        (
+            at_mm(&mesh, mesh.stitches[k].0).x,
+            at_mm(&mesh, mesh.stitches[k].1).x,
+        )
+    };
+    assert_eq!(x(8), (100.0, 450.0), "the first notches meet");
+    assert_eq!(x(21), (250.0, 550.0), "and the second");
+    // Even steps within each stretch.
+    for k in 0..=25 {
+        let (xa, xb) = x(k);
+        let (want_a, want_b) = match k {
+            0..=8 => (100.0 * k as f64 / 8.0, 400.0 + 50.0 * k as f64 / 8.0),
+            9..=21 => (
+                100.0 + 150.0 * (k - 8) as f64 / 13.0,
+                450.0 + 100.0 * (k - 8) as f64 / 13.0,
+            ),
+            _ => (
+                250.0 + 50.0 * (k - 21) as f64 / 4.0,
+                550.0 + 50.0 * (k - 21) as f64 / 4.0,
+            ),
+        };
+        assert!(
+            (xa - want_a).abs() < 1e-6 && (xb - want_b).abs() < 1e-6,
+            "{k}"
+        );
+    }
+}
+
+#[test]
+fn notch_counts_that_differ_fall_back_to_an_even_layout() {
+    let (pr, mesh) = notched_seam(&[100.0, 250.0], &[50.0]);
+    let steps = (300.0_f64 / H).round() as usize;
+    assert_eq!(mesh.stitches.len(), steps + 1);
+    for (k, &(sa, sb)) in mesh.stitches.iter().enumerate() {
+        let f = k as f64 / steps as f64;
+        assert!((at_mm(&mesh, sa).x - 300.0 * f).abs() < 1e-6);
+        assert!((at_mm(&mesh, sb).x - (400.0 + 200.0 * f)).abs() < 1e-6);
+    }
+    // What the seam panel counts to say so.
+    let shapes = geom::shapes(&pr);
+    let seam = pr.seams[0];
+    let count = |s: &geom::Shape, side| geom::side_notches(s, side).unwrap().len();
+    assert_eq!(
+        (count(&shapes[0], &seam.a), count(&shapes[1], &seam.b)),
+        (2, 1)
+    );
+}
+
+#[test]
+fn a_stretch_between_two_close_notches_still_gets_a_step() {
+    let (_, mesh) = notched_seam(&[100.0, 103.0], &[50.0, 52.0]);
+    let a: Vec<f64> = mesh.stitches.iter().map(|s| at_mm(&mesh, s.0).x).collect();
+    let k = a.iter().position(|x| (x - 100.0).abs() < 1e-9).unwrap();
+    assert!(
+        (a[k + 1] - 103.0).abs() < 1e-9,
+        "the next sample is the next notch"
+    );
+    assert!((at_mm(&mesh, mesh.stitches[k + 1].1).x - 452.0).abs() < 1e-9);
+}
+
+#[test]
+fn two_free_seams_meeting_at_a_cap_notch_share_its_point() {
+    let mut pr = Project::new();
+    // A sleeve whose cap (its top edge, curved) has a notch halfway along it.
+    let mut sleeve = Piece::rectangle(PieceId(0), "Sleeve", p(0.0, 0.0), 300.0, 100.0);
+    sleeve.edges[2] = Edge::Curve {
+        c1: p(250.0, 220.0),
+        c2: p(50.0, 220.0),
+    };
+    let cap = geom::edge_length(&sleeve, 2);
+    sleeve.notches = vec![Notch::new(2, cap / 2.0)];
+    let sleeve = pr.add_piece(sleeve);
+    let front = pr.add_piece(Piece::rectangle(
+        PieceId(0),
+        "Front",
+        p(500.0, 0.0),
+        100.0,
+        200.0,
+    ));
+    let back = pr.add_piece(Piece::rectangle(
+        PieceId(0),
+        "Back",
+        p(800.0, 0.0),
+        100.0,
+        200.0,
+    ));
+    // Cap to the front's right edge as far as the notch; on from the notch to the back's left.
+    pr.add_seam(
+        part(sleeve, (2, 0.0), (2, 0.5), true),
+        side(front, Half::Drawn, 1, 1, true),
+    );
+    pr.add_seam(
+        part(sleeve, (2, 0.5), (2, 1.0), true),
+        side(back, Half::Drawn, 3, 3, true),
+    );
+    assert_eq!(pr.check(), Ok(()));
+    let mesh = build(&pr, &MeshParams::default());
+    // Each cap half is 14.5 mm shorter than its armhole edge (ease); nothing else to say.
+    assert!(
+        mesh.notes
+            .iter()
+            .all(|n| matches!(n, MeshNote::LengthsDiffer { .. })),
+        "{:?}",
+        mesh.notes
+    );
+    // The first seam's steps: its longer side is the front's 200 mm edge.
+    let first = (200.0_f64.max(cap / 2.0) / H).round() as usize;
+    let end_of_first = mesh.stitches[first];
+    let start_of_second = mesh.stitches[first + 1];
+    assert_eq!(end_of_first.0, start_of_second.0, "one point of the sleeve");
+    let notch = geom::point_at_distance(&geom::shapes(&pr)[0].piece, 2, cap / 2.0);
+    assert!(at_mm(&mesh, end_of_first.0).distance(notch) < 1e-6);
+    // ...stitched to the top of the front's right edge and the top of the back's left edge.
+    assert_eq!(at_mm(&mesh, end_of_first.1), p(600.0, 200.0));
+    assert_eq!(at_mm(&mesh, start_of_second.1), p(800.0, 200.0));
+    // Every other sleeve point of the two seams is a point of its own.
+    let mut sleeve_points: Vec<u32> = mesh.stitches.iter().map(|s| s.0.1).collect();
+    sleeve_points.sort_unstable();
+    sleeve_points.dedup();
+    assert_eq!(sleeve_points.len(), mesh.stitches.len() - 1);
+}
+
+#[test]
+fn random_free_seams_with_notches_never_panic() {
+    let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut rnd = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let mut sewn = 0;
+    for _ in 0..120 {
+        let mut pr = Project::new();
+        for k in 0..2 {
+            let n = 3 + (rnd() * 4.0) as usize;
+            // A convex polygon, so it always meshes: corners round an ellipse.
+            let corners: Vec<Point2> = (0..n)
+                .map(|i| {
+                    let a = (i as f64 + 0.3 * rnd()) / n as f64 * std::f64::consts::TAU;
+                    p(
+                        k as f64 * 700.0 + 250.0 + 200.0 * a.cos(),
+                        250.0 + 150.0 * a.sin(),
+                    )
+                })
+                .collect();
+            let mut piece = Piece::polygon(PieceId(0), "Random", &corners);
+            for _ in 0..(rnd() * 4.0) as usize {
+                let edge = (rnd() * n as f64) as usize;
+                let len = geom::edge_length(&piece, edge);
+                piece.notches.push(Notch::new(edge, rnd() * len));
+            }
+            pr.add_piece(piece);
+        }
+        let n: Vec<usize> = pr.pieces.iter().map(Piece::len).collect();
+        for _ in 0..4 {
+            let mut free = |shape: usize| {
+                let (e0, t0, e1, t1) = (
+                    (rnd() * n[shape] as f64) as usize,
+                    rnd(),
+                    (rnd() * n[shape] as f64) as usize,
+                    rnd(),
+                );
+                part(pr.pieces[shape].id, (e0, t0), (e1, t1), rnd() < 0.5)
+            };
+            let (a, b) = (free(0), free(1));
+            let mut tried = pr.clone();
+            tried.add_seam(a, b);
+            if tried.check().is_ok() {
+                pr = tried;
+            }
+        }
+        sewn += pr.seams.len();
+        let mesh = build(&pr, &MeshParams::default());
+        assert_eq!(mesh.panels.len(), 2, "{:?}", mesh.notes);
+        for &((pa, a), (pb, b)) in &mesh.stitches {
+            assert!(
+                (a as usize) < mesh.panels[pa].flat.len()
+                    && (b as usize) < mesh.panels[pb].flat.len()
+            );
+        }
+        for panel in &mesh.panels {
+            assert!(panel.flat.iter().flatten().all(|v| v.is_finite()));
+        }
+    }
+    assert!(sewn > 100, "{sewn} free seams sewn");
 }
