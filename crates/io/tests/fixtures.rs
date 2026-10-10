@@ -5,7 +5,7 @@
 
 use opendrape_core::{
     Edge, EdgeProps, Half, InternalLine, LineKind, Notch, NotchStyle, OutlinePos, Piece, PieceId,
-    Placement, Point2, Project, Seam, SeamId, SeamSide, Twin, Units, Vertex, VertexKind,
+    Pin, Placement, Point2, Project, Seam, SeamId, SeamSide, Twin, Units, Vertex, VertexKind,
 };
 use std::io::{Cursor, Write};
 use zip::ZipWriter;
@@ -396,6 +396,165 @@ fn refuses_invalid_v3_details() {
             r#""shape": 3, "half": "drawn", "first_edge": 1"#,
             r#""shape": 3, "half": "drawn", "first_edge": 3"#,
         ), // the twin's edge 3 is sewn by seam 1's mirror
+    ] {
+        assert!(good.contains(from), "{from}");
+        let bad = good.replacen(from, to, 1);
+        assert!(
+            matches!(
+                opendrape_io::from_bytes(&odp(&bad)),
+                Err(opendrape_io::OdpError::Invalid(_))
+            ),
+            "{to}"
+        );
+    }
+}
+
+#[test]
+fn format_v4_still_opens() {
+    let loaded = opendrape_io::from_bytes(&odp(include_str!("fixtures/v4/project.json")))
+        .expect("the frozen v4 project opens");
+    let props = |hem: bool, n: usize| {
+        let mut p = vec![EdgeProps::default(); n];
+        p[0].hem = hem;
+        p
+    };
+    let front = Piece {
+        id: PieceId(1),
+        name: "Front".into(),
+        vertices: vec![
+            corner(0.0, 0.0),
+            corner(200.0, 0.0),
+            corner(200.0, 350.0),
+            corner(150.0, 450.0),
+            corner(0.0, 450.0),
+        ],
+        edges: vec![
+            Edge::Line,
+            Edge::Line,
+            Edge::Curve {
+                c1: at(190.0, 400.0),
+                c2: at(170.0, 440.0),
+            },
+            Edge::Line,
+            Edge::Line,
+        ],
+        grain_deg: 90.0,
+        allowance: 10.0,
+        edge_props: props(true, 5),
+        notches: vec![Notch::new(2, 30.0)],
+        lines: vec![],
+        fold: Some(4),
+        twin: None,
+        placement: Some(Placement {
+            position: [0.0, 1.1, 0.2],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            curve: Some(0.2),
+        }),
+    };
+    let sleeve = Piece {
+        id: PieceId(2),
+        name: "Sleeve".into(),
+        vertices: vec![
+            corner(400.0, 0.0),
+            corner(700.0, 0.0),
+            corner(700.0, 200.0),
+            corner(400.0, 200.0),
+        ],
+        edges: vec![
+            Edge::Line,
+            Edge::Line,
+            Edge::Curve {
+                c1: at(650.0, 320.0),
+                c2: at(450.0, 320.0),
+            },
+            Edge::Line,
+        ],
+        grain_deg: 90.0,
+        allowance: 10.0,
+        edge_props: props(true, 4),
+        notches: vec![Notch::new(2, 180.0)],
+        lines: vec![],
+        fold: None,
+        twin: None, // set below, once its id is taken
+        placement: Some(Placement {
+            position: [0.25, 1.15, 0.0],
+            rotation: [0.0, 0.0, 0.382_683_432_365_089_8, 0.923_879_532_511_286_7],
+            curve: Some(0.08),
+        }),
+    };
+    let mut expected = Project::new();
+    expected.add_piece(front);
+    let sleeve = expected.add_piece(sleeve);
+    expected
+        .add_twin(sleeve, "Sleeve (mirror)".into(), at(1500.0, 0.0))
+        .unwrap();
+    let side =
+        |shape: u32, half: Half, from: (usize, f64), to: (usize, f64), forward: bool| SeamSide {
+            shape: PieceId(shape),
+            half,
+            from: OutlinePos::new(from.0, from.1),
+            to: OutlinePos::new(to.0, to.1),
+            forward,
+        };
+    expected.seams = vec![
+        Seam {
+            id: SeamId(1),
+            a: side(1, Half::Drawn, (1, 0.0), (1, 1.0), true),
+            b: side(2, Half::Drawn, (1, 1.0), (1, 0.0), false),
+        },
+        Seam {
+            id: SeamId(2),
+            a: side(2, Half::Drawn, (2, 0.0), (2, 0.5), true),
+            b: side(1, Half::Drawn, (2, 0.0), (2, 1.0), true),
+        },
+        Seam {
+            id: SeamId(3),
+            a: side(1, Half::Pale, (0, 0.25), (0, 0.75), true),
+            b: side(3, Half::Drawn, (0, 1.0), (0, 0.0), false),
+        },
+    ];
+    let pin = |shape: u32, half: Half, x: f64, y: f64, target: [f64; 3]| Pin {
+        shape: PieceId(shape),
+        half,
+        at: at(x, y),
+        target,
+    };
+    expected.pins = vec![
+        pin(1, Half::Drawn, 100.0, 100.0, [0.05, 1.0, 0.25]),
+        pin(1, Half::Pale, 50.0, 200.0, [-0.05, 1.0, 0.25]),
+        pin(3, Half::Drawn, 600.0, 100.0, [-0.3, 1.1, 0.0]),
+    ];
+    assert_eq!(loaded, expected);
+    assert_eq!(loaded.schema_version, 4);
+    // Each of the three seams has a mirror image.
+    assert_eq!(loaded.all_seams().len(), 6);
+}
+
+#[test]
+fn refuses_invalid_v4_details() {
+    let good = include_str!("fixtures/v4/project.json");
+    for (from, to) in [
+        (
+            r#""to": { "edge": 2, "t": 0.5 }"#,
+            r#""to": { "edge": 2, "t": 1.5 }"#,
+        ), // past the end of the cap
+        (
+            r#""from": { "edge": 0, "t": 0.25 }, "to": { "edge": 0, "t": 0.75 }"#,
+            r#""from": { "edge": 0, "t": 0.25 }, "to": { "edge": 0, "t": 0.251 }"#,
+        ), // 0.05 mm long
+        (
+            r#""shape": 1, "half": "pale", "from": { "edge": 0, "t": 0.25 }"#,
+            r#""shape": 1, "half": "pale", "from": { "edge": 1, "t": 0.25 }"#,
+        ), // round to the pale side edge, which the first seam's mirror image sews
+        (
+            r#""at": { "x": 600.0, "y": 100.0 }"#,
+            r#""at": { "x": 720.0, "y": 100.0 }"#,
+        ), // 20 mm outside the sleeve
+        (
+            r#""target": [-0.3, 1.1, 0.0]"#,
+            r#""target": [-0.3, 11.1, 0.0]"#,
+        ), // held 11 m up
+        (r#""shape": 3, "at""#, r#""shape": 3, "half": "pale", "at""#), // the twin has no pale half
     ] {
         assert!(good.contains(from), "{from}");
         let bad = good.replacen(from, to, 1);

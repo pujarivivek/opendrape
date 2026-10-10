@@ -1,11 +1,11 @@
-//! Everything M2b and M4a added to a project (seam allowances, hems, notches, internal lines,
-//! folds, mirrored pairs, seams and 3D placements) must survive saving and opening exactly. The
-//! project is built field by field here, with no default left where a value could be lost
-//! without anyone noticing.
+//! Everything M2b, M4a and M4b added to a project (seam allowances, hems, notches, internal
+//! lines, folds, mirrored pairs, seams, 3D placements, free seam sides and pins) must survive
+//! saving and opening exactly. The project is built field by field here, with no default left
+//! where a value could be lost without anyone noticing.
 
 use opendrape_core::{
-    Edge, EdgeProps, Half, InternalLine, LineKind, Notch, NotchStyle, Piece, PieceId, Placement,
-    Point2, Project, SeamSide, Units, Vertex, VertexKind,
+    Edge, EdgeProps, Half, InternalLine, LineKind, Notch, NotchStyle, OutlinePos, Piece, PieceId,
+    Pin, Placement, Point2, Project, SeamSide, Units, Vertex, VertexKind,
 };
 
 fn at(x: f64, y: f64) -> Point2 {
@@ -123,6 +123,40 @@ fn detailed_project() -> Project {
         SeamSide::edges(bodice_id, Half::Drawn, 3, 0, true),
         SeamSide::edges(sleeve_id, Half::Drawn, 0, 0, true),
     );
+    // Part of the bodice's top, run backwards, to most of the sleeve's top.
+    project.add_seam(
+        SeamSide {
+            from: OutlinePos::new(2, 0.7),
+            to: OutlinePos::new(2, 0.2),
+            ..SeamSide::edges(bodice_id, Half::Drawn, 2, 2, false)
+        },
+        SeamSide {
+            from: OutlinePos::new(2, 0.1),
+            to: OutlinePos::new(2, 0.9),
+            ..SeamSide::edges(sleeve_id, Half::Drawn, 2, 2, true)
+        },
+    );
+    // Pins on the bodice, the sleeve's pale half and the bodice's mirror image.
+    project.pins = vec![
+        Pin {
+            shape: bodice_id,
+            half: Half::Drawn,
+            at: at(200.5, 300.25),
+            target: [0.12, 1.31, 0.42],
+        },
+        Pin {
+            shape: sleeve_id,
+            half: Half::Pale,
+            at: at(1550.0, 250.0),
+            target: [0.4, 1.1, -0.05],
+        },
+        Pin {
+            shape: twin,
+            half: Half::Drawn,
+            at: at(100.0, 500.0),
+            target: [-0.2, 1.2, 0.3],
+        },
+    ];
     project.set_placement(bodice_id, Some(Placement::at([0.0, 1.25, 0.4])));
     project.set_placement(
         twin,
@@ -138,7 +172,7 @@ fn detailed_project() -> Project {
 }
 
 #[test]
-fn every_m2b_and_m4a_field_survives_a_save_and_open() {
+fn every_m2b_m4a_and_m4b_field_survives_a_save_and_open() {
     let project = detailed_project();
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("detailed.odp");
@@ -202,7 +236,22 @@ fn the_sample_really_uses_every_new_feature() {
     );
     assert_eq!(
         project.all_seams().len(),
-        4,
-        "both seams have mirror images"
+        6,
+        "every seam has a mirror image"
+    );
+    // M4b: a side ending part-way along an edge, and pins on a piece, a pale half and a twin.
+    assert!(
+        sides
+            .iter()
+            .any(|s| ![0.0, 1.0].contains(&s.from.t) && ![0.0, 1.0].contains(&s.to.t))
+    );
+    let pinned: Vec<(PieceId, Half)> = project.pins.iter().map(|p| (p.shape, p.half)).collect();
+    assert_eq!(
+        pinned,
+        vec![
+            (PieceId(1), Half::Drawn),
+            (PieceId(3), Half::Pale),
+            (PieceId(2), Half::Drawn)
+        ]
     );
 }

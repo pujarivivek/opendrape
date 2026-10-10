@@ -1,7 +1,7 @@
 use crate::seam::spans_overlap;
 use crate::{
-    Half, MAX_SEAM_ID, MAX_SEAMS, MIN_SIDE_MM, OutlinePos, Piece, PieceId, Placement, Point2, Seam,
-    SeamId, SeamSide, Side, Span, Units, measure,
+    Half, MAX_PINS, MAX_PLACEMENT_M, MAX_SEAM_ID, MAX_SEAMS, MIN_SIDE_MM, OutlinePos, PIN_SLACK_MM,
+    Piece, PieceId, Pin, Placement, Point2, Seam, SeamId, SeamSide, Side, Span, Units, measure,
 };
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +33,9 @@ pub struct Project {
     /// The seams the student sewed. Their mirror images are not stored (see [`Self::mirror_of`]).
     #[serde(default)]
     pub seams: Vec<Seam>,
+    /// Spots of fabric held in place while it drapes.
+    #[serde(default)]
+    pub pins: Vec<Pin>,
     #[serde(default = "first_id")]
     next_piece_id: u32,
 }
@@ -64,6 +67,9 @@ pub enum ModelError {
     BadPlacement(PieceId),
     BadSeam(SeamId),
     TooManySeams,
+    /// The pin at this index in [`Project::pins`].
+    BadPin(usize),
+    TooManyPins,
     TooManyPieces,
     TooManyPointsInProject,
     IdCounterTooLarge,
@@ -89,6 +95,8 @@ impl std::fmt::Display for ModelError {
             Self::BadPlacement(id) => write!(f, "the 3D placement of piece {} is invalid", id.0),
             Self::BadSeam(id) => write!(f, "seam {} is invalid", id.0),
             Self::TooManySeams => write!(f, "the project has too many seams"),
+            Self::BadPin(k) => write!(f, "pin {} is invalid", k + 1),
+            Self::TooManyPins => write!(f, "the project has too many pins"),
             Self::TooManyPieces => write!(f, "the project has too many pieces"),
             Self::TooManyPointsInProject => write!(f, "the project has too many points"),
             Self::IdCounterTooLarge => write!(f, "the piece id counter is too large"),
@@ -105,6 +113,7 @@ impl Project {
             units: Units::Cm,
             pieces: Vec::new(),
             seams: Vec::new(),
+            pins: Vec::new(),
             next_piece_id: first_id(),
         }
     }
@@ -175,9 +184,11 @@ impl Project {
     }
     /// Turns `master`'s twin into an ordinary piece with the twin's current shape, id and name.
     /// A twin without a placement of its own was showing its piece's placement mirrored: it
-    /// keeps that as its own, so it stays where it was.
+    /// keeps that as its own, so it stays where it was. Its pins stay on the same spots: they
+    /// were kept where its piece shows them, and are now kept where it shows them itself.
     pub fn break_twin(&mut self, master: PieceId) -> Option<PieceId> {
         let piece = self.piece_mut(master)?;
+        let offset = piece.twin.as_ref()?.offset;
         let mut twin = piece.twin_shape()?;
         twin.placement = twin
             .placement
@@ -185,14 +196,19 @@ impl Project {
         piece.twin = None;
         let id = twin.id;
         self.pieces.push(twin);
+        for pin in self.pins.iter_mut().filter(|p| p.shape == id) {
+            pin.at = Point2::new(offset.x - pin.at.x, pin.at.y + offset.y);
+        }
         Some(id)
     }
-    /// Removes the piece or twin with this id and returns its shape, with every seam sewn to it.
+    /// Removes the piece or twin with this id and returns its shape, with every seam sewn to it
+    /// and every pin on it.
     /// Removing a piece that has a twin keeps the twin (and its seams), as an ordinary piece
     /// that stays where it was (see [`Self::break_twin`]).
     pub fn remove_piece(&mut self, id: PieceId) -> Option<Piece> {
         self.owner(id)?;
         self.seams.retain(|s| !s.touches(id));
+        self.pins.retain(|p| p.shape != id);
         match self.owner(id)? {
             (_, Side::Twin) => {
                 let (piece, _) = self.owner_mut(id)?;
@@ -404,9 +420,20 @@ impl Project {
     }
 
     /// Deletes what an edit left unusable: every seam with a side 1 mm long or less
-    /// ([`MIN_SIDE_MM`]), or covering nothing. A side whose ends are not on its shape's edges
-    /// is left for [`Self::check`] to refuse.
+    /// ([`MIN_SIDE_MM`]), or covering nothing (a side whose ends are not on its shape's edges is
+    /// left for [`Self::check`] to refuse); and every pin on a shape or half that is gone, or
+    /// more than [`PIN_SLACK_MM`] outside its piece.
     pub fn drop_broken(&mut self) {
+        let pins = std::mem::take(&mut self.pins);
+        self.pins = pins
+            .into_iter()
+            .filter(|pin| {
+                self.owner(pin.shape).is_some_and(|(piece, _)| {
+                    (pin.half == Half::Drawn || piece.fold.is_some())
+                        && measure::distance_outside(piece, pin.at) <= PIN_SLACK_MM
+                })
+            })
+            .collect();
         let too_short = |side: &SeamSide| {
             self.owner(side.shape).is_some_and(|(piece, _)| {
                 let n = piece.len();
@@ -428,7 +455,8 @@ impl Project {
     /// Unfolds cut-on-fold piece `id` into `full`, its whole outline (`geom::unfolded`), and
     /// keeps its seams: the mirror images of seams on the piece become stored seams (on the
     /// pale half they were drawn on), and every side on the piece is renumbered for the whole
-    /// outline. False (and nothing changed) when there is no such folded piece.
+    /// outline. Pins on the pale half move to where the whole piece has them. False (and
+    /// nothing changed) when there is no such folded piece.
     pub fn unfold_piece(&mut self, id: PieceId, full: Piece) -> bool {
         let Some(piece) = self.piece(id) else {
             return false;
@@ -438,6 +466,7 @@ impl Project {
         };
         let n = piece.len();
         let first = (fold + 1) % n;
+        let (near, far) = piece.edge_ends(fold);
         let mirrors: Vec<(SeamSide, SeamSide)> = self
             .seams
             .iter()
@@ -470,14 +499,21 @@ impl Project {
                 }
             }
         }
+        // A pin on the pale half was kept as its mirror image: the whole piece has the spot.
+        for pin in self.pins.iter_mut() {
+            if pin.shape == id && pin.half == Half::Pale {
+                pin.at = reflect_across(pin.at, near, far);
+                pin.half = Half::Drawn;
+            }
+        }
         if let Some(stored) = self.piece_mut(id) {
             *stored = Piece { id, ..full };
         }
         true
     }
 
-    /// Takes the fold off piece `id`: its pale half goes, and so does every seam on it. The
-    /// mirror images of its other seams simply disappear. False when it has no fold.
+    /// Takes the fold off piece `id`: its pale half goes, and so does every seam and pin on it.
+    /// The mirror images of its other seams simply disappear. False when it has no fold.
     pub fn remove_fold(&mut self, id: PieceId) -> bool {
         let Some(piece) = self.piece_mut(id) else {
             return false;
@@ -490,7 +526,21 @@ impl Project {
                 .iter()
                 .any(|side| side.shape == id && side.half == Half::Pale)
         });
+        self.pins
+            .retain(|p| !(p.shape == id && p.half == Half::Pale));
         true
+    }
+
+    /// Moves the pins on stored piece `id` and on its twin by `d` (mm), for when the piece has
+    /// been moved by `d` on the pattern table: its twin stays where it is, but its pins are
+    /// kept where the piece shows them, so they move with it too.
+    pub fn move_pins(&mut self, id: PieceId, d: Point2) {
+        let twin = self.piece(id).and_then(|p| p.twin.as_ref()).map(|t| t.id);
+        for pin in &mut self.pins {
+            if pin.shape == id || Some(pin.shape) == twin {
+                pin.at = pin.at + d;
+            }
+        }
     }
 
     /// Default name for the next new piece: "<prefix> <number>".
@@ -528,7 +578,30 @@ impl Project {
         if total_points > MAX_TOTAL_VERTICES {
             return Err(ModelError::TooManyPointsInProject);
         }
-        self.check_seams()
+        self.check_seams()?;
+        self.check_pins()
+    }
+
+    /// At most [`MAX_PINS`] pins, each on a shape (and half) that exists, within
+    /// [`PIN_SLACK_MM`] of its piece, and held at a target of finite numbers within
+    /// [`MAX_PLACEMENT_M`] of the origin.
+    fn check_pins(&self) -> Result<(), ModelError> {
+        if self.pins.len() > MAX_PINS {
+            return Err(ModelError::TooManyPins);
+        }
+        for (k, pin) in self.pins.iter().enumerate() {
+            let on_piece = self.owner(pin.shape).is_some_and(|(piece, _)| {
+                (pin.half == Half::Drawn || piece.fold.is_some())
+                    && pin.at.is_finite()
+                    && measure::distance_outside(piece, pin.at) <= PIN_SLACK_MM
+            });
+            let target_ok = pin.target.iter().all(|v| v.is_finite())
+                && pin.target.iter().map(|v| v * v).sum::<f64>().sqrt() <= MAX_PLACEMENT_M;
+            if !on_piece || !target_ok {
+                return Err(ModelError::BadPin(k));
+            }
+        }
+        Ok(())
     }
 
     /// At most [`MAX_SEAMS`] seams with unique ids of at most [`MAX_SEAM_ID`]; every side fits
@@ -588,6 +661,13 @@ impl Project {
             && piece.fold.is_none_or(|f| spans.iter().all(|s| s.edge != f))
             && self.side_length(side).is_some_and(|l| l > MIN_SIDE_MM)
     }
+}
+
+/// Mirror image of `p` across the line through `a` and `b`.
+fn reflect_across(p: Point2, a: Point2, b: Point2) -> Point2 {
+    let d = b - a;
+    let t = ((p.x - a.x) * d.x + (p.y - a.y) * d.y) / (d.x * d.x + d.y * d.y);
+    (a + d * t) * 2.0 - p
 }
 
 #[cfg(test)]
@@ -1594,5 +1674,147 @@ mod tests {
             )
         );
         assert_eq!(pr.check(), Ok(()));
+    }
+
+    fn pin(shape: u32, half: Half, x: f64, y: f64) -> Pin {
+        Pin {
+            shape: PieceId(shape),
+            half,
+            at: Point2::new(x, y),
+            target: [0.1, 1.2, 0.3],
+        }
+    }
+
+    #[test]
+    fn pins_are_checked() {
+        let base = sewing_room();
+        let with = |pins: Vec<Pin>| {
+            let mut pr = base.clone();
+            pr.pins = pins;
+            pr.check()
+        };
+        // The front half covers (0,0)–(100,200); the back (300,0)–(400,200).
+        assert_eq!(
+            with(vec![
+                pin(1, Half::Drawn, 50.0, 50.0),
+                pin(1, Half::Pale, 99.5, 0.0),
+                pin(3, Half::Drawn, 400.9, 100.0),
+            ]),
+            Ok(()),
+            "inside, on the outline, and within 1 mm of it"
+        );
+        let held = |target: [f64; 3]| Pin {
+            target,
+            ..pin(2, Half::Drawn, 350.0, 50.0)
+        };
+        for (bad, why) in [
+            (pin(9, Half::Drawn, 50.0, 50.0), "no such shape"),
+            (pin(2, Half::Pale, 350.0, 50.0), "the back isn't folded"),
+            (pin(2, Half::Drawn, 401.5, 50.0), "1.5 mm outside"),
+            (pin(2, Half::Drawn, f64::NAN, 50.0), "not a number"),
+            (held([0.0, 11.0, 0.0]), "held 11 m away"),
+            (held([0.0, 1.0, f64::NAN]), "held at no number"),
+        ] {
+            assert_eq!(
+                with(vec![pin(1, Half::Drawn, 50.0, 50.0), bad]),
+                Err(ModelError::BadPin(1)),
+                "{why}"
+            );
+        }
+        assert_eq!(
+            with(vec![pin(1, Half::Drawn, 50.0, 50.0); MAX_PINS]),
+            Ok(())
+        );
+        assert_eq!(
+            with(vec![pin(1, Half::Drawn, 50.0, 50.0); MAX_PINS + 1]),
+            Err(ModelError::TooManyPins)
+        );
+        assert_eq!(ModelError::BadPin(1).to_string(), "pin 2 is invalid");
+    }
+
+    #[test]
+    fn pins_stay_on_their_spot_of_fabric_through_edits() {
+        let mut pr = sewing_room();
+        pr.pins = vec![
+            pin(1, Half::Pale, 20.0, 30.0),
+            pin(1, Half::Drawn, 60.0, 30.0),
+            pin(3, Half::Drawn, 320.0, 10.0),
+            pin(4, Half::Drawn, 40.0, 440.0),
+        ];
+        assert_eq!(pr.check(), Ok(()));
+        // The twin shows stored point (x, y) at (900 - x, y): its pin is at (580, 10) there.
+        let mut broken = pr.clone();
+        broken.break_twin(PieceId(2));
+        assert_eq!(
+            broken.pins[2].at,
+            Point2::new(580.0, 10.0),
+            "kept where it shows"
+        );
+        assert_eq!(broken.check(), Ok(()));
+        // Moving the back moves the twin's pin with it (the twin stays where it is, but its pin
+        // is kept where the back shows it).
+        let mut moved = pr.clone();
+        moved
+            .piece_mut(PieceId(2))
+            .unwrap()
+            .translate(Point2::new(10.0, 5.0));
+        moved.move_pins(PieceId(2), Point2::new(10.0, 5.0));
+        assert_eq!(moved.pins[2].at, Point2::new(330.0, 15.0));
+        assert_eq!(
+            moved.pins[0].at,
+            Point2::new(20.0, 30.0),
+            "the front's stay"
+        );
+        let twin = moved.pieces[1].twin_shape().unwrap();
+        let shown = |offset: Point2, at: Point2| Point2::new(offset.x - at.x, at.y + offset.y);
+        assert_eq!(
+            shown(
+                moved.pieces[1].twin.as_ref().unwrap().offset,
+                moved.pins[2].at
+            ),
+            shown(pr.pieces[1].twin.as_ref().unwrap().offset, pr.pins[2].at),
+            "the twin's pin is on the same spot of the twin"
+        );
+        assert!(twin.check().is_ok());
+        // Unfolding: the pale pin's spot is (-20, 30) on the whole piece.
+        let mut unfolded = pr.clone();
+        let full = Piece::polygon(
+            PieceId(1),
+            "Front",
+            &[
+                Point2::new(0.0, 0.0),
+                Point2::new(100.0, 0.0),
+                Point2::new(100.0, 200.0),
+                Point2::new(0.0, 200.0),
+                Point2::new(-100.0, 200.0),
+                Point2::new(-100.0, 0.0),
+            ],
+        );
+        assert!(unfolded.unfold_piece(PieceId(1), full));
+        assert_eq!(unfolded.pins[0], pin(1, Half::Drawn, -20.0, 30.0));
+        assert_eq!(unfolded.check(), Ok(()));
+        // Removing the fold takes its pale half's pin; deleting a piece takes its pins.
+        let mut flat = pr.clone();
+        flat.remove_fold(PieceId(1));
+        assert_eq!(flat.pins.len(), 3);
+        flat.remove_piece(PieceId(4));
+        assert_eq!(
+            flat.pins.iter().filter(|p| p.shape == PieceId(4)).count(),
+            0
+        );
+        // The pocket made narrower than where its pin is (10 mm outside it now): the edit
+        // deletes the pin.
+        let mut shrunk = pr.clone();
+        let pocket = shrunk.piece_mut(PieceId(4)).unwrap();
+        pocket.move_vertex(1, Point2::new(30.0, 400.0));
+        pocket.move_vertex(2, Point2::new(30.0, 480.0));
+        assert_eq!(
+            shrunk.check(),
+            Err(ModelError::BadPin(3)),
+            "refused if kept"
+        );
+        shrunk.drop_broken();
+        assert_eq!(shrunk.pins.len(), 3);
+        assert_eq!(shrunk.check(), Ok(()));
     }
 }

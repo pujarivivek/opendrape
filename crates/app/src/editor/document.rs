@@ -51,10 +51,10 @@ impl Document {
         &self.project
     }
     /// Changes the project as one undo step. What the change leaves unusable goes with it (a
-    /// seam side 1 mm long or less: see [`Project::drop_broken`]). A change that leaves the
-    /// project as it was adds no step. A change that leaves the project invalid (see
-    /// [`Project::check`]) is refused: the project is left as it was and no step is added. Ask
-    /// [`Self::last_change_refused`] to tell a refusal from a change that simply did nothing:
+    /// seam side 1 mm long or less, a pin off its piece: see [`Project::drop_broken`]). A change
+    /// that leaves the project as it was adds no step. A change that leaves the project invalid
+    /// (see [`Project::check`]) is refused: the project is left as it was and no step is added.
+    /// Ask [`Self::last_change_refused`] to tell a refusal from a change that simply did nothing:
     /// the closure's result is returned either way.
     pub fn edit<R>(&mut self, f: impl FnOnce(&mut Project) -> R) -> R {
         self.end_gesture();

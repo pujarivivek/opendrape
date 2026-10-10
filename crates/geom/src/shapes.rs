@@ -5,7 +5,7 @@
 
 use crate::edge_length;
 use opendrape_core::{
-    Edge, EdgeProps, InternalLine, Notch, Piece, PieceId, Point2, Project, Vertex,
+    Edge, EdgeProps, Half, InternalLine, Notch, Piece, PieceId, Point2, Project, Vertex,
 };
 
 /// One thing drawn on the pattern table.
@@ -77,6 +77,45 @@ impl Shape {
         match self.kind {
             ShapeKind::Twin { offset } => Point2::new(offset.x - p.x, p.y + offset.y),
             _ => p,
+        }
+    }
+
+    /// The stored spot that point `p` of this shape shows, and the half it is on: where a pin
+    /// at `p` is kept. A point on the pale side of a fold line is kept as its mirror image.
+    pub fn pin_spot(&self, p: Point2) -> (Half, Point2) {
+        match self.kind {
+            ShapeKind::Folded {
+                drawn,
+                fold: (near, far),
+                ..
+            } => {
+                let d = far - near;
+                let side = |q: Point2| d.x * (q.y - near.y) - d.y * (q.x - near.x);
+                let stored = self.piece.vertices[..drawn]
+                    .iter()
+                    .map(|v| side(v.pos))
+                    .max_by(|a, b| a.abs().total_cmp(&b.abs()))
+                    .unwrap_or(0.0);
+                if side(p) * stored < 0.0 {
+                    (Half::Pale, reflect_across(p, near, far))
+                } else {
+                    (Half::Drawn, p)
+                }
+            }
+            _ => (Half::Drawn, self.to_stored(p)),
+        }
+    }
+
+    /// Where this shape shows stored spot `at` of `half` (see [`Self::pin_spot`]).
+    pub fn spot_shown(&self, half: Half, at: Point2) -> Point2 {
+        match (self.kind, half) {
+            (
+                ShapeKind::Folded {
+                    fold: (near, far), ..
+                },
+                Half::Pale,
+            ) => reflect_across(at, near, far),
+            _ => self.from_stored(at),
         }
     }
     /// A movement on this shape as a movement of the stored piece.
@@ -503,5 +542,37 @@ mod tests {
         close(twin.kind.to_stored_delta(p(5.0, 7.0)), p(-5.0, 7.0));
         close(all[0].kind.to_stored_delta(p(5.0, 7.0)), p(5.0, 7.0));
         assert_eq!((twin.stored_vertex(3), twin.shape_edge(2)), (Some(3), 2));
+    }
+
+    #[test]
+    fn a_pin_spot_is_kept_on_the_stored_piece_and_shown_where_it_was() {
+        let mut pr = Project::new();
+        pr.add_piece(half());
+        let back = pr.add_piece(Piece::rectangle(
+            PieceId(0),
+            "Back",
+            p(300.0, 0.0),
+            100.0,
+            200.0,
+        ));
+        pr.add_twin(back, "Back (mirror)".into(), p(900.0, 0.0))
+            .unwrap();
+        let all = shapes(&pr);
+        // The front: its drawn half is x 0..100, its pale half x -100..0.
+        assert_eq!(all[0].pin_spot(p(30.0, 50.0)), (Half::Drawn, p(30.0, 50.0)));
+        assert_eq!(all[0].pin_spot(p(-30.0, 50.0)), (Half::Pale, p(30.0, 50.0)));
+        // The twin shows stored (x, y) at (900 - x, y).
+        assert_eq!(
+            all[2].pin_spot(p(580.0, 10.0)),
+            (Half::Drawn, p(320.0, 10.0))
+        );
+        for (shape, q) in [
+            (&all[0], p(30.0, 50.0)),
+            (&all[0], p(-30.0, 50.0)),
+            (&all[2], p(580.0, 10.0)),
+        ] {
+            let (half, at) = shape.pin_spot(q);
+            close(shape.spot_shown(half, at), q);
+        }
     }
 }

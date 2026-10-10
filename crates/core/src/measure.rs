@@ -40,6 +40,35 @@ pub(crate) fn edge_length(piece: &Piece, i: usize) -> f64 {
         .sum()
 }
 
+/// How far (mm) `p` lies outside the piece's outline: 0 inside it.
+pub(crate) fn distance_outside(piece: &Piece, p: Point2) -> f64 {
+    let outline: Vec<Point2> = (0..piece.len())
+        .flat_map(|i| {
+            let mut pts = edge_polyline(piece, i);
+            pts.pop(); // the next edge starts there
+            pts
+        })
+        .collect();
+    let n = outline.len();
+    let mut inside = false;
+    let mut nearest = f64::INFINITY;
+    for k in 0..n {
+        let (a, b) = (outline[k], outline[(k + 1) % n]);
+        if (a.y > p.y) != (b.y > p.y) && p.x < a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x) {
+            inside = !inside;
+        }
+        let ab = b - a;
+        let len2 = ab.x * ab.x + ab.y * ab.y;
+        let s = if len2 < 1e-18 {
+            0.0
+        } else {
+            (((p.x - a.x) * ab.x + (p.y - a.y) * ab.y) / len2).clamp(0.0, 1.0)
+        };
+        nearest = nearest.min(p.distance(a + ab * s));
+    }
+    if inside { 0.0 } else { nearest }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -63,5 +92,13 @@ mod tests {
             "{}",
             edge_length(&square, 1)
         );
+    }
+
+    #[test]
+    fn a_point_inside_is_no_distance_outside() {
+        let square = Piece::rectangle(PieceId(1), "S", Point2::new(0.0, 0.0), 100.0, 100.0);
+        assert_eq!(distance_outside(&square, Point2::new(50.0, 50.0)), 0.0);
+        assert!((distance_outside(&square, Point2::new(103.0, 50.0)) - 3.0).abs() < 1e-12);
+        assert!((distance_outside(&square, Point2::new(-0.5, 100.0)) - 0.5).abs() < 1e-12);
     }
 }

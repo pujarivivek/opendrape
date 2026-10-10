@@ -5,7 +5,7 @@ use super::line_tool::{line_inside, move_line_vertex};
 use super::{EMPTY_TABLE, HIT_PX, PatternEditor, Selection, Tool, project_bounds};
 use crate::tr;
 use egui::{Event, Key, PointerButton, Response, Sense, vec2};
-use opendrape_core::{Edge, HandleEnd, Piece, PieceId, Point2, Project, Units, VertexKind};
+use opendrape_core::{Edge, HandleEnd, Piece, PieceId, Pin, Point2, Project, Units, VertexKind};
 use opendrape_geom as geom;
 
 /// How close (mm) a typed pen point may land to an existing pen point and still count as being
@@ -128,9 +128,16 @@ pub(super) struct Drag {
     /// that takes the line out of its piece is held back to this, not to where the drag began,
     /// so the line stays where it last was inside.
     last_accepted: Piece,
+    /// The project's pins when the drag began: a whole piece that moves takes its pins along.
+    pins: Vec<Pin>,
 }
 
 impl Drag {
+    /// Whether the drag moves a whole stored piece (not a twin, which moves on its own).
+    fn moves_whole_piece(&self) -> bool {
+        matches!(self.hit, Hit::Inside(_)) && !matches!(self.kind, geom::ShapeKind::Twin { .. })
+    }
+
     /// The stored piece after the pointer moved `d` (in the dragged shape's coordinates), and
     /// whether the move was held back because it would take an internal line out of its piece:
     /// the piece is then as the last accepted move left it.
@@ -629,6 +636,7 @@ impl PatternEditor {
                     kind: shape.kind,
                     refusal_noted: false,
                     line_was_inside,
+                    pins: self.doc.project().pins.clone(),
                 });
             }
         }
@@ -638,9 +646,16 @@ impl PatternEditor {
             let (moved, held_back) = drag.moved(now - drag.grab);
             let id = moved.id;
             let accepted = moved.clone();
+            let pins = drag
+                .moves_whole_piece()
+                .then(|| (drag.pins.clone(), now - drag.grab));
             self.doc.gesture_edit(|p| {
                 if let Some(piece) = p.piece_mut(id) {
                     *piece = moved;
+                }
+                if let Some((pins, d)) = pins {
+                    p.pins = pins;
+                    p.move_pins(id, d);
                 }
             });
             if !held_back
