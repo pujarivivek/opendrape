@@ -1,5 +1,6 @@
 use crate::cloth::{Cloth, Link};
 use crate::collide::{Collider, Plane};
+use crate::timing::{Lap, PhaseTimes};
 use glam::DVec3;
 
 /// One simulation frame.
@@ -58,6 +59,7 @@ pub struct Solver {
     cloth: Cloth,
     params: Params,
     time: f64,
+    phases: PhaseTimes,
 }
 
 impl Solver {
@@ -66,6 +68,7 @@ impl Solver {
             cloth,
             params,
             time: 0.0,
+            phases: PhaseTimes::default(),
         }
     }
     pub fn cloth(&self) -> &Cloth {
@@ -82,14 +85,21 @@ impl Solver {
     pub fn time(&self) -> f64 {
         self.time
     }
+    /// Where the last frame's time went.
+    pub fn phase_times(&self) -> PhaseTimes {
+        self.phases
+    }
 
     /// Advances one [`FRAME_DT`] frame.
     pub fn step(&mut self, collider: Option<&dyn Collider>) {
         let p = self.params;
         let t = self.time;
+        let mut ph = PhaseTimes::default();
+        let mut lap = Lap::start();
         if p.weld_time.is_some_and(|tw| t >= tw) && self.cloth.has_open_stitches() {
             self.cloth.weld_stitches();
         }
+        lap.lap(&mut ph.weld);
         let gravity = if t < p.gravity_delay {
             0.0
         } else if p.gravity_ramp <= 0.0 {
@@ -103,6 +113,7 @@ impl Solver {
             0.0
         };
         let planes = collider.map(|c| c.contact_planes(&self.cloth.x, p.collision_margin));
+        lap.lap(&mut ph.body_query);
         let sdt = FRAME_DT / p.substeps as f64;
         let c = &mut self.cloth;
         for _ in 0..p.substeps {
@@ -121,10 +132,13 @@ impl Solver {
                 c.prev[i] = c.x[i];
                 c.x[i] += v * sdt;
             }
+            lap.lap(&mut ph.predict);
             // Stitches first, fabric last: the fabric constraints get the final word.
             for _ in 0..p.iterations {
                 solve_links(&mut c.x, &c.inv_mass, &c.stitches, 0.0, stitch_scale, sdt);
+                lap.lap(&mut ph.stitches);
                 solve_links(&mut c.x, &c.inv_mass, &c.bend, p.bend_compliance, 1.0, sdt);
+                lap.lap(&mut ph.bend);
                 solve_links(
                     &mut c.x,
                     &c.inv_mass,
@@ -133,19 +147,24 @@ impl Solver {
                     1.0,
                     sdt,
                 );
+                lap.lap(&mut ph.stretch);
                 // Held points last of all, so a pin holds exactly.
                 crate::attach::solve(c, sdt);
+                lap.lap(&mut ph.attach);
             }
             if let Some(planes) = &planes {
                 collide(c, planes, p.thickness, p.friction);
             }
+            lap.lap(&mut ph.collide);
             for i in 0..c.x.len() {
                 if c.inv_mass[i] > 0.0 {
                     c.v[i] = (c.x[i] - c.prev[i]) / sdt;
                 }
             }
+            lap.lap(&mut ph.velocity);
         }
         self.time += FRAME_DT;
+        self.phases = ph;
     }
 }
 

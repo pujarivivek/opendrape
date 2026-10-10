@@ -119,18 +119,42 @@ impl Drape {
     /// The drape of `project` on `stage`: every shape that could be meshed, at its placement,
     /// sewn by its seams, its pins held at their targets.
     pub fn new(project: Arc<Project>, stage: &Stage) -> Self {
-        Self::make(project, stage, None)
+        Self::make(
+            project,
+            stage,
+            None,
+            &MeshParams::default(),
+            Params::default(),
+        )
+    }
+
+    /// As [`Drape::new`], with the fabric meshed by `mesh` and simulated with `params` (for
+    /// benchmarks and quality presets).
+    pub fn with(project: Arc<Project>, stage: &Stage, mesh: &MeshParams, params: Params) -> Self {
+        Self::make(project, stage, None, mesh, params)
     }
 
     /// The drape of `project`, an edit of this drape's project, carrying on from where this one
     /// has got to (see `live`): a shape that was already draped starts where it was, a new one
     /// at its placement.
     pub fn rebuilt(&self, project: Arc<Project>, stage: &Stage) -> Self {
-        Self::make(project, stage, Some(self))
+        Self::make(
+            project,
+            stage,
+            Some(self),
+            &MeshParams::default(),
+            Params::default(),
+        )
     }
 
-    fn make(project: Arc<Project>, stage: &Stage, from: Option<&Drape>) -> Self {
-        let mesh = opendrape_mesh::build(&project, &MeshParams::default());
+    fn make(
+        project: Arc<Project>,
+        stage: &Stage,
+        from: Option<&Drape>,
+        mesh_params: &MeshParams,
+        params: Params,
+    ) -> Self {
+        let mesh = opendrape_mesh::build(&project, mesh_params);
         let fabric = Fabric::of(&mesh);
         let shapes = geom::shapes(&project);
         let was = from.map(|old| geom::shapes(&old.project));
@@ -182,7 +206,7 @@ impl Drape {
         }
         let cloth = builder.build();
         let params = match from {
-            None => Params::default(),
+            None => params,
             Some(_) => live::warm_params(&cloth),
         };
         let mut drape = Self {

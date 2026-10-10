@@ -38,6 +38,8 @@ pub struct Cloth {
     pub(crate) topology_version: u64,
     /// Points of the cloth pulled to targets (see `attach.rs`); a removed one leaves None.
     pub(crate) attachments: Vec<Option<crate::attach::Attachment>>,
+    /// Fabric edges that run along a welded seam (both ends were stitched), sorted.
+    pub(crate) seam_edges: Vec<(u32, u32)>,
 }
 
 pub struct ClothBuilder {
@@ -221,6 +223,10 @@ impl Cloth {
     pub fn topology_version(&self) -> u64 {
         self.topology_version
     }
+    /// The fabric edges along every welded seam, so a drape can be measured along its seams.
+    pub fn seam_edges(&self) -> &[(u32, u32)] {
+        &self.seam_edges
+    }
 
     /// Merges each stitched pair into one particle and rebuilds the constraints on the welded
     /// mesh, so a closed seam behaves like continuous fabric with zero gap.
@@ -235,8 +241,10 @@ impl Cloth {
             }
             k
         }
+        let mut stitched = vec![false; self.x.len()];
         for s in std::mem::take(&mut self.stitches) {
             let (a, b) = (root(&map, s.a) as usize, root(&map, s.b) as usize);
+            stitched[a] = true;
             if a == b {
                 continue;
             }
@@ -274,6 +282,14 @@ impl Cloth {
             })
             .filter(|l| l.a != l.b && seen.insert(edge_key(l.a, l.b)))
             .collect();
+        self.seam_edges.extend(
+            self.stretch
+                .iter()
+                .filter(|l| stitched[l.a as usize] && stitched[l.b as usize])
+                .map(|l| edge_key(l.a, l.b)),
+        );
+        self.seam_edges.sort_unstable();
+        self.seam_edges.dedup();
         let old: HashMap<(u32, u32), f64> = self
             .bend
             .iter()
@@ -368,5 +384,6 @@ mod tests {
         assert_eq!(c.topology_version(), 1);
         // The two triangles now share the welded edge, so a bending link spans it.
         assert_eq!(c.bend_link_count(), 1);
+        assert_eq!(c.seam_edges(), &[(0, 1)], "the welded edge is the seam");
     }
 }

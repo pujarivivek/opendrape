@@ -1,4 +1,5 @@
 use crate::garments::Scene;
+use glam::DVec3;
 use opendrape_sim::{Cloth, Solid, Solver};
 use rayon::prelude::*;
 
@@ -85,6 +86,139 @@ pub fn run(scene: &mut Scene, seconds: f64) -> f64 {
     start.elapsed().as_secs_f64() * 1000.0 / frames.max(1) as f64
 }
 
+/// How many fabric edges pass through a triangle of the fabric they share no particle with:
+/// 0 for a drape that never goes through itself. Measured through a grid of triangle boxes,
+/// so it is cheap enough for every test.
+pub fn cloth_crossings(cloth: &Cloth) -> usize {
+    use std::collections::{HashMap, HashSet};
+    let x = cloth.positions();
+    let tris = cloth.triangles();
+    let edges: Vec<(usize, usize)> = cloth.stretch_links().map(|(a, b, _)| (a, b)).collect();
+    if edges.is_empty() || tris.is_empty() {
+        return 0;
+    }
+    let mean = cloth.stretch_links().map(|(_, _, r)| r).sum::<f64>() / edges.len() as f64;
+    let cell = (2.0 * mean).max(1e-3);
+    let key = |p: DVec3| {
+        [
+            (p.x / cell).floor() as i64,
+            (p.y / cell).floor() as i64,
+            (p.z / cell).floor() as i64,
+        ]
+    };
+    let cells = |points: &[DVec3]| {
+        let lo = key(points.iter().fold(DVec3::MAX, |m, p| m.min(*p)));
+        let hi = key(points.iter().fold(DVec3::MIN, |m, p| m.max(*p)));
+        let mut out = Vec::new();
+        for i in lo[0]..=hi[0] {
+            for j in lo[1]..=hi[1] {
+                for k in lo[2]..=hi[2] {
+                    out.push([i, j, k]);
+                }
+            }
+        }
+        out
+    };
+    let mut grid: HashMap<[i64; 3], Vec<u32>> = HashMap::new();
+    for (t, tri) in tris.iter().enumerate() {
+        let corners = tri.map(|k| x[k as usize]);
+        if corners.iter().any(|p| !p.is_finite()) {
+            continue;
+        }
+        for c in cells(&corners) {
+            grid.entry(c).or_default().push(t as u32);
+        }
+    }
+    let mut crossings = 0;
+    let mut checked = HashSet::new();
+    for (a, b) in edges {
+        let (pa, pb) = (x[a], x[b]);
+        if !(pa.is_finite() && pb.is_finite()) {
+            continue;
+        }
+        checked.clear();
+        for c in cells(&[pa, pb]) {
+            for &t in grid.get(&c).map(Vec::as_slice).unwrap_or(&[]) {
+                if !checked.insert(t) {
+                    continue;
+                }
+                let tri = tris[t as usize];
+                if tri.contains(&(a as u32)) || tri.contains(&(b as u32)) {
+                    continue;
+                }
+                if segment_crosses_triangle(pa, pb, tri.map(|k| x[k as usize])) {
+                    crossings += 1;
+                }
+            }
+        }
+    }
+    crossings
+}
+
+/// Whether the open segment `a`–`b` passes through the inside of the triangle (Möller–Trumbore;
+/// touching an edge or an end does not count).
+fn segment_crosses_triangle(a: DVec3, b: DVec3, [p, q, r]: [DVec3; 3]) -> bool {
+    const EPS: f64 = 1e-9;
+    let dir = b - a;
+    let (e1, e2) = (q - p, r - p);
+    let h = dir.cross(e2);
+    let det = e1.dot(h);
+    if det.abs() < EPS * EPS {
+        return false;
+    }
+    let inv = 1.0 / det;
+    let s = a - p;
+    let u = s.dot(h) * inv;
+    if u <= EPS || u >= 1.0 - EPS {
+        return false;
+    }
+    let qv = s.cross(e1);
+    let v = dir.dot(qv) * inv;
+    if v <= EPS || u + v >= 1.0 - EPS {
+        return false;
+    }
+    let t = e2.dot(qv) * inv;
+    t > EPS && t < 1.0 - EPS
+}
+
+/// How creased the welded seams are: the mean angle (degrees) between the two triangles on
+/// either side of each seam edge, 0 for seams that lie flat like continuous fabric. None
+/// before anything has welded.
+pub fn seam_crease_deg(cloth: &Cloth) -> Option<f64> {
+    use std::collections::HashMap;
+    let seams = cloth.seam_edges();
+    if seams.is_empty() {
+        return None;
+    }
+    let x = cloth.positions();
+    let mut normals: HashMap<(u32, u32), Vec<DVec3>> = HashMap::new();
+    for t in cloth.triangles() {
+        let n = (x[t[1] as usize] - x[t[0] as usize]).cross(x[t[2] as usize] - x[t[0] as usize]);
+        for k in 0..3 {
+            let (a, b) = (t[k], t[(k + 1) % 3]);
+            if seams.binary_search(&(a.min(b), a.max(b))).is_ok() {
+                normals.entry((a.min(b), a.max(b))).or_default().push(n);
+            }
+        }
+    }
+    let angles: Vec<f64> = seams
+        .iter()
+        .filter_map(|e| match normals.get(e).map(Vec::as_slice) {
+            Some([n1, n2]) => {
+                let (l1, l2) = (n1.length(), n2.length());
+                (l1 > 0.0 && l2 > 0.0).then(|| {
+                    (n1.dot(*n2) / (l1 * l2))
+                        .clamp(-1.0, 1.0)
+                        .acos()
+                        .to_degrees()
+                })
+            }
+            _ => None,
+        })
+        .collect();
+    (!angles.is_empty()).then(|| angles.iter().sum::<f64>() / angles.len() as f64)
+}
+
 /// Steps `solver` against `collider` for `seconds`; returns wall-clock ms per frame.
 pub fn run_solver(solver: &mut Solver, collider: &dyn Solid, seconds: f64) -> f64 {
     let frames = (seconds / opendrape_sim::FRAME_DT).round() as usize;
@@ -93,4 +227,100 @@ pub fn run_solver(solver: &mut Solver, collider: &dyn Solid, seconds: f64) -> f6
         solver.step(Some(collider));
     }
     start.elapsed().as_secs_f64() * 1000.0 / frames.max(1) as f64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glam::DVec2;
+    use opendrape_sim::{ClothBuilder, Panel};
+
+    /// A 10 cm square of two triangles in the xz plane at height `y`, flat in the pattern.
+    fn square(y: f64) -> Panel {
+        let flat = vec![
+            DVec2::new(0.0, 0.0),
+            DVec2::new(0.1, 0.0),
+            DVec2::new(0.1, 0.1),
+            DVec2::new(0.0, 0.1),
+        ];
+        Panel {
+            positions: flat.iter().map(|p| DVec3::new(p.x, y, p.y)).collect(),
+            flat: Some(flat),
+            triangles: vec![[0, 1, 2], [0, 2, 3]],
+        }
+    }
+
+    #[test]
+    fn stacked_squares_do_not_cross_but_a_pierced_one_does() {
+        let mut b = ClothBuilder::new(0.15);
+        b.add_panel(&square(0.0), 1.0);
+        b.add_panel(&square(0.01), 1.0);
+        assert_eq!(cloth_crossings(&b.build()), 0, "one above the other");
+        let mut b = ClothBuilder::new(0.15);
+        b.add_panel(&square(0.0), 1.0);
+        // A vertical edge through the middle of the square's first triangle.
+        b.add_panel(
+            &Panel {
+                positions: vec![
+                    DVec3::new(0.07, -0.05, 0.03),
+                    DVec3::new(0.07, 0.05, 0.03),
+                    DVec3::new(0.08, 0.05, 0.03),
+                ],
+                flat: None,
+                triangles: vec![[0, 1, 2]],
+            },
+            1.0,
+        );
+        assert!(cloth_crossings(&b.build()) >= 1, "pierced");
+    }
+
+    /// A 10 cm square in the xz plane with its left edge at `x`, flat in the pattern.
+    fn side_by_side(x: f64) -> Panel {
+        Panel {
+            positions: vec![
+                DVec3::new(x, 0.0, 0.0),
+                DVec3::new(x + 0.1, 0.0, 0.0),
+                DVec3::new(x + 0.1, 0.0, 0.1),
+                DVec3::new(x, 0.0, 0.1),
+            ],
+            ..square(0.0)
+        }
+    }
+
+    #[test]
+    fn a_seam_welded_flat_has_no_crease_and_a_folded_one_has() {
+        // Two squares side by side, sewn along the edge between them.
+        let mut b = ClothBuilder::new(0.15);
+        let (p, q) = (
+            b.add_panel(&side_by_side(0.0), 1.0),
+            b.add_panel(&side_by_side(0.1), 1.0),
+        );
+        b.stitch((p, 1), (q, 0));
+        b.stitch((p, 2), (q, 3));
+        let mut c = b.build();
+        assert_eq!(seam_crease_deg(&c), None, "nothing welded yet");
+        c.weld_stitches();
+        assert!(seam_crease_deg(&c).unwrap() < 1e-9, "flat");
+        // The second square folded straight up: a right-angle crease.
+        let mut b = ClothBuilder::new(0.15);
+        let p = b.add_panel(&side_by_side(0.0), 1.0);
+        let q = b.add_panel(
+            &Panel {
+                positions: vec![
+                    DVec3::new(0.1, 0.0, 0.0),
+                    DVec3::new(0.1, 0.1, 0.0),
+                    DVec3::new(0.1, 0.1, 0.1),
+                    DVec3::new(0.1, 0.0, 0.1),
+                ],
+                ..square(0.0)
+            },
+            1.0,
+        );
+        b.stitch((p, 1), (q, 0));
+        b.stitch((p, 2), (q, 3));
+        let mut c = b.build();
+        c.weld_stitches();
+        let crease = seam_crease_deg(&c).unwrap();
+        assert!((crease - 90.0).abs() < 1e-6, "{crease}");
+    }
 }

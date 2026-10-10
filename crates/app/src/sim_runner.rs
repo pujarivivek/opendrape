@@ -339,6 +339,14 @@ fn carry_on(status: &Status, mut drape: Drape, hold: impl FnOnce(&mut Drape)) ->
 }
 
 fn run(stage: &Stage, rx: &Receiver<Command>, status: &Status, on_frame: &dyn Fn()) {
+    // The solver's parallel work gets every core but one, so the window stays responsive.
+    let workers =
+        std::thread::available_parallelism().map_or(1, |n| n.get().saturating_sub(1).max(1));
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(workers)
+        .thread_name(|i| format!("opendrape-sim-{i}"))
+        .build()
+        .expect("the simulation's thread pool");
     let mut drape: Option<Drape> = None;
     let mut seq = 0;
     let mut next = Instant::now();
@@ -459,7 +467,9 @@ fn run(stage: &Stage, rx: &Receiver<Command>, status: &Status, on_frame: &dyn Fn
         let Some(d) = &mut drape else { continue };
         let started = Instant::now();
         let collider = stage.drape_collider();
-        let stepped = guarded(|| d.made.solver.step(Some(collider))).is_some();
+        let stepped = pool
+            .install(|| guarded(|| d.made.solver.step(Some(collider))))
+            .is_some();
         seq += 1;
         let ms = started.elapsed().as_secs_f64() * 1000.0;
         let frame = if stepped { d.frame(seq, ms) } else { None };

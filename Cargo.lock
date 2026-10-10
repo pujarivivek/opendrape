@@ -2526,6 +2526,7 @@ dependencies = [
  "opendrape-render",
  "opendrape-sim",
  "pollster 0.4.0",
+ "rayon",
  "rfd",
  "rust-embed",
  "serde",

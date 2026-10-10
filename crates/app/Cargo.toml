@@ -16,6 +16,7 @@ opendrape-io.workspace = true
 opendrape-mesh.workspace = true
 opendrape-render.workspace = true
 opendrape-sim.workspace = true
+rayon.workspace = true
 earcut.workspace = true
 glam.workspace = true
 arc-swap.workspace = true

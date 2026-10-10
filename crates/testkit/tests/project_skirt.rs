@@ -5,72 +5,15 @@
 //! its floor and its surface-distance ray, and its `build_drape` for the fabric, the
 //! placements and the stitches).
 
-use opendrape_core::{Half, Piece, PieceId, Placement, Point2, Project, SeamSide};
 use opendrape_drape::{DrapeNote, Stage, build_drape};
-use opendrape_mesh::place::PlaceAt;
 use opendrape_mesh::{MeshParams, build};
 use opendrape_sim::{BodyCollider, FRAME_DT, Solver};
+use opendrape_testkit::drafted;
 use opendrape_testkit::metrics::{measure, position_hash};
-
-/// Where the skirt's waist goes, as for M1's demo skirt (m).
-const WAIST_Y: f64 = 1.03;
-/// The skirt's length (mm).
-const LENGTH_MM: f64 = 550.0;
-
-/// The skirt: a front half on the fold (hem 300, waist 177.5, 550 long, the fold its left edge),
-/// a "Back left" (side seam slanted on its left, centre back straight on its right) and its
-/// mirror image to its right. Side seams: the front's right edge to the back's slanted edge,
-/// both starting at the hem (the mirror image sews the other side). Centre back: the back to
-/// its twin. Every piece is moved down to waist height, then Placed at front or back.
-fn skirt(stage: &Stage) -> Project {
-    let p = Point2::new;
-    let mut pr = Project::new();
-    let mut front = Piece::polygon(
-        PieceId(0),
-        "Front",
-        &[p(0.0, 0.0), p(300.0, 0.0), p(177.5, 550.0), p(0.0, 550.0)],
-    );
-    front.fold = Some(3);
-    let front = pr.add_piece(front);
-    let back = pr.add_piece(Piece::polygon(
-        PieceId(0),
-        "Back left",
-        &[
-            p(400.0, 0.0),
-            p(700.0, 0.0),
-            p(700.0, 550.0),
-            p(522.5, 550.0),
-        ],
-    ));
-    let twin = pr
-        .add_twin(back, "Back right".into(), p(1500.0, 0.0))
-        .unwrap();
-    let side = |shape, edge, forward| SeamSide::edges(shape, Half::Drawn, edge, edge, forward);
-    pr.add_seam(side(front, 1, true), side(back, 3, false));
-    pr.add_seam(side(back, 1, true), side(twin, 1, true));
-    assert_eq!(pr.check(), Ok(()));
-    assert_eq!(
-        pr.all_seams().len(),
-        3,
-        "the side seam's mirror image sews the other side"
-    );
-    // Typed in Properties: down to waist height (the middle of each piece).
-    let middle = WAIST_Y - LENGTH_MM / 2000.0;
-    for id in [front, back] {
-        assert!(pr.set_placement(id, Some(Placement::at([0.0, middle, 0.4]))));
-    }
-    // Place at…, through the one helper the app's menu uses.
-    for (id, at) in [(front, PlaceAt::Front), (back, PlaceAt::Back)] {
-        let placed = stage.place_at(&pr, id, at).expect("the piece is there");
-        assert!(pr.set_placement(id, Some(placed)));
-    }
-    assert_eq!(pr.check(), Ok(()));
-    pr
-}
 
 /// The skirt's cloth, made the way the app makes it, and how many stitches the mesh has.
 fn cloth(stage: &Stage) -> (Solver, usize) {
-    let pr = skirt(stage);
+    let pr = drafted::skirt(stage);
     let (solver, notes) = build_drape(&pr, stage);
     let starts_inside = notes
         .iter()
