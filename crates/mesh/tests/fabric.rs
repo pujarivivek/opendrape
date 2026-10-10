@@ -1264,6 +1264,94 @@ fn two_free_seams_meeting_at_a_cap_notch_share_its_point() {
     assert_eq!(sleeve_points.len(), mesh.stitches.len() - 1);
 }
 
+/// No two stitches in a row (but the ones at `joins`) stitch the same fabric point on either
+/// side: the same point stitched to two others would weld those two together.
+fn assert_no_repeated_points(mesh: &GarmentMesh, joins: &[usize], what: &str) {
+    for (k, w) in mesh.stitches.windows(2).enumerate() {
+        if joins.contains(&(k + 1)) {
+            continue;
+        }
+        assert!(
+            w[0].0 != w[1].0 && w[0].1 != w[1].1,
+            "{what}: stitches {k} and {} share a point: {:?} {:?}",
+            k + 1,
+            w[0],
+            w[1]
+        );
+    }
+}
+
+#[test]
+fn a_notch_on_a_corner_inside_a_side_is_one_sample_not_two() {
+    let mut pr = Project::new();
+    // A is 300 x 200 with a notch at the end of its bottom edge: the corner. B is 250 x 100 with
+    // a notch 100 mm along its bottom edge.
+    let mut a = Piece::rectangle(PieceId(0), "A", p(0.0, 0.0), 300.0, 200.0);
+    a.notches = vec![Notch::new(0, 300.0)];
+    let mut b = Piece::rectangle(PieceId(0), "B", p(500.0, 0.0), 250.0, 100.0);
+    b.notches = vec![Notch::new(0, 100.0)];
+    let (a, b) = (pr.add_piece(a), pr.add_piece(b));
+    // From halfway along A's bottom edge, round the corner, to halfway up its right edge: 250
+    // mm with the notch (and the corner) 150 mm in. Sewn to all of B's bottom edge.
+    pr.add_seam(
+        part(a, (0, 0.5), (1, 0.5), true),
+        side(b, Half::Drawn, 0, 0, true),
+    );
+    assert_eq!(pr.check(), Ok(()));
+    let mesh = build(&pr, &MeshParams::default());
+    assert_eq!(mesh.notes, vec![]);
+    // The notches pair up: stretches of 150/100 mm and 100/150 mm, 13 steps each.
+    assert_eq!(mesh.stitches.len(), 13 + 13 + 1);
+    assert_no_repeated_points(&mesh, &[], "a notch on a corner");
+    let (corner, notch) = mesh.stitches[13];
+    assert_eq!(at_mm(&mesh, corner), p(300.0, 0.0));
+    assert_eq!(at_mm(&mesh, notch), p(600.0, 0.0));
+    // Even steps either side of it (a second sample at the corner would make one of them twice
+    // as long).
+    let xs: Vec<f64> = (0..=13)
+        .map(|k| at_mm(&mesh, mesh.stitches[k].0).x)
+        .collect();
+    for w in xs.windows(2) {
+        assert!((w[1] - w[0] - 150.0 / 13.0).abs() < 1e-6, "{xs:?}");
+    }
+}
+
+#[test]
+fn a_seam_and_its_mirror_agree_on_a_notch_past_the_end_of_its_edge() {
+    let mut pr = Project::new();
+    // Two halves on the fold, 100 wide and 200 tall. The front's right edge has a notch 250 mm
+    // along it: past its end, so drawn at the end, on the corner with the top edge. The back's
+    // right edge has one 120 mm along.
+    let mut front = Piece::rectangle(PieceId(0), "Front", p(0.0, 0.0), 100.0, 200.0);
+    front.fold = Some(3);
+    front.notches = vec![Notch::new(1, 250.0)];
+    let mut back = Piece::rectangle(PieceId(0), "Back", p(300.0, 0.0), 100.0, 200.0);
+    back.fold = Some(3);
+    back.notches = vec![Notch::new(1, 120.0)];
+    let (front, back) = (pr.add_piece(front), pr.add_piece(back));
+    // The right edge and the top edge of each, sewn start to start.
+    pr.add_seam(
+        side(front, Half::Drawn, 1, 2, true),
+        side(back, Half::Drawn, 1, 2, true),
+    );
+    assert_eq!(pr.check(), Ok(()));
+    assert_eq!(pr.all_seams().len(), 2, "the seam has a mirror image");
+    let mesh = build(&pr, &MeshParams::default());
+    assert_eq!(mesh.notes, vec![]);
+    // Both are laid out with the notches paired: stretches of 200/120 and 100/180 mm, 17 and 15
+    // steps. (Counting the front's notch on one and not the other would give 25 steps and 33.)
+    assert_eq!(mesh.stitches.len(), 2 * (17 + 15 + 1));
+    assert_no_repeated_points(&mesh, &[33], "a seam and its mirror");
+    for (first, front_corner, back_notch) in [
+        (0, p(100.0, 200.0), p(400.0, 120.0)),
+        (33, p(-100.0, 200.0), p(200.0, 120.0)),
+    ] {
+        let (a, b) = mesh.stitches[first + 17];
+        assert_eq!(at_mm(&mesh, a), front_corner, "stitch {}", first + 17);
+        assert_eq!(at_mm(&mesh, b), back_notch, "stitch {}", first + 17);
+    }
+}
+
 #[test]
 fn random_free_seams_with_notches_never_panic() {
     let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
@@ -1273,12 +1361,15 @@ fn random_free_seams_with_notches_never_panic() {
         seed ^= seed << 17;
         (seed >> 11) as f64 / (1u64 << 53) as f64
     };
-    let mut sewn = 0;
-    for _ in 0..120 {
+    // What the random projects reached: seams, seams with a mirror image, seams with a notch
+    // exactly on a corner inside a side, and with a notch past the end of its edge.
+    let (mut sewn, mut mirrored, mut corner_notches, mut past_end) = (0, 0, 0, 0);
+    for _ in 0..300 {
         let mut pr = Project::new();
         for k in 0..2 {
             let n = 3 + (rnd() * 4.0) as usize;
-            // A convex polygon, so it always meshes: corners round an ellipse.
+            // A convex polygon, so it always meshes (folded on one of its edges too): corners
+            // round an ellipse.
             let corners: Vec<Point2> = (0..n)
                 .map(|i| {
                     let a = (i as f64 + 0.3 * rnd()) / n as f64 * std::f64::consts::TAU;
@@ -1292,20 +1383,64 @@ fn random_free_seams_with_notches_never_panic() {
             for _ in 0..(rnd() * 4.0) as usize {
                 let edge = (rnd() * n as f64) as usize;
                 let len = geom::edge_length(&piece, edge);
-                piece.notches.push(Notch::new(edge, rnd() * len));
+                // Anywhere on the edge; on a corner at either end of it; or past its end.
+                let distance = match rnd() {
+                    r if r < 0.2 => 0.0,
+                    r if r < 0.4 => len,
+                    r if r < 0.55 => len * (1.0 + 2.0 * rnd()),
+                    _ => rnd() * len,
+                };
+                piece.notches.push(Notch::new(edge, distance));
             }
-            pr.add_piece(piece);
+            // A half on a fold, one of a pair, or plain.
+            let fold = (rnd() * n as f64) as usize;
+            let id = pr.add_piece(piece);
+            let kind = rnd();
+            if kind < 0.35 {
+                pr.piece_mut(id).unwrap().fold = Some(fold);
+                if pr.check().is_err() {
+                    pr.piece_mut(id).unwrap().fold = None;
+                }
+            } else if kind < 0.7 {
+                pr.add_twin(id, "Twin".into(), p(0.0, 600.0 + 300.0 * k as f64));
+            }
         }
-        let n: Vec<usize> = pr.pieces.iter().map(Piece::len).collect();
-        for _ in 0..4 {
-            let mut free = |shape: usize| {
-                let (e0, t0, e1, t1) = (
-                    (rnd() * n[shape] as f64) as usize,
-                    rnd(),
-                    (rnd() * n[shape] as f64) as usize,
-                    rnd(),
-                );
-                part(pr.pieces[shape].id, (e0, t0), (e1, t1), rnd() < 0.5)
+        assert_eq!(pr.check(), Ok(()));
+        let shapes = geom::shapes(&pr);
+        let (n, ids): (Vec<usize>, Vec<Vec<(PieceId, bool)>>) = pr
+            .pieces
+            .iter()
+            .map(|piece| {
+                let mut own = vec![(piece.id, piece.fold.is_some())];
+                own.extend(piece.twin.as_ref().map(|t| (t.id, false)));
+                (piece.len(), own)
+            })
+            .unzip();
+        // One seam to start with, so that its stitches run one after the other; a few more in
+        // half of the projects.
+        let wanted = if rnd() < 0.5 { 1 } else { 4 };
+        for _ in 0..20 {
+            if pr.seams.len() == wanted {
+                break;
+            }
+            let mut free = |piece: usize| {
+                // A side on the piece or its twin; on the pale half of a fold, sometimes.
+                let (shape, folded) = ids[piece][(rnd() * ids[piece].len() as f64) as usize];
+                // `t` at either end of an edge, now and then.
+                let end = |r: f64| match r {
+                    r if r < 0.15 => 0.0,
+                    r if r < 0.3 => 1.0,
+                    r => r,
+                };
+                let e0 = (rnd() * n[piece] as f64) as usize;
+                let t0 = end(rnd());
+                let e1 = (rnd() * n[piece] as f64) as usize;
+                let t1 = end(rnd());
+                let mut side = part(shape, (e0, t0), (e1, t1), rnd() < 0.5);
+                if folded && rnd() < 0.5 {
+                    side.half = Half::Pale;
+                }
+                side
             };
             let (a, b) = (free(0), free(1));
             let mut tried = pr.clone();
@@ -1315,8 +1450,46 @@ fn random_free_seams_with_notches_never_panic() {
             }
         }
         sewn += pr.seams.len();
+        // A seam and its mirror image count the same notches, side for side.
+        let all = pr.all_seams();
+        let shape_of = |id| shapes.iter().find(|s| s.id == id).unwrap();
+        let notches = |side: &SeamSide| geom::side_notches(shape_of(side.shape), side).unwrap();
+        for pair in all.windows(2).filter(|w| w[1].1) {
+            mirrored += 1;
+            for (side, image) in [(pair[0].0.a, pair[1].0.a), (pair[0].0.b, pair[1].0.b)] {
+                let (got, want) = (notches(&side), notches(&image));
+                assert_eq!(got.len(), want.len(), "{side:?}: {got:?} against {want:?}");
+                for (g, w) in got.iter().zip(&want) {
+                    assert!((g - w).abs() < 1e-6, "{side:?}: {got:?} against {want:?}");
+                }
+            }
+        }
+        for (seam, _) in &all {
+            for side in [seam.a, seam.b] {
+                let shape = shape_of(side.shape);
+                let runs = geom::side_runs(shape, &side).unwrap();
+                let mut corner = 0.0;
+                let corners: Vec<f64> = runs[..runs.len() - 1]
+                    .iter()
+                    .map(|r| {
+                        corner += r.length();
+                        corner
+                    })
+                    .collect();
+                let notches = notches(&side);
+                corner_notches += usize::from(
+                    notches
+                        .iter()
+                        .any(|d| corners.iter().any(|c| (c - d).abs() < 1e-9)),
+                );
+                past_end += usize::from(shape.piece.notches.iter().any(|notch| {
+                    notch.distance > geom::edge_length(&shape.piece, notch.edge) + 1e-9
+                }));
+            }
+        }
+
         let mesh = build(&pr, &MeshParams::default());
-        assert_eq!(mesh.panels.len(), 2, "{:?}", mesh.notes);
+        assert_eq!(mesh.panels.len(), shapes.len(), "{:?}", mesh.notes);
         for &((pa, a), (pb, b)) in &mesh.stitches {
             assert!(
                 (a as usize) < mesh.panels[pa].flat.len()
@@ -1326,6 +1499,24 @@ fn random_free_seams_with_notches_never_panic() {
         for panel in &mesh.panels {
             assert!(panel.flat.iter().flatten().all(|v| v.is_finite()));
         }
+        // With one seam its stitches run one after the other, and one point of fabric is never
+        // stitched twice in a row, to either side (a seam and its mirror image meet where the
+        // second starts).
+        if pr.seams.len() == 1 {
+            let joins = if all.len() == 2 {
+                assert_eq!(mesh.stitches.len() % 2, 0, "a seam and its mirror image");
+                vec![mesh.stitches.len() / 2]
+            } else {
+                vec![]
+            };
+            assert_no_repeated_points(&mesh, &joins, &format!("{:?}", pr.seams[0]));
+        }
     }
-    assert!(sewn > 100, "{sewn} free seams sewn");
+    assert!(sewn > 300, "{sewn} free seams sewn");
+    assert!(mirrored > 20, "{mirrored} mirror images");
+    assert!(
+        corner_notches > 20,
+        "{corner_notches} sides with a corner notch"
+    );
+    assert!(past_end > 20, "{past_end} sides with a notch past its edge");
 }

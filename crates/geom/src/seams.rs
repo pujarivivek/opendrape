@@ -187,7 +187,9 @@ pub fn edge_points_between(
 
 /// Where the shape's notches are along `side` (mm from its start, in order): those more than
 /// [`MIN_SIDE_MM`] from both of its ends. A notch at either end marks where it meets another
-/// seam, not a point inside it.
+/// seam, not a point inside it. A notch past the end of its edge is at the end, as it is drawn
+/// (and as its mirror image on the other half of a fold is at the start of its edge), so a seam
+/// and its mirror image count the same notches.
 pub fn side_notches(shape: &Shape, side: &SeamSide) -> Option<Vec<f64>> {
     let runs = side_runs(shape, side)?;
     let total: f64 = runs.iter().map(Run::length).sum();
@@ -195,9 +197,11 @@ pub fn side_notches(shape: &Shape, side: &SeamSide) -> Option<Vec<f64>> {
     let mut start = 0.0;
     for run in &runs {
         let (lo, hi) = (run.from.min(run.to), run.from.max(run.to));
+        let edge_len = edge_length(&shape.piece, run.edge);
         for notch in shape.piece.notches.iter().filter(|n| n.edge == run.edge) {
-            if (lo..=hi).contains(&notch.distance) {
-                let at = start + (notch.distance - run.from).abs();
+            let distance = notch.distance.max(0.0).min(edge_len);
+            if (lo..=hi).contains(&distance) {
+                let at = start + (distance - run.from).abs();
                 if at > MIN_SIDE_MM && at < total - MIN_SIDE_MM {
                     out.push(at);
                 }
@@ -216,7 +220,7 @@ mod tests {
     use super::*;
     use crate::shapes::shapes;
     use crate::unfolded;
-    use opendrape_core::{Half, Notch, Piece, PieceId, Project, SeamSide};
+    use opendrape_core::{Half, Notch, OutlinePos, Piece, PieceId, Project, SeamSide};
 
     fn p(x: f64, y: f64) -> Point2 {
         Point2::new(x, y)
@@ -588,6 +592,49 @@ mod tests {
             ..up
         };
         assert_eq!(side_notches(&all[2], &twin_up), Some(got));
+    }
+
+    #[test]
+    fn a_seam_and_its_mirror_image_count_the_same_notches() {
+        let mut pr = project();
+        // The front's right edge (stored 1, 200 mm) has a notch 120 mm along, and one 250 mm
+        // along: past its end, so drawn on the corner with the top edge. The pale copy of
+        // each is at 80 mm and at 0 mm of the pale edge.
+        pr.pieces[0].notches = vec![Notch::new(1, 120.0), Notch::new(1, 250.0)];
+        let all = shapes(&pr);
+        let front = &all[0];
+        let drawn = SeamSide::edges(PieceId(1), Half::Drawn, 1, 2, true);
+        let pale = SeamSide {
+            half: Half::Pale,
+            ..drawn
+        };
+        let (got, mirrored) = (
+            side_notches(front, &drawn).unwrap(),
+            side_notches(front, &pale).unwrap(),
+        );
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(
+            (got[0] - 120.0).abs() < 1e-6 && (got[1] - 200.0).abs() < 1e-6,
+            "{got:?}: the late notch is on the corner"
+        );
+        assert_eq!(got.len(), mirrored.len(), "{got:?} against {mirrored:?}");
+        for (a, b) in got.iter().zip(&mirrored) {
+            assert!((a - b).abs() < 1e-6, "{got:?} against {mirrored:?}");
+        }
+        // A side that stops short of the end of the edge doesn't have it, drawn or pale.
+        let short = SeamSide {
+            to: OutlinePos::new(1, 0.9),
+            ..drawn
+        };
+        let short = SeamSide {
+            from: OutlinePos::new(1, 0.0),
+            ..short
+        };
+        for half in [Half::Drawn, Half::Pale] {
+            let got = side_notches(front, &SeamSide { half, ..short }).unwrap();
+            assert_eq!(got.len(), 1, "{half:?}: {got:?}");
+            assert!((got[0] - 120.0).abs() < 1e-6, "{half:?}: {got:?}");
+        }
     }
 
     #[test]

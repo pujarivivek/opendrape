@@ -169,7 +169,10 @@ impl SeamPlan {
 /// Samples along a side cut into stretches at `breaks` (its start, notches, its end), with
 /// `steps[j]` equal steps on stretch j. Each corner (a distance in `corners`) takes over the
 /// sample of its stretch nearest to it, never a stretch's own ends; a corner whose sample
-/// another corner took keeps none.
+/// another corner took keeps none. A corner at a break (a notch on a corner inside the side)
+/// already has the break's sample, so it takes none: a second sample there would be the same
+/// point of fabric twice, and stitching it to two points of the other side would weld those
+/// two together.
 fn samples(breaks: &[f64], steps: &[usize], corners: &[f64]) -> Vec<f64> {
     let mut at = Vec::new();
     let mut first = Vec::with_capacity(steps.len());
@@ -181,6 +184,9 @@ fn samples(breaks: &[f64], steps: &[usize], corners: &[f64]) -> Vec<f64> {
     at.push(breaks[breaks.len() - 1]);
     let mut taken = vec![false; at.len()];
     for &c in corners {
+        if breaks.iter().any(|b| (b - c).abs() <= 1e-9 * c.max(1.0)) {
+            continue;
+        }
         let Some(j) = (0..steps.len()).find(|&j| c >= breaks[j] && c <= breaks[j + 1]) else {
             continue;
         };
@@ -442,6 +448,68 @@ pub fn bounds(points: &[Point2]) -> (Point2, Point2) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn even(from: f64, to: f64, steps: usize) -> Vec<f64> {
+        (0..=steps)
+            .map(|k| from + (to - from) * k as f64 / steps as f64)
+            .collect()
+    }
+
+    #[test]
+    fn a_corner_takes_the_nearest_sample_of_its_stretch_and_nothing_else() {
+        let rest = |mut samples: Vec<f64>, k: usize, value: f64| {
+            samples[k] = value;
+            samples
+        };
+        // 10 steps of 10 mm, a corner 37 mm along: the sample at 40 moves to it.
+        assert_eq!(
+            samples(&[0.0, 100.0], &[10], &[37.0]),
+            rest(even(0.0, 100.0, 10), 4, 37.0)
+        );
+        // Never a stretch's own ends: a corner near the start or the end takes the first or
+        // the last sample inside it.
+        assert_eq!(
+            samples(&[0.0, 100.0], &[10], &[1.0]),
+            rest(even(0.0, 100.0, 10), 1, 1.0)
+        );
+        assert_eq!(
+            samples(&[0.0, 100.0], &[10], &[99.0]),
+            rest(even(0.0, 100.0, 10), 9, 99.0)
+        );
+        // A stretch of one step has no sample inside it for a corner to take.
+        assert_eq!(
+            samples(&[0.0, 10.0, 100.0], &[1, 9], &[4.0]),
+            [vec![0.0], even(10.0, 100.0, 9)].concat()
+        );
+        // Two corners nearest the same sample: the first has it, the second none.
+        assert_eq!(
+            samples(&[0.0, 100.0], &[10], &[36.0, 38.0]),
+            rest(even(0.0, 100.0, 10), 4, 36.0)
+        );
+        // A corner in a later stretch is found there: 75 mm is 1.5 steps into the second one.
+        assert_eq!(
+            samples(&[0.0, 60.0, 100.0], &[6, 4], &[75.0]),
+            vec![
+                0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 75.0, 90.0, 100.0
+            ]
+        );
+    }
+
+    #[test]
+    fn a_corner_on_a_notch_has_the_notch_sample_and_takes_no_other() {
+        // A break at 60 mm is a notch; the corner is the same place, however it was measured.
+        for c in [60.0, 60.0 + 1e-12, 60.0 - 1e-12] {
+            let got = samples(&[0.0, 60.0, 100.0], &[6, 4], &[c]);
+            assert_eq!(got.len(), 11);
+            assert_eq!(got[6], 60.0, "the notch's own sample");
+            for w in got.windows(2) {
+                assert!(w[1] - w[0] > 9.0, "{c}: a sample twice: {got:?}");
+            }
+        }
+        // The ends of a side are breaks too.
+        let got = samples(&[0.0, 100.0], &[10], &[1e-12, 100.0 - 1e-12]);
+        assert_eq!(got, even(0.0, 100.0, 10));
+    }
 
     /// A stand-in for making the fabric: 2,000,000 / h² particles.
     fn tried(h: f64) -> Tried<f64> {
