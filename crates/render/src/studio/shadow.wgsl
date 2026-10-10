@@ -11,6 +11,22 @@ fn vs_depth(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>) ->
     return light.view_proj * vec4<f32>(position, 1.0);
 }
 
+// The key map's depth (0..1) in 24 bits of an 8-bit RGB texture, beside the depth buffer:
+// OpenGL can't read a depth texture as numbers, and the soft shadows need to know how far
+// above a spot the thing shading it is.
+fn pack_unit(x: f32) -> vec3<f32> {
+    let a = clamp(x, 0.0, 1.0) * 255.0;
+    let r = floor(a);
+    let b = fract(a) * 255.0;
+    let g = floor(b);
+    return vec3<f32>(r, g, round(fract(b) * 255.0)) / 255.0;
+}
+
+@fragment
+fn fs_key(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    return vec4<f32>(pack_unit(position.z), 1.0);
+}
+
 // Seen from just under the floor looking up, depth 0 is the floor and 1 is the top of the
 // range: darkness is how close the nearest thing above is.
 @fragment

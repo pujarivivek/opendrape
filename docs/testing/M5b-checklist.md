@@ -37,8 +37,10 @@ second and the view goes quiet.
       shape of the form and the folds most strongly; Soft is the even softbox look. The
       fabric facing you stays the same colour in all three. Your choice is remembered.
 - [ ] **Floor grid and shadow.** Faint lines every 10 cm, stronger every metre, fading into
-      the backdrop; the form's shadow falls behind-left, about as long as the form is tall,
-      with no cut-off end.
+      the backdrop. The form's shadow falls behind-left, about as long as the form is tall,
+      with no cut-off end: crisp right at the feet, getting softer and fainter further away.
+- [ ] **From below.** Orbit the view down under the floor: the floor gets out of the way and
+      you see the form from underneath, against the studio backdrop.
 - [ ] **On a weak laptop** (if you can try one): Auto picks Basic or Medium, and turning the
       view stays smooth.
 

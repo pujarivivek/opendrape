@@ -106,6 +106,7 @@ struct Placeholders {
     contact: wgpu::TextureView,
     ao: wgpu::TextureView,
     prepass: wgpu::TextureView,
+    key_depths: wgpu::TextureView,
 }
 
 struct Pipelines {
@@ -224,6 +225,7 @@ impl StudioRenderer {
                 sampler_entry(3, wgpu::SamplerBindingType::Filtering),
                 texture_entry(4, T::Float { filterable: false }),
                 texture_entry(5, T::Float { filterable: false }),
+                texture_entry(6, T::Float { filterable: false }),
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -263,6 +265,13 @@ impl StudioRenderer {
         ));
         let ao = view(texture(device, "no ao", one, LDR, U::TEXTURE_BINDING));
         let prepass = view(texture(device, "no prepass", one, LDR, U::TEXTURE_BINDING));
+        let key_depths = view(texture(
+            device,
+            "no key depths",
+            one,
+            LDR,
+            U::TEXTURE_BINDING,
+        ));
         let compare = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("studio shadow compare"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -293,6 +302,7 @@ impl StudioRenderer {
                 contact,
                 ao,
                 prepass,
+                key_depths,
             },
             textures_bind_groups: Vec::new(),
             ao: AoPass::new(device, &frame_layout),
@@ -594,6 +604,7 @@ impl StudioRenderer {
         let p = &self.placeholders;
         let shadow = self.shadows.key_view().unwrap_or(&p.shadow);
         let contact = self.shadows.contact_view().unwrap_or(&p.contact);
+        let key_depths = self.shadows.key_depths_view().unwrap_or(&p.key_depths);
         let prepass = self.targets.as_ref().map_or(&p.prepass, |t| &t.distance);
         let mut sets: Vec<(bool, &wgpu::TextureView)> =
             self.ao_targets.iter().map(|t| (t.half, &t.a)).collect();
@@ -603,7 +614,13 @@ impl StudioRenderer {
         self.textures_bind_groups = sets
             .into_iter()
             .map(|(half, ao)| {
-                let views = [(0, shadow), (2, contact), (4, ao), (5, prepass)];
+                let views = [
+                    (0, shadow),
+                    (2, contact),
+                    (4, ao),
+                    (5, prepass),
+                    (6, key_depths),
+                ];
                 let mut entries: Vec<wgpu::BindGroupEntry> = views
                     .iter()
                     .map(|&(binding, view)| wgpu::BindGroupEntry {
@@ -809,9 +826,11 @@ impl StudioRenderer {
         let floor = self.floor.as_ref().expect("made above");
         let pipelines = self.pipelines.as_ref().expect("made above");
         let targets = self.targets.as_ref().expect("made above");
+        // From under the floor, it would hide everything: it isn't drawn then.
+        let shown_floor = (camera.eye().y > 0.0).then_some(floor);
         let ao_half = effects.ao.map(|a| a.half_res);
         if let Some(half) = ao_half {
-            let all: Vec<&StudioMesh> = meshes.iter().copied().chain([floor]).collect();
+            let all: Vec<&StudioMesh> = meshes.iter().copied().chain(shown_floor).collect();
             self.ao.prepass(
                 &mut encoder,
                 &self.frame_bind_group,
@@ -861,7 +880,7 @@ impl StudioRenderer {
             for m in meshes
                 .iter()
                 .copied()
-                .chain([floor])
+                .chain(shown_floor)
                 .filter(|m| m.index_count > 0)
             {
                 pass.set_bind_group(1, &m.bind_group, &[]);

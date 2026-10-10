@@ -39,6 +39,7 @@ struct Draw {
 @group(2) @binding(3) var linear_sampler: sampler;
 @group(2) @binding(4) var ao_map: texture_2d<f32>;
 @group(2) @binding(5) var prepass_distance: texture_2d<f32>;
+@group(2) @binding(6) var key_depths: texture_2d<f32>;
 
 const CLOTH: u32 = 0u;
 const FORM: u32 = 1u;
@@ -81,6 +82,18 @@ fn backdrop(dir: vec3<f32>) -> vec3<f32> {
     return mix(frame.horizon.rgb, frame.top.rgb, smoothstep(0.0, 0.6, dir.y));
 }
 
+// Soft shadows: the shadow edge is MIN_PENUMBRA wide (metres) at a contact, and widens by
+// SOFTBOX_SPREAD for each metre between the shadow and what casts it (a softbox about 17° across
+// as the light sees it), up to BLOCKER_SEARCH, the furthest the search for casters looks.
+const MIN_PENUMBRA: f32 = 0.008;
+const SOFTBOX_SPREAD: f32 = 0.15;
+const BLOCKER_SEARCH: f32 = 0.25;
+
+fn unpack_unit(c: vec3<f32>) -> f32 {
+    let v = round(c * 255.0);
+    return (v.r + (v.g + v.b / 255.0) / 255.0) / 255.0;
+}
+
 // Interleaved gradient noise: a different rotation for neighbouring pixels.
 fn pixel_noise(pixel: vec2<f32>) -> f32 {
     return fract(52.9829189 * fract(dot(pixel, vec2<f32>(0.06711056, 0.00583715))));
@@ -107,12 +120,34 @@ fn key_shadow(world: vec3<f32>, n: vec3<f32>, pixel: vec2<f32>) -> f32 {
     );
     let angle = (pixel_noise(pixel) + frame.params.y * 0.618034) * 6.2831853;
     let rotate = mat2x2<f32>(cos(angle), sin(angle), -sin(angle), cos(angle));
-    // A soft studio light: the shadow edge spreads over about 4 cm.
-    let radius = 0.04 / frame.key_box.x;
     // A tap reaching sideways over a surface tilted to the light finds that surface itself
     // nearer the light: allow for the tilt over the tap's reach (receiver slope bias).
     let facing = clamp(dot(n, frame.key_dir.xyz), 0.05, 1.0);
     let slope = min(sqrt(1.0 - facing * facing) / facing, 3.0);
+    // Contact-hardening (PCSS): first find how far, along the light, the things shading this
+    // spot are from it. A softbox lights from a spread of directions, so the further away they
+    // are, the wider and softer the shadow's edge: crisp where a foot meets the floor, soft
+    // at the far end of the shadow.
+    let size = vec2<i32>(textureDimensions(key_depths));
+    let search = BLOCKER_SEARCH / frame.key_box.x;
+    var blockers = 0.0;
+    var blocker_depth = 0.0;
+    for (var i = 0; i < 8; i++) {
+        let offset = rotate * disc[i] * search;
+        let texel = clamp(vec2<i32>((uv + offset) * vec2<f32>(size)), vec2<i32>(0), size - 1);
+        let d = unpack_unit(textureLoad(key_depths, texel, 0).rgb);
+        let bias = 0.0015 + length(offset) * frame.key_box.x * slope / frame.key_box.y;
+        if (d < ndc.z - bias) {
+            blockers += 1.0;
+            blocker_depth += d;
+        }
+    }
+    if (blockers == 0.0) {
+        return 1.0;
+    }
+    let gap = (ndc.z - blocker_depth / blockers) * frame.key_box.y;
+    let penumbra = clamp(MIN_PENUMBRA + gap * SOFTBOX_SPREAD, MIN_PENUMBRA, BLOCKER_SEARCH);
+    let radius = penumbra / frame.key_box.x;
     let taps = min(i32(frame.extra.x), 12);
     var lit = 0.0;
     for (var i = 0; i < taps; i++) {

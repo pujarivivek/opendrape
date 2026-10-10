@@ -962,3 +962,104 @@ fn sculpted_lighting_has_more_contrast_than_soft() {
     );
     assert!(sculpted >= 1.5 * soft, "sculpted {sculpted} vs soft {soft}");
 }
+
+/// Seen from under the floor, the form is still there: the floor isn't drawn from below.
+#[test]
+fn the_form_shows_from_below_the_floor() {
+    let g = gpu();
+    let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::Medium);
+    r.set_overrides(plain());
+    let target = RenderTarget::new(&g.device, 128, 128);
+    let camera = OrbitCamera {
+        target: Vec3::new(0.0, 0.6, 0.0),
+        yaw: 0.0,
+        pitch: -0.9,
+        distance: 2.5,
+        fov_y: 35f32.to_radians(),
+    };
+    assert!(camera.eye().y < 0.0, "the camera is under the floor");
+    let b = mesh(
+        &mut r,
+        &g,
+        box_mesh(0.4, 0.4, 0.8),
+        [0.05, 0.05, 0.3],
+        Material::Form,
+    );
+    let img = render_still(&mut r, &g, &target, &camera, &[&b]);
+    let centre = img.get_pixel(64, 64);
+    assert!(
+        luminance(centre) < 100.0,
+        "the dark blue box shows, not the light floor: {centre:?}"
+    );
+}
+
+/// A tall thin pole's shadow: crisp near its foot, softer towards its tip (like a softbox
+/// shadow), and never much darker than the open floor.
+#[test]
+fn floor_shadows_soften_with_distance_and_stay_gentle() {
+    use opendrape_render::studio::Lighting;
+    let g = gpu();
+    let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::High);
+    r.set_overrides(Overrides {
+        key_shadows: Some(true),
+        ..plain()
+    });
+    r.set_lighting(Lighting::Sculpted);
+    let target = RenderTarget::new(&g.device, 600, 600);
+    let key = opendrape_render::studio::environment::key_dir();
+    let away = Vec3::new(-key.x, 0.0, -key.z).normalize();
+    let across = Vec3::new(-away.z, 0.0, away.x);
+    // The pole's shadow is about 1.5 / tan(50°) ≈ 1.26 m long.
+    let middle = away * 0.6;
+    let camera = OrbitCamera {
+        target: middle,
+        yaw: 0.0,
+        pitch: 1.45,
+        distance: 3.0,
+        fov_y: 35f32.to_radians(),
+    };
+    // Thick enough that its shadow keeps a core at the far end (a thin one fades right out).
+    let pole = mesh(
+        &mut r,
+        &g,
+        box_mesh(0.12, 0.0, 1.5),
+        [0.5; 3],
+        Material::Form,
+    );
+    let img = render_still(&mut r, &g, &target, &camera, &[&pole]);
+    img.save(format!(
+        "{}/studio_pole_shadow.png",
+        env!("CARGO_TARGET_TMPDIR")
+    ))
+    .ok();
+    let light =
+        |p: Vec3| opendrape_render::colour::srgb_to_linear(luminance_at(&img, &camera, p) / 255.0);
+    let open = light(away * 0.6 + across * 0.6);
+    // Width of the shadow's edge (10 % to 90 % of its depth) across the shadow at `along`.
+    let edge_width = |along: f32| {
+        let samples: Vec<(f32, f32)> = (0..200)
+            .map(|i| {
+                let s = i as f32 * 0.0025;
+                (s, light(away * along + across * s))
+            })
+            .collect();
+        let darkest = samples.iter().map(|s| s.1).fold(f32::INFINITY, f32::min);
+        let reach = |share: f32| {
+            samples
+                .iter()
+                .find(|s| s.1 >= darkest + share * (open - darkest))
+                .map_or(0.3, |s| s.0)
+        };
+        (reach(0.9) - reach(0.1), darkest)
+    };
+    let (near_width, near_dark) = edge_width(0.15);
+    let (far_width, _) = edge_width(1.0);
+    assert!(
+        far_width > 1.5 * near_width,
+        "edge near the foot {near_width} m, near the tip {far_width} m"
+    );
+    assert!(
+        near_dark >= 0.55 * open,
+        "the shadow is gentle: {near_dark} vs open floor {open}"
+    );
+}

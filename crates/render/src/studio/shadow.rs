@@ -23,6 +23,8 @@ const CONTACT_HEIGHT: f32 = 0.6;
 const BLUR_STEP_M: f32 = 0.019;
 
 const CONTACT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
+/// The key map's depths, packed in RGB for reading as numbers (soft shadows' blocker search).
+const KEY_DEPTHS: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// The key light's view of the scene: an orthographic box round a sphere that holds
 /// everything that casts shadows, so no shadow is ever cut off.
@@ -88,6 +90,7 @@ struct Maps {
     key_size: u32,
     contact_size: u32,
     key: wgpu::TextureView,
+    key_depths: wgpu::TextureView,
     contact: wgpu::TextureView,
     contact_depth: wgpu::TextureView,
     /// Blur passes: contact → spare (across), spare → contact (down).
@@ -194,7 +197,12 @@ impl Shadows {
                 compilation_options: Default::default(),
                 buffers: &[Some(vertex.clone())],
             },
-            fragment: None,
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_key"),
+                compilation_options: Default::default(),
+                targets: &[Some(KEY_DEPTHS.into())],
+            }),
             primitive,
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH,
@@ -328,6 +336,13 @@ impl Shadows {
             DEPTH,
             target,
         ));
+        let key_depths = view(texture(
+            device,
+            "studio key depths",
+            (key_size, key_size),
+            KEY_DEPTHS,
+            target,
+        ));
         let contact = view(texture(
             device,
             "studio contact",
@@ -386,6 +401,7 @@ impl Shadows {
             key_size,
             contact_size,
             key,
+            key_depths,
             contact,
             contact_depth,
             across,
@@ -403,6 +419,11 @@ impl Shadows {
 
     pub fn key_view(&self) -> Option<&wgpu::TextureView> {
         self.maps.as_ref().map(|m| &m.key)
+    }
+
+    /// The key map's depths as numbers (packed RGB).
+    pub fn key_depths_view(&self) -> Option<&wgpu::TextureView> {
+        self.maps.as_ref().map(|m| &m.key_depths)
     }
 
     pub fn contact_view(&self) -> Option<&wgpu::TextureView> {
@@ -447,7 +468,15 @@ impl Shadows {
             queue.write_buffer(&self.key_light_buffer, 0, bytemuck::bytes_of(&matrix));
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("studio key shadow"),
-                color_attachments: &[],
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &maps.key_depths,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &maps.key,
                     depth_ops: Some(wgpu::Operations {

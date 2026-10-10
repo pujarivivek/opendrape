@@ -37,19 +37,19 @@ impl Lighting {
                 key: 1.0,
                 fill: 1.0,
                 rim: 1.0,
-                floor_shadow: 0.35,
+                floor_shadow: 0.25,
             },
             Self::Balanced => LightScale {
                 key: 1.5,
                 fill: 0.8,
                 rim: 1.15,
-                floor_shadow: 0.45,
+                floor_shadow: 0.32,
             },
             Self::Sculpted => LightScale {
                 key: 2.4,
                 fill: 0.5,
                 rim: 1.3,
-                floor_shadow: 0.55,
+                floor_shadow: 0.4,
             },
         }
     }
