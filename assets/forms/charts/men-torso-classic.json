@@ -1,0 +1,19 @@
+{
+ "format": 1,
+ "id": "men-torso-classic",
+ "form": "men-torso",
+ "name": "chart-classic",
+ "source": "OpenDrape grading, graded in-house with reference to published professional men's dress form size tables (theshopcompany.com)",
+ "sizes": [
+  {"label": "34", "mm": {"chest": 865, "waist": 750, "hip": 850, "neck": 355, "shoulder_length": 150, "back_waist_length": 440, "waist_to_hip": 185}},
+  {"label": "36", "mm": {"chest": 915, "waist": 805, "hip": 895, "neck": 370, "shoulder_length": 155, "back_waist_length": 445, "waist_to_hip": 190}},
+  {"label": "38", "mm": {"chest": 965, "waist": 855, "hip": 940, "neck": 380, "shoulder_length": 155, "back_waist_length": 450, "waist_to_hip": 190}},
+  {"label": "40", "mm": {"chest": 1015, "waist": 910, "hip": 985, "neck": 395, "shoulder_length": 160, "back_waist_length": 455, "waist_to_hip": 195}},
+  {"label": "42", "mm": {"chest": 1065, "waist": 965, "hip": 1030, "neck": 405, "shoulder_length": 165, "back_waist_length": 460, "waist_to_hip": 195}},
+  {"label": "44", "mm": {"chest": 1120, "waist": 1015, "hip": 1070, "neck": 420, "shoulder_length": 165, "back_waist_length": 465, "waist_to_hip": 200}},
+  {"label": "46", "mm": {"chest": 1170, "waist": 1070, "hip": 1115, "neck": 430, "shoulder_length": 170, "back_waist_length": 470, "waist_to_hip": 200}},
+  {"label": "48", "mm": {"chest": 1220, "waist": 1125, "hip": 1160, "neck": 440, "shoulder_length": 175, "back_waist_length": 475, "waist_to_hip": 205}},
+  {"label": "50", "mm": {"chest": 1270, "waist": 1180, "hip": 1205, "neck": 450, "shoulder_length": 175, "back_waist_length": 480, "waist_to_hip": 205}},
+  {"label": "52", "mm": {"chest": 1320, "waist": 1230, "hip": 1245, "neck": 460, "shoulder_length": 180, "back_waist_length": 485, "waist_to_hip": 210}}
+ ]
+}

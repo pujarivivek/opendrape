@@ -1,0 +1,19 @@
+{
+ "format": 1,
+ "id": "women-torso-everyday",
+ "form": "women-torso",
+ "name": "chart-everyday",
+ "source": "OpenDrape grading, graded in-house with reference to ASTM D5585 (straight) figures as reported publicly (Wikipedia, US standard clothing size) and an ASTM-regular soft form table",
+ "sizes": [
+  {"label": "US 2", "alt": "UK 6", "mm": {"bust": 850, "under_bust": 720, "waist": 675, "hip": 900, "neck": 330, "shoulder_length": 120, "back_waist_length": 400, "waist_to_hip": 200}},
+  {"label": "US 4", "alt": "UK 8", "mm": {"bust": 875, "under_bust": 745, "waist": 700, "hip": 925, "neck": 335, "shoulder_length": 125, "back_waist_length": 405, "waist_to_hip": 200}},
+  {"label": "US 6", "alt": "UK 10", "mm": {"bust": 900, "under_bust": 770, "waist": 725, "hip": 950, "neck": 340, "shoulder_length": 125, "back_waist_length": 410, "waist_to_hip": 205}},
+  {"label": "US 8", "alt": "UK 12", "mm": {"bust": 925, "under_bust": 795, "waist": 750, "hip": 975, "neck": 345, "shoulder_length": 130, "back_waist_length": 415, "waist_to_hip": 205}},
+  {"label": "US 10", "alt": "UK 14", "mm": {"bust": 950, "under_bust": 820, "waist": 775, "hip": 1000, "neck": 350, "shoulder_length": 130, "back_waist_length": 420, "waist_to_hip": 210}},
+  {"label": "US 12", "alt": "UK 16", "mm": {"bust": 985, "under_bust": 855, "waist": 810, "hip": 1035, "neck": 360, "shoulder_length": 135, "back_waist_length": 425, "waist_to_hip": 210}},
+  {"label": "US 14", "alt": "UK 18", "mm": {"bust": 1025, "under_bust": 895, "waist": 850, "hip": 1075, "neck": 370, "shoulder_length": 140, "back_waist_length": 430, "waist_to_hip": 215}},
+  {"label": "US 16", "alt": "UK 20", "mm": {"bust": 1065, "under_bust": 935, "waist": 890, "hip": 1115, "neck": 380, "shoulder_length": 145, "back_waist_length": 435, "waist_to_hip": 215}},
+  {"label": "US 18", "alt": "UK 22", "mm": {"bust": 1115, "under_bust": 985, "waist": 940, "hip": 1165, "neck": 395, "shoulder_length": 150, "back_waist_length": 440, "waist_to_hip": 220}},
+  {"label": "US 20", "alt": "UK 24", "mm": {"bust": 1165, "under_bust": 1035, "waist": 990, "hip": 1215, "neck": 410, "shoulder_length": 155, "back_waist_length": 445, "waist_to_hip": 220}}
+ ]
+}

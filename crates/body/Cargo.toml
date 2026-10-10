@@ -1,6 +1,6 @@
 [package]
 name = "opendrape-body"
-description = "OpenDrape avatar bodies and body measurements"
+description = "OpenDrape dress forms, bodies and body measurements"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,6 +10,8 @@ publish.workspace = true
 
 [dependencies]
 glam.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

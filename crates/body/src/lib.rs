@@ -1,6 +1,7 @@
-//! The 3D body (avatar): meshes derived from CC0 MakeHuman data, a compact file format,
-//! and tape-measure style body measurements.
+//! The 3D shapes garments drape on: dress forms (rings resized to a size chart, see [`form`]),
+//! the legacy CC0 MakeHuman body, a compact mesh file format and tape-measure measurements.
 
+pub mod form;
 mod format;
 mod measure;
 
