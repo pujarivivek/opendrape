@@ -4,14 +4,20 @@
 //! side's start). A side runs the shorter way round between its ends; Shift-click its end to
 //! take the long way. Points snap to the corners, the middle and the notches of the edge under
 //! the pointer. Esc cancels; clicking a seam's line selects the seam.
+//!
+//! Where the fold line of a cut-on-fold piece meets its outline is a point of both halves, so a
+//! click there takes the half the side's other end is on (the drawn half when both ends are
+//! there), decided when the side's end is clicked.
 
+use super::seams::{SewClick, nearest_outline_edge};
 use super::{PatternEditor, Selection};
 use crate::tr;
 use egui::Response;
-use opendrape_core::{
-    Half, MIN_SIDE_MM, ModelError, OutlinePos, PieceId, Point2, Project, SeamSide,
-};
-use opendrape_geom as geom;
+use opendrape_core::{Half, MIN_SIDE_MM, OutlinePos, PieceId, Point2, Project, SeamSide};
+use opendrape_geom::{self as geom, Shape, ShapeKind};
+
+/// Two points of an outline are one place when they are this close (mm).
+const SAME_MM: f64 = 1e-6;
 
 /// A point on a shape's outline, as the Free Sew tool picks it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -20,8 +26,12 @@ pub(crate) struct OnOutline {
     pub half: Half,
     /// Where it is on the stored piece.
     pub pos: OutlinePos,
-    /// Where it is on the shape (mm).
+    /// Where it is on the shape (mm), as of the last time the project was looked at: for
+    /// drawing it. What a side is made from is `pos`, looked up again on the project.
     pub at: Point2,
+    /// It is where a fold line meets the outline, a point of both halves: `half` is only the
+    /// one the pointer was on.
+    pub on_fold: bool,
     /// How many edges the stored piece had: a point added or removed since makes `pos` name
     /// another place.
     pub outline_edges: usize,
@@ -42,14 +52,8 @@ pub(super) struct FreeDraft {
 /// to that edge's start, end, middle or a notch on it when one is within `tol` of `w`.
 pub(crate) fn point_under(project: &Project, w: Point2, tol: f64) -> Option<OnOutline> {
     let shapes = geom::shapes(project);
-    let (shape, j, t) = shapes
-        .iter()
-        .filter_map(|s| {
-            let (j, t, d) = geom::nearest_edge(&s.piece, w)?;
-            (d <= tol).then_some((s, j, t, d))
-        })
-        .min_by(|a, b| a.3.total_cmp(&b.3))
-        .map(|(s, j, t, _)| (s, j, t))?;
+    let near = nearest_outline_edge(&shapes, w, tol)?;
+    let (shape, j) = (near.shape, near.edge);
     let piece = &shape.piece;
     let len = geom::edge_length(piece, j);
     let notches = piece
@@ -64,15 +68,27 @@ pub(crate) fn point_under(project: &Project, w: Point2, tol: f64) -> Option<OnOu
         .filter(|(_, gap)| *gap <= tol)
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(d, _)| d);
-    let along = snapped.unwrap_or_else(|| geom::distance_along(piece, j, t));
+    let along = snapped.unwrap_or_else(|| geom::distance_along(piece, j, near.t));
     let (half, pos) = shape.outline_pos(j, along);
+    let at = geom::point_at_distance(piece, j, along);
     Some(OnOutline {
         shape: shape.id,
         half,
         pos,
-        at: geom::point_at_distance(piece, j, along),
+        at,
+        on_fold: at_a_fold_end(shape, at),
         outline_edges: shape.stored_len(),
     })
+}
+
+/// Whether `at` is where `shape`'s fold line meets its outline.
+fn at_a_fold_end(shape: &Shape, at: Point2) -> bool {
+    match shape.kind {
+        ShapeKind::Folded { fold: (a, b), .. } => {
+            at.distance(a) <= SAME_MM || at.distance(b) <= SAME_MM
+        }
+        _ => false,
+    }
 }
 
 /// Why a side can't be made between two points.
@@ -98,19 +114,28 @@ pub(crate) fn side_between(
     long: bool,
     besides: Option<&SeamSide>,
 ) -> Result<SeamSide, NoSide> {
-    if (start.shape, start.half) != (end.shape, end.half) {
+    if start.shape != end.shape {
         return Err(NoSide::OtherPiece);
     }
-    // The same point twice is no side (not the whole outline round to it).
-    if start.at.distance(end.at) <= 1e-6 {
+    // A fold's end belongs to both halves: the side is on the half its other end is on, or on
+    // the drawn half when both ends are at the fold.
+    let half = match (start.on_fold, end.on_fold) {
+        (true, true) => Half::Drawn,
+        (true, false) => end.half,
+        (false, true) => start.half,
+        (false, false) if start.half == end.half => start.half,
+        (false, false) => return Err(NoSide::OtherPiece),
+    };
+    let shape = geom::shape_of(project, start.shape).ok_or(NoSide::OtherPiece)?;
+    // The same place twice is no side (not the whole outline round to it).
+    if same_place(&shape, half, start.pos, end.pos) {
         return Err(NoSide::TooShort);
     }
-    let shape = geom::shape_of(project, start.shape).ok_or(NoSide::OtherPiece)?;
     let n = shape.stored_len();
     let way = |forward| {
         SeamSide {
             shape: start.shape,
-            half: start.half,
+            half,
             from: start.pos,
             to: end.pos,
             forward,
@@ -147,6 +172,26 @@ pub(crate) fn side_between(
     Ok(side)
 }
 
+/// Whether stored positions `a` and `b` of `half` are one place on `shape` as it is now: the
+/// same position (a corner has two names), or a place the shape shows as one point. Looked up on
+/// the shape as it is, so a point moved since it was picked can't make one.
+fn same_place(shape: &Shape, half: Half, a: OutlinePos, b: OutlinePos) -> bool {
+    let n = shape.stored_len();
+    let named = |p: OutlinePos| {
+        if n > 0 && p.t >= 1.0 {
+            OutlinePos::new((p.edge + 1) % n, 0.0)
+        } else {
+            p
+        }
+    };
+    let (p, q) = (named(a), named(b));
+    (p.edge == q.edge && (p.t - q.t).abs() <= 1e-9)
+        || matches!(
+            (shape.point_at(half, a), shape.point_at(half, b)),
+            (Some(x), Some(y)) if x.distance(y) <= SAME_MM
+        )
+}
+
 /// The notice for a side that can't be made.
 fn refusal(why: NoSide) -> String {
     match why {
@@ -157,20 +202,34 @@ fn refusal(why: NoSide) -> String {
     }
 }
 
-/// Whether `point` still names the place it was picked at in `project`.
-fn still_there(project: &Project, point: &OnOutline) -> bool {
-    geom::shape_of(project, point.shape).is_some_and(|s| {
-        s.stored_len() == point.outline_edges && s.point_at(point.half, point.pos).is_some()
-    })
+/// `point` as `project` has it now: where it is today, or None when it no longer names the place
+/// it was picked at (its shape has gone, or has had a point added or removed).
+fn current(project: &Project, point: &OnOutline) -> Option<OnOutline> {
+    let shape = geom::shape_of(project, point.shape)?;
+    if shape.stored_len() != point.outline_edges {
+        return None;
+    }
+    let at = shape.point_at(point.half, point.pos)?;
+    Some(OnOutline { at, ..*point })
 }
 
 impl PatternEditor {
     /// Drops the Free Sew draft if what it points at has changed (an undo, a redo, a deleted
-    /// piece, a point added or removed).
+    /// piece, a point added or removed), and moves its points to where their places are now (a
+    /// point of the outline moved from the panel).
     pub(super) fn drop_stale_free_sew(&mut self) {
         let project = self.doc.project();
-        self.canvas.free = self.canvas.free.filter(|d| {
-            still_there(project, &d.start) && d.b_start.is_none_or(|b| still_there(project, &b))
+        self.canvas.free = self.canvas.free.and_then(|d| {
+            let start = current(project, &d.start)?;
+            let b_start = match d.b_start {
+                Some(b) => Some(current(project, &b)?),
+                None => None,
+            };
+            Some(FreeDraft {
+                start,
+                b_start,
+                ..d
+            })
         });
     }
 
@@ -187,19 +246,11 @@ impl PatternEditor {
         }
         let Some(w) = pointer else { return };
         // A click on a seam's line selects that seam (unless a seam is being sewn).
-        if self.canvas.free.is_none()
-            && let Some(seam) = self.seam_at(w, tol)
-        {
-            self.selection = Selection::Seam(seam);
-            return;
-        }
-        let project = self.doc.project();
-        let Some(hit) = point_under(project, w, tol) else {
-            if super::sew_tool::on_a_fold_line(project, w, tol) {
-                self.notice = Some(tr!("notice-sew-fold"));
-            }
+        let drafting = self.canvas.free.is_some();
+        let SewClick::Found(hit) = self.sewing_click(w, tol, !drafting, point_under) else {
             return;
         };
+        let project = self.doc.project();
         match self.canvas.free {
             None => {
                 self.canvas.free = Some(FreeDraft {
@@ -236,14 +287,7 @@ impl PatternEditor {
     /// Sews `a` to `b`, as one undo step.
     fn make_free_seam(&mut self, a: SeamSide, b: SeamSide) {
         let id = self.doc.edit(|p| p.add_seam(a, b));
-        if self.doc.last_change_refused() {
-            // Both sides are free (they were checked), so what refuses a seam is that its
-            // mirror image would sew outline that is sewn already; or, at the very limit, there
-            // are too many seams.
-            self.notice = Some(match self.doc.last_refusal() {
-                Some(ModelError::BadSeam(_)) => tr!("notice-mirror-sewn"),
-                _ => tr!("notice-refused"),
-            });
+        if self.note_seam_refused() {
             return;
         }
         self.canvas.free = None;
@@ -362,5 +406,100 @@ mod tests {
             side_between(&pr, &at(150.0, 0.0), &at(600.0, 0.0), false, None),
             Err(NoSide::OtherPiece)
         );
+    }
+
+    /// A 250 × 400 front at (500,0) cut on its left edge, x = 500: its drawn half is x 500..750
+    /// and its pale half x 250..500. Edge 2 is the top, from (750,400) to the fold corner
+    /// (500,400); edge 0 is the bottom, from the other fold corner (500,0).
+    fn folded() -> Project {
+        let mut pr = Project::new();
+        let mut front = Piece::rectangle(PieceId(0), "Front", p(500.0, 0.0), 250.0, 400.0);
+        front.fold = Some(3);
+        pr.add_piece(front);
+        pr
+    }
+
+    #[test]
+    fn where_the_fold_meets_the_outline_belongs_to_both_halves() {
+        let pr = folded();
+        let front = pr.pieces[0].id;
+        let at = |x, y| point_under(&pr, p(x, y), 1.0).unwrap();
+        // The top fold corner, from the pale side and from the drawn side: the same stored
+        // point on either half.
+        let (pale, drawn) = (at(499.5, 400.0), at(500.5, 400.0));
+        assert_eq!((pale.half, drawn.half), (Half::Pale, Half::Drawn));
+        assert_eq!(pale.pos, drawn.pos);
+        assert!(pale.on_fold && drawn.on_fold);
+        // Anywhere else, and the middle of a side, is on its own half only.
+        let (far_drawn, far_pale) = (at(600.0, 400.0), at(400.0, 400.0));
+        assert!(!far_drawn.on_fold && !far_pale.on_fold);
+        assert_eq!((far_drawn.half, far_pale.half), (Half::Drawn, Half::Pale));
+        // A side from the corner (clicked from either side) to a point of one half, in either
+        // order, is on that half.
+        for corner in [pale, drawn] {
+            for (a, b, half) in [
+                (&corner, &far_drawn, Half::Drawn),
+                (&far_drawn, &corner, Half::Drawn),
+                (&corner, &far_pale, Half::Pale),
+                (&far_pale, &corner, Half::Pale),
+            ] {
+                let side = side_between(&pr, a, b, false, None).unwrap();
+                assert_eq!((side.shape, side.half), (front, half));
+            }
+        }
+        // Two points that are not at the fold, on different halves, are still two halves.
+        assert_eq!(
+            side_between(&pr, &far_pale, &far_drawn, false, None),
+            Err(NoSide::OtherPiece)
+        );
+        // Both ends at the fold: the drawn half. The short way between the two corners is the
+        // fold itself; the long way is the drawn half's other three edges.
+        let bottom = at(499.5, 0.0);
+        assert!(bottom.on_fold);
+        assert_eq!(
+            side_between(&pr, &pale, &bottom, false, None),
+            Err(NoSide::Fold)
+        );
+        let round = side_between(&pr, &pale, &bottom, true, None).unwrap();
+        assert_eq!(round.half, Half::Drawn);
+        assert!((pr.side_length(&round).unwrap() - 900.0).abs() < 0.01);
+        // The same corner twice, from the two sides, is no side.
+        assert_eq!(
+            side_between(&pr, &pale, &drawn, false, None),
+            Err(NoSide::TooShort)
+        );
+    }
+
+    #[test]
+    fn a_moved_point_cannot_make_a_side_the_whole_outline() {
+        let pr = piece();
+        let a = pr.pieces[0].id;
+        let start = point_under(&pr, p(0.0, 0.0), 1.0).unwrap();
+        // The corner is moved after it was picked; picking it again finds it where it is.
+        let mut moved = pr.clone();
+        moved.piece_mut(a).unwrap().move_vertex(0, p(10.0, -20.0));
+        let again = point_under(&moved, p(10.0, -20.0), 1.0).unwrap();
+        assert_ne!(start.at, again.at, "the picked point is stale");
+        // Whichever of its two names the corner has (the end of edge 3 or the start of edge 0).
+        let other_name = OnOutline {
+            pos: OutlinePos::new(3, 1.0),
+            ..again
+        };
+        for end in [again, other_name] {
+            assert_eq!(
+                side_between(&moved, &start, &end, false, None),
+                Err(NoSide::TooShort)
+            );
+            assert_eq!(
+                side_between(&moved, &start, &end, true, None),
+                Err(NoSide::TooShort)
+            );
+        }
+        // The draft's own copy of the point follows the corner, and lets go when the outline
+        // gets another point.
+        assert_eq!(current(&moved, &start).unwrap().at, p(10.0, -20.0));
+        let mut more = pr.clone();
+        geom::split_edge_in(&mut more, a, 0, 0.5);
+        assert_eq!(current(&more, &start), None);
     }
 }

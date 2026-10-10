@@ -5,10 +5,11 @@
 //! from every edge ends extending. Its sides are whole edges: free sides that start and end at
 //! corners.
 
+use super::seams::{SewClick, nearest_outline_edge};
 use super::{PatternEditor, Selection};
 use crate::tr;
 use egui::Response;
-use opendrape_core::{Half, ModelError, PieceId, Point2, Project, SeamId, SeamSide};
+use opendrape_core::{Half, PieceId, Point2, Project, SeamId, SeamSide};
 use opendrape_geom as geom;
 
 /// Whole stored edges of one shape: `edges` of them from `first_edge` (wrapping), running the
@@ -95,28 +96,20 @@ impl EdgeUnder {
     }
 }
 
-/// The outline edge of any shape nearest to `w`, within `tol` mm: the pale half of a fold
-/// included (a fold's own edge is inside its shape, so it is never found).
+/// The outline edge of any shape nearest to `w`, within `tol` mm, as the Sew tool sees it.
 pub(super) fn edge_under(project: &Project, w: Point2, tol: f64) -> Option<EdgeUnder> {
-    geom::shapes(project)
-        .iter()
-        .filter_map(|s| {
-            let (j, t, d) = geom::nearest_edge(&s.piece, w)?;
-            if d > tol {
-                return None;
-            }
-            let (half, edge, against) = s.sew_edge(j);
-            let near_start =
-                geom::distance_along(&s.piece, j, t) <= geom::edge_length(&s.piece, j) / 2.0;
-            Some(EdgeUnder {
-                shape: s.id,
-                half,
-                edge,
-                forward: near_start != against,
-                distance: d,
-            })
-        })
-        .min_by(|a, b| a.distance.total_cmp(&b.distance))
+    let shapes = geom::shapes(project);
+    let near = nearest_outline_edge(&shapes, w, tol)?;
+    let (half, edge, against) = near.shape.sew_edge(near.edge);
+    let along = geom::distance_along(&near.shape.piece, near.edge, near.t);
+    let near_start = along <= geom::edge_length(&near.shape.piece, near.edge) / 2.0;
+    Some(EdgeUnder {
+        shape: near.shape.id,
+        half,
+        edge,
+        forward: near_start != against,
+        distance: near.distance,
+    })
 }
 
 /// `side` (on an outline of `n` edges) with stored edge `edge` added at whichever of its ends
@@ -139,17 +132,6 @@ pub(super) fn extended(side: EdgeRun, edge: usize, n: usize) -> Option<EdgeRun> 
     } else {
         None
     }
-}
-
-/// Whether `w` is within `tol` mm of a fold line: the straight line inside a cut-on-fold
-/// piece where its two halves meet.
-pub(super) fn on_a_fold_line(project: &Project, w: Point2, tol: f64) -> bool {
-    geom::shapes(project).iter().any(|s| match s.kind {
-        geom::ShapeKind::Folded { fold: (a, b), .. } => {
-            super::canvas::segment_distance(w, a, b) <= tol
-        }
-        _ => false,
-    })
 }
 
 /// Whether the draft still fits the project. A half-made seam needs its shape, with the same
@@ -202,23 +184,21 @@ impl PatternEditor {
             return;
         }
         let Some(at) = pointer else { return };
-        // A click on a seam's line selects that seam.
-        if let Some(seam) = self.seam_at(at, tol) {
-            self.selection = Selection::Seam(seam);
-            self.canvas.sew = None;
-            return;
-        }
-        let Some(hit) = edge_under(self.doc.project(), at, tol) else {
-            // A click on a fold line says why it does nothing.
-            if on_a_fold_line(self.doc.project(), at, tol) {
-                self.notice = Some(tr!("notice-sew-fold"));
+        let hit = match self.sewing_click(at, tol, true, edge_under) {
+            SewClick::Found(hit) => hit,
+            // A click on a seam's line selects that seam, and ends the draft.
+            SewClick::Seam => {
+                self.canvas.sew = None;
+                return;
             }
             // A click away from every edge ends extending; a half-made seam waits for its
             // second edge.
-            if self.canvas.sew.is_some_and(|d| d.seam.is_some()) {
-                self.canvas.sew = None;
+            SewClick::Nothing => {
+                if self.canvas.sew.is_some_and(|d| d.seam.is_some()) {
+                    self.canvas.sew = None;
+                }
+                return;
             }
-            return;
         };
         let project = self.doc.project();
         let n = project.owner(hit.shape).map_or(0, |(p, _)| p.len());
@@ -271,14 +251,7 @@ impl PatternEditor {
             );
             p.add_seam(a, b)
         });
-        if self.doc.last_change_refused() {
-            // Both edges are free (they were checked), so what refuses a seam is that its
-            // mirror image would sew an edge that is already sewn; or, at the very limit, there
-            // are too many seams.
-            self.notice = Some(match self.doc.last_refusal() {
-                Some(ModelError::BadSeam(_)) => tr!("notice-mirror-sewn"),
-                _ => tr!("notice-refused"),
-            });
+        if self.note_seam_refused() {
             return;
         }
         self.canvas.sew = Some(SewDraft {

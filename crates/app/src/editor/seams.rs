@@ -2,10 +2,11 @@
 //! with a number badge, and picked by clicking that line. A mirror image is drawn like its
 //! seam, in its seam's colour, and picks its seam.
 
-use super::{HIT_PX, PatternEditor};
+use super::{HIT_PX, PatternEditor, Selection};
+use crate::tr;
 use egui::Color32;
-use opendrape_core::{Point2, Project, SeamId, SeamSide};
-use opendrape_geom::{self as geom, Shape};
+use opendrape_core::{ModelError, Point2, Project, SeamId, SeamSide};
+use opendrape_geom::{self as geom, Shape, ShapeKind};
 
 /// How far inside the outline (screen points) a seam's line runs, so the outline itself can
 /// still be clicked.
@@ -86,6 +87,58 @@ fn inset_side(shape: &Shape, side: &SeamSide, inset: f64, tolerance: f64) -> Opt
     Some(out)
 }
 
+/// The outline edge nearest a point, as the sewing tools find it.
+pub(super) struct NearestEdge<'a> {
+    pub shape: &'a Shape,
+    /// The edge of the shape's own outline (not a stored edge: see [`Shape::sew_edge`]).
+    pub edge: usize,
+    /// How far along the edge the nearest point is, as the curve's own parameter (0..=1).
+    pub t: f64,
+    /// How far (mm) the point is from the edge.
+    pub distance: f64,
+}
+
+/// The outline edge of any of `shapes` nearest to `w`, within `tol` mm: the pale half of a fold
+/// included (a fold's own edge is inside its shape, so it is never found). Both sewing tools
+/// start from this.
+pub(super) fn nearest_outline_edge(
+    shapes: &[Shape],
+    w: Point2,
+    tol: f64,
+) -> Option<NearestEdge<'_>> {
+    shapes
+        .iter()
+        .filter_map(|shape| {
+            let (edge, t, distance) = geom::nearest_edge(&shape.piece, w)?;
+            (distance <= tol).then_some(NearestEdge {
+                shape,
+                edge,
+                t,
+                distance,
+            })
+        })
+        .min_by(|a, b| a.distance.total_cmp(&b.distance))
+}
+
+/// Whether `w` is within `tol` mm of a fold line: the straight line inside a cut-on-fold
+/// piece where its two halves meet.
+pub(super) fn on_a_fold_line(project: &Project, w: Point2, tol: f64) -> bool {
+    geom::shapes(project).iter().any(|s| match s.kind {
+        ShapeKind::Folded { fold: (a, b), .. } => super::canvas::segment_distance(w, a, b) <= tol,
+        _ => false,
+    })
+}
+
+/// What a click of a sewing tool landed on.
+pub(super) enum SewClick<T> {
+    /// A seam's line: the seam is selected now.
+    Seam,
+    /// Nothing to sew there. On a fold line the notice says why.
+    Nothing,
+    /// What the tool looks for under the pointer: an edge, or a point of an outline.
+    Found(T),
+}
+
 /// Distance (mm) from `p` to the polyline `points`.
 pub(super) fn polyline_distance(p: Point2, points: &[Point2]) -> f64 {
     points
@@ -105,6 +158,47 @@ pub(super) fn polyline_distance(p: Point2, points: &[Point2]) -> f64 {
 }
 
 impl PatternEditor {
+    /// What a click at `at` does before a sewing tool's own work, the same for both: it
+    /// selects the seam whose line is there (when `may_pick_seam`); otherwise it asks `find` for
+    /// the tool's edge or point under the pointer, and on a fold line says it can't be sewn.
+    pub(super) fn sewing_click<T>(
+        &mut self,
+        at: Point2,
+        tol: f64,
+        may_pick_seam: bool,
+        find: impl FnOnce(&Project, Point2, f64) -> Option<T>,
+    ) -> SewClick<T> {
+        if may_pick_seam && let Some(seam) = self.seam_at(at, tol) {
+            self.selection = Selection::Seam(seam);
+            return SewClick::Seam;
+        }
+        let project = self.doc.project();
+        match find(project, at, tol) {
+            Some(found) => SewClick::Found(found),
+            None => {
+                if on_a_fold_line(project, at, tol) {
+                    self.notice = Some(tr!("notice-sew-fold"));
+                }
+                SewClick::Nothing
+            }
+        }
+    }
+
+    /// Says why the document refused the seam just added by a sewing tool, if it did; true when
+    /// it did. The tool checked both sides were free, so what refuses a seam is that its mirror
+    /// image would sew outline that is sewn already; or, at the very limit, there are too many
+    /// seams.
+    pub(super) fn note_seam_refused(&mut self) -> bool {
+        if !self.doc.last_change_refused() {
+            return false;
+        }
+        self.notice = Some(match self.doc.last_refusal() {
+            Some(ModelError::BadSeam(_)) => tr!("notice-mirror-sewn"),
+            _ => tr!("notice-refused"),
+        });
+        true
+    }
+
     /// The seam lines as they are drawn now.
     pub(super) fn seam_lines(&self) -> Vec<SeamLine> {
         seam_lines(
@@ -184,5 +278,34 @@ mod tests {
             side_b.iter().any(|p| p.x > 397.0 && p.y < 3.0),
             "round the corner"
         );
+    }
+
+    #[test]
+    fn the_nearest_outline_edge_is_found_across_shapes_halves_and_within_reach_only() {
+        let mut pr = Project::new();
+        let mut half = Piece::rectangle(PieceId(0), "Half", Point2::new(0.0, 0.0), 100.0, 200.0);
+        half.fold = Some(3);
+        let half = pr.add_piece(half);
+        let beside = pr.add_piece(Piece::rectangle(
+            PieceId(0),
+            "Beside",
+            Point2::new(300.0, 0.0),
+            100.0,
+            200.0,
+        ));
+        let shapes = geom::shapes(&pr);
+        let near = |x, y, tol| nearest_outline_edge(&shapes, Point2::new(x, y), tol);
+        // The pale half's bottom edge (-100..0) and a drawn edge, and the other piece's.
+        let found = near(-50.0, 1.0, 5.0).unwrap();
+        assert_eq!((found.shape.id, found.edge), (half, 5));
+        assert!((found.distance - 1.0).abs() < 1e-9);
+        let found = near(399.0, 100.0, 5.0).unwrap();
+        assert_eq!((found.shape.id, found.edge), (beside, 1));
+        // Between two shapes, both in reach, the nearer; out of reach, none; the fold itself is
+        // no outline.
+        assert_eq!(near(190.0, 100.0, 120.0).unwrap().shape.id, half);
+        assert_eq!(near(210.0, 100.0, 120.0).unwrap().shape.id, beside);
+        assert!(near(200.0, 100.0, 5.0).is_none());
+        assert!(near(0.0, 100.0, 5.0).is_none(), "the fold line");
     }
 }
