@@ -1183,6 +1183,32 @@ mod tests {
     }
 
     #[test]
+    fn a_side_that_covers_nothing_goes_with_its_seam() {
+        let mut pr = sewing_room();
+        let free = |edge, t, to_edge, to_t, forward| SeamSide {
+            shape: PieceId(4),
+            half: Half::Drawn,
+            from: OutlinePos::new(edge, t),
+            to: OutlinePos::new(to_edge, to_t),
+            forward,
+        };
+        let other = side(2, Half::Drawn, 0, 0, true);
+        // The corner between edges 1 and 2, named twice: no stretch at all, not the whole outline.
+        let empty = pr.add_seam(free(1, 1.0, 2, 0.0, true), other);
+        let kept = pr.add_seam(
+            side(4, Half::Drawn, 3, 3, true),
+            side(2, Half::Drawn, 2, 2, true),
+        );
+        assert_eq!(pr.check(), Err(ModelError::BadSeam(empty)));
+        pr.drop_broken();
+        assert!(pr.seam(empty).is_none() && pr.seam(kept).is_some());
+        assert_eq!(pr.check(), Ok(()));
+        // Nor does tidying one bring it back as a whole-outline side.
+        let tidied = free(1, 1.0, 2, 0.0, true).tidy(4);
+        assert_eq!(tidied.spans(4), vec![]);
+    }
+
+    #[test]
     fn splitting_a_sewn_edge_keeps_both_parts_sewn() {
         let mut pr = sewing_room();
         // The back's edges 3 and 0 (wrapping) to the pocket's edge 1; the twin's edge 2 to the

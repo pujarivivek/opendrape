@@ -104,8 +104,12 @@ impl SeamSide {
     /// (a start at the very end of an edge is the start of the next one; an end at the very
     /// start of an edge is the end of the one before), on an outline of `n` edges. Sides that
     /// cover the same stretch the same way then compare equal.
+    ///
+    /// A side that covers nothing (it starts where it ends, or names an edge the outline lacks)
+    /// is returned as it is: moving its ends onto the neighbouring edges would make it the
+    /// whole outline.
     pub fn tidy(&self, n: usize) -> Self {
-        if n == 0 {
+        if n == 0 || self.spans(n).is_empty() {
             return *self;
         }
         let (next, prev) = (|e: usize| (e + 1) % n, |e: usize| (e + n - 1) % n);
@@ -357,6 +361,75 @@ mod tests {
         // Ends inside edges stay as they are.
         let inside = side(p(0, 0.5), p(1, 0.25), true);
         assert_eq!(inside.tidy(4), inside);
+    }
+
+    #[test]
+    fn tidying_never_turns_a_side_that_covers_nothing_into_the_whole_outline() {
+        let p = OutlinePos::new;
+        let side = |from, to, forward| SeamSide {
+            shape: PieceId(1),
+            half: Half::Drawn,
+            from,
+            to,
+            forward,
+        };
+        // Every pair of ways to name one corner (and a mid-edge point), running either way,
+        // covers nothing before it is tidied and nothing after.
+        let n = 5;
+        let names = |corner: usize| [p(corner, 1.0), p((corner + 1) % n, 0.0)];
+        for corner in 0..n {
+            for from in names(corner) {
+                for to in names(corner) {
+                    for forward in [true, false] {
+                        let s = side(from, to, forward);
+                        let covered = s.spans(n).len();
+                        assert!(covered == 0 || covered == n, "{s:?} covers {covered} spans");
+                        if covered == 0 {
+                            assert_eq!(s.tidy(n), s, "{s:?} is left as it is");
+                            assert!(s.tidy(n).spans(n).is_empty(), "{s:?} stays empty");
+                        } else {
+                            assert_eq!(s.tidy(n).spans(n), s.spans(n), "{s:?} keeps its stretch");
+                        }
+                    }
+                }
+            }
+        }
+        // The case the sweep is built from: the same corner, named the same way twice.
+        let same = side(p(3, 1.0), p(3, 1.0), true);
+        assert!(same.spans(n).is_empty());
+        assert_eq!(same.tidy(n), same);
+        assert!(
+            side(p(2, 0.5), p(2, 0.5), false)
+                .tidy(n)
+                .spans(n)
+                .is_empty()
+        );
+        // An edge the outline lacks stays as it is (and cannot overflow).
+        let lost = side(p(usize::MAX, 1.0), p(1, 0.5), true);
+        assert_eq!(lost.tidy(n), lost);
+    }
+
+    #[test]
+    fn a_whole_outline_side_is_a_side_that_covers_every_edge() {
+        let p = OutlinePos::new;
+        // From the start of edge 1 round to the end of edge 0: every edge, once.
+        let whole = SeamSide {
+            shape: PieceId(1),
+            half: Half::Drawn,
+            from: p(1, 0.0),
+            to: p(0, 1.0),
+            forward: true,
+        };
+        assert_eq!(whole.spans(5).len(), 5);
+        assert_eq!(whole.tidy(5), whole, "already named on the edges it covers");
+        // The same corner named the other way round covers nothing, and so does not tidy into it.
+        let none = SeamSide {
+            from: p(0, 1.0),
+            to: p(1, 0.0),
+            ..whole
+        };
+        assert!(none.spans(5).is_empty());
+        assert_eq!(none.tidy(5), none);
     }
 
     #[test]

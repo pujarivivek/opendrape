@@ -152,10 +152,12 @@ fn upgrade_sides_from_v3(document: &mut serde_json::Value) {
                 .and_then(Value::as_u64)
                 .and_then(|id| edge_counts.get(&id).copied())
                 .unwrap_or(0);
+            // `first < n` and `edges <= n` keep the sum small (n is a count of vertices in the
+            // file). Anything else is put on an edge the piece lacks, however large the numbers.
             let last = if first < n && (1..=n).contains(&edges) {
                 (first + edges - 1) % n
             } else {
-                n.max(first + 1)
+                n.max(first.saturating_add(1))
             };
             let (start, end) = (
                 json!({"edge": first, "t": 0.0}),

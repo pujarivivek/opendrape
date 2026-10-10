@@ -409,6 +409,127 @@ fn refuses_invalid_v3_details() {
     }
 }
 
+/// The frozen v3 project with its seams replaced by `seams` (the inside of the JSON array).
+fn v3_with_seams(seams: &str) -> String {
+    let good = include_str!("fixtures/v3/project.json");
+    let (head, rest) = good
+        .split_once(r#""seams": ["#)
+        .expect("the fixture has seams");
+    let (_, tail) = rest
+        .split_once(r#""next_piece_id""#)
+        .expect("the fixture counts its pieces");
+    format!(r#"{head}"seams": [{seams}], "next_piece_id"{tail}"#)
+}
+
+/// A version 3 seam side as the file spells it.
+fn v3_side(shape: &str, half: &str, first: &str, edges: &str, forward: bool) -> String {
+    format!(
+        r#"{{ "shape": {shape}, "half": "{half}", "first_edge": {first}, "edges": {edges}, "forward": {forward} }}"#
+    )
+}
+
+#[test]
+fn format_v3_sides_running_backward_over_several_edges_upgrade_from_their_last_edge() {
+    let p = OutlinePos::new;
+    // The pocket (4 edges): edges 3 and 0 backward, wrapping. The twin of the back (also 4
+    // edges): edges 3 and 0 forward, wrapping, sewn to the pocket's edges 1 and 2.
+    let json = v3_with_seams(&format!(
+        r#"{{ "id": 1, "a": {}, "b": {} }}, {{ "id": 2, "a": {}, "b": {} }}"#,
+        v3_side("4", "drawn", "3", "2", false),
+        v3_side("1", "drawn", "0", "2", true),
+        v3_side("3", "drawn", "3", "2", true),
+        v3_side("4", "drawn", "1", "2", true),
+    ));
+    let loaded = opendrape_io::from_bytes(&odp(&json)).expect("opens");
+    let (first, second) = (&loaded.seams[0], &loaded.seams[1]);
+    // Running backward it starts at the end of the last edge, and ends at the start of the first.
+    assert_eq!(
+        (first.a.from, first.a.to, first.a.forward),
+        (p(0, 1.0), p(3, 0.0), false)
+    );
+    assert_eq!(
+        (first.b.from, first.b.to, first.b.forward),
+        (p(0, 0.0), p(1, 1.0), true)
+    );
+    // The twin has its piece's four edges: the wrap works there too.
+    assert_eq!(
+        (second.a.shape, second.a.from, second.a.to, second.a.forward),
+        (PieceId(3), p(3, 0.0), p(0, 1.0), true)
+    );
+    assert_eq!(
+        (second.b.from, second.b.to),
+        (p(1, 0.0), p(2, 1.0)),
+        "no wrap, forward"
+    );
+    // The same stretch of outline the old whole-edge side covered.
+    assert_eq!(first.a.spans(4).len(), 2);
+    assert!(first.a.covers(4, 3) && first.a.covers(4, 0));
+}
+
+#[test]
+fn format_v3_sides_covering_every_edge_upgrade_to_the_whole_outline() {
+    let p = OutlinePos::new;
+    for (first, forward, from, to) in [
+        ("1", true, p(1, 0.0), p(0, 1.0)),
+        ("2", false, p(1, 1.0), p(2, 0.0)),
+    ] {
+        let json = v3_with_seams(&format!(
+            r#"{{ "id": 1, "a": {}, "b": {} }}"#,
+            v3_side("4", "drawn", first, "4", forward),
+            v3_side("2", "drawn", "0", "1", true),
+        ));
+        let loaded = opendrape_io::from_bytes(&odp(&json)).expect("opens");
+        let a = loaded.seams[0].a;
+        assert_eq!((a.from, a.to, a.forward), (from, to, forward));
+        assert_eq!(a.spans(4).len(), 4, "every edge, once");
+    }
+}
+
+#[test]
+fn format_v3_sides_naming_edges_the_piece_lacks_are_refused() {
+    let seam = |a: String| {
+        v3_with_seams(&format!(
+            r#"{{ "id": 7, "a": {a}, "b": {} }}"#,
+            v3_side("2", "drawn", "0", "1", true)
+        ))
+    };
+    let u64_max = u64::MAX.to_string();
+    for (a, why) in [
+        (v3_side("4", "drawn", "3", "0", true), "no edges"),
+        (
+            v3_side("4", "drawn", "3", "9", true),
+            "more edges than there are",
+        ),
+        (
+            v3_side("4", "drawn", "4", "1", true),
+            "the first edge is past the last",
+        ),
+        (
+            v3_side("4", "drawn", &u64_max, "1", true),
+            "first edge as large as can be",
+        ),
+        (
+            v3_side("4", "drawn", &u64_max, "1", false),
+            "the same, running backward",
+        ),
+        (
+            v3_side("4", "drawn", "3", &u64_max, true),
+            "as many edges as can be",
+        ),
+        (
+            v3_side("99", "drawn", &u64_max, "1", true),
+            "a shape that isn't there",
+        ),
+    ] {
+        // A hostile number must be refused, never overflow (tests run with overflow checks).
+        let result = opendrape_io::from_bytes(&odp(&seam(a)));
+        assert!(
+            matches!(result, Err(opendrape_io::OdpError::Invalid(_))),
+            "{why}: {result:?}"
+        );
+    }
+}
+
 #[test]
 fn format_v4_still_opens() {
     let loaded = opendrape_io::from_bytes(&odp(include_str!("fixtures/v4/project.json")))

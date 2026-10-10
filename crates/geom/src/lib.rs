@@ -636,4 +636,74 @@ mod tests {
         let side = pr.seam(seams[1]).unwrap().a;
         assert_eq!((side.from.edge, side.to.edge), (2, 1));
     }
+
+    #[test]
+    fn removing_a_point_between_unequal_edges_keeps_side_ends_on_the_same_points() {
+        // A 100 mm edge and a 200 mm edge meet at a collinear point (100, 0): removing it joins
+        // them into one 300 mm edge, and an end that was `t` of the way along the short edge
+        // is now `t / 3` of the way along the joined one (and `1/3 + 2t/3` from the long one).
+        // With equal edges a swapped fraction cannot show, so these are unequal on purpose.
+        let mut pr = Project::new();
+        let a = pr.add_piece(Piece::polygon(
+            PieceId(0),
+            "A",
+            &[
+                p(0.0, 0.0),
+                p(100.0, 0.0),
+                p(300.0, 0.0),
+                p(300.0, 200.0),
+                p(0.0, 200.0),
+            ],
+        ));
+        let b = pr.add_piece(Piece::rectangle(
+            PieceId(0),
+            "B",
+            p(500.0, 0.0),
+            400.0,
+            400.0,
+        ));
+        let twin = pr.add_twin(a, "A (mirror)".into(), p(1000.0, 0.0)).unwrap();
+        let free = |shape, edge, t0, t1| opendrape_core::SeamSide {
+            shape,
+            half: opendrape_core::Half::Drawn,
+            from: opendrape_core::OutlinePos::new(edge, t0),
+            to: opendrape_core::OutlinePos::new(edge, t1),
+            forward: t1 > t0,
+        };
+        let on_b = |t0, t1| free(b, 0, t0, t1);
+        let seams = [
+            // Inside the short edge, and inside the long edge.
+            pr.add_seam(free(a, 0, 0.5, 0.1), on_b(0.0, 0.1)),
+            pr.add_seam(free(a, 1, 0.25, 0.75), on_b(0.1, 0.2)),
+            // Ending exactly at the removed point, and starting exactly at it.
+            pr.add_seam(free(a, 0, 0.6, 1.0), on_b(0.2, 0.3)),
+            pr.add_seam(free(a, 1, 0.0, 0.1), on_b(0.3, 0.4)),
+            // The same on the twin, which has the same edges (mirrored).
+            pr.add_seam(free(twin, 0, 0.2, 0.8), on_b(0.4, 0.5)),
+            pr.add_seam(free(twin, 1, 0.5, 0.9), on_b(0.5, 0.6)),
+        ];
+        assert_eq!(pr.check(), Ok(()));
+        let ends = |pr: &Project| -> Vec<Point2> {
+            let all = shapes(pr);
+            seams
+                .iter()
+                .flat_map(|id| {
+                    let side = pr.seam(*id).unwrap().a;
+                    let shape = all.iter().find(|s| s.id == side.shape).unwrap();
+                    let pts = side_points(shape, &side, 0.01).unwrap();
+                    [pts[0], *pts.last().unwrap()]
+                })
+                .collect()
+        };
+        let before = ends(&pr);
+        assert!(remove_vertex_in(&mut pr, a, 1));
+        assert_eq!(pr.piece(a).unwrap().len(), 4);
+        assert_eq!(pr.check(), Ok(()));
+        let after = ends(&pr);
+        assert_eq!(before.len(), after.len(), "every seam survived");
+        // Lengths are measured to 0.0001 mm.
+        for (k, (p, q)) in before.iter().zip(&after).enumerate() {
+            assert!(p.distance(*q) < 1e-3, "end {k}: {p:?} moved to {q:?}");
+        }
+    }
 }
