@@ -24,8 +24,17 @@ from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
 ANGLES = 49  # samples from 0 to 180 degrees inclusive
-RINGS = 100  # rings in the exported file
+RINGS = 100  # about this many rings in the exported file; the count depends on the form (99 on the men's)
 SCAN_STEP = 0.002  # m between scan slices when measuring surface length
+TAU5 = round(2 * math.pi, 5)  # 6.28319: an angle that rounds to this is 2 pi, i.e. 0
+
+
+def angle5(phi):
+    """phi (radians, 0 <= phi < 2 pi) rounded to 5 decimals for the file. A value just under 2 pi
+    rounds up to 2 pi (the file format keeps angles below it), so it is stored as 0, the same
+    direction."""
+    phi = round(phi, 5)
+    return 0.0 if phi >= TAU5 else phi
 
 
 def od_to_blender(x, y, z):
@@ -89,7 +98,11 @@ class Sampler:
 
 
 def ring_heights(s, stations):
-    """RINGS heights: one exactly at each station, the rest spread by surface length."""
+    """About RINGS heights: one exactly at each station, the rest spread by surface length.
+
+    Each stretch between two fixed heights gets a whole number of rings, so the total depends on
+    the form (the women's has 100, the men's 99).
+    """
     lo, hi = s.y_min + 0.001, s.y_max - 0.001
     ys = [lo + (hi - lo) * i / int((hi - lo) / SCAN_STEP) for i in range(int((hi - lo) / SCAN_STEP) + 1)]
     rings = [s.ring(y) for y in ys]
@@ -190,7 +203,7 @@ def sample_tape(s, name, spec, zc_at, v_of):
     out = []
     for x, y, z in points:
         phi = math.atan2(x, z - zc_at(y)) % (2 * math.pi)
-        out.append([round(phi, 5), round(v_of(y), 6)])
+        out.append([angle5(phi), round(v_of(y), 6)])
     return out
 
 
@@ -236,7 +249,7 @@ def main(meta_path, out_path):
             uv = []
             for p in curve.data.splines[0].points:
                 x, y, z = blender_to_od(curve.matrix_world @ p.co.xyz)
-                uv.append([round(math.atan2(x, z - zc_at(y)) % (2 * math.pi), 5), round(v_of(y), 6)])
+                uv.append([angle5(math.atan2(x, z - zc_at(y)) % (2 * math.pi)), round(v_of(y), 6)])
         else:
             uv = sample_tape(s, name, spec, zc_at, v_of)
         tapes[name] = {"uv": uv, "closed": spec.get("closed", False), "mirror": spec.get("mirror", False)}

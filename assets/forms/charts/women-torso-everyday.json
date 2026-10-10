@@ -3,7 +3,7 @@
  "id": "women-torso-everyday",
  "form": "women-torso",
  "name": "chart-everyday",
- "source": "OpenDrape grading, checked within 2 cm against ASTM D5585 (straight) figures as reported publicly (Wikipedia, US standard clothing size) and an ASTM-regular soft form table",
+ "source": "OpenDrape grading, graded in-house with reference to ASTM D5585 (straight) figures as reported publicly (Wikipedia, US standard clothing size) and an ASTM-regular soft form table",
  "sizes": [
   {"label": "US 2", "alt": "UK 6", "mm": {"bust": 850, "under_bust": 720, "waist": 675, "hip": 900, "neck": 330, "shoulder_length": 120, "back_waist_length": 400, "waist_to_hip": 200}},
   {"label": "US 4", "alt": "UK 8", "mm": {"bust": 875, "under_bust": 745, "waist": 700, "hip": 925, "neck": 335, "shoulder_length": 125, "back_waist_length": 405, "waist_to_hip": 200}},

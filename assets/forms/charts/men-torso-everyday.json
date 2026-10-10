@@ -3,7 +3,7 @@
  "id": "men-torso-everyday",
  "form": "men-torso",
  "name": "chart-everyday",
- "source": "OpenDrape grading: the classic men's chart with a 5 cm fuller waist and 2 cm fuller hip, checked against ASTM D6240 (men's regular) drops as reported publicly",
+ "source": "OpenDrape grading: the classic men's chart with a 5 cm fuller waist and 2 cm fuller hip, graded in-house with reference to ASTM D6240 (men's regular) drops as reported publicly",
  "sizes": [
   {"label": "34", "mm": {"chest": 865, "waist": 800, "hip": 870, "neck": 355, "shoulder_length": 150, "back_waist_length": 440, "waist_to_hip": 185}},
   {"label": "36", "mm": {"chest": 915, "waist": 855, "hip": 915, "neck": 370, "shoulder_length": 155, "back_waist_length": 445, "waist_to_hip": 190}},

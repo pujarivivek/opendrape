@@ -3,7 +3,7 @@
  "id": "women-torso-classic",
  "form": "women-torso",
  "name": "chart-classic",
- "source": "OpenDrape grading, checked within 2 cm against published professional dress form size tables (theshopcompany.com, moodfabrics.com) and Kennett & Lindsell UK forms",
+ "source": "OpenDrape grading, graded in-house with reference to published professional dress form size tables (theshopcompany.com, moodfabrics.com) and Kennett & Lindsell UK forms",
  "sizes": [
   {"label": "US 0", "alt": "UK 4", "mm": {"bust": 815, "under_bust": 665, "waist": 610, "hip": 865, "neck": 310, "shoulder_length": 115, "back_waist_length": 395, "waist_to_hip": 195}},
   {"label": "US 2", "alt": "UK 6", "mm": {"bust": 825, "under_bust": 675, "waist": 625, "hip": 880, "neck": 320, "shoulder_length": 120, "back_waist_length": 400, "waist_to_hip": 195}},

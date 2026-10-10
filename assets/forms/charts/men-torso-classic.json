@@ -3,7 +3,7 @@
  "id": "men-torso-classic",
  "form": "men-torso",
  "name": "chart-classic",
- "source": "OpenDrape grading, checked within 2 cm against published professional men's dress form size tables (theshopcompany.com)",
+ "source": "OpenDrape grading, graded in-house with reference to published professional men's dress form size tables (theshopcompany.com)",
  "sizes": [
   {"label": "34", "mm": {"chest": 865, "waist": 750, "hip": 850, "neck": 355, "shoulder_length": 150, "back_waist_length": 440, "waist_to_hip": 185}},
   {"label": "36", "mm": {"chest": 915, "waist": 805, "hip": 895, "neck": 370, "shoulder_length": 155, "back_waist_length": 445, "waist_to_hip": 190}},
