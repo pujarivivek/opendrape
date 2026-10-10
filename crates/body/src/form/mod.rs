@@ -1,6 +1,7 @@
 //! Dress forms: shapes stored as horizontal rings (see `file`), resized to a size chart or to
 //! custom measurements, and built into closed meshes for collision and drawing.
 
+mod cut;
 mod file;
 #[cfg(test)]
 mod fixture;
@@ -8,6 +9,8 @@ pub mod resize;
 mod rings;
 mod stand;
 pub mod tape;
+#[cfg(test)]
+mod testing;
 
 use crate::BodyMesh;
 use glam::DVec3;
@@ -112,16 +115,24 @@ impl Form {
         measure_all(&self.torso, &rings, &landmarks(&self.torso, &rings))
     }
 
+    /// The unsized rings and the rings at `size` (mm), resized and re-cut to the neck's plane, or
+    /// the measurement the form cannot take.
+    fn rings(&self, size: &Measurements, quality: Quality) -> Result<(Rings, Rings), SizeError> {
+        let base = Rings::from_file(&self.torso).with_half_angles(quality.half_angles());
+        let sized = resize::resize(&self.torso, &base, size)?;
+        let rings = cut::recut(&self.torso, &base, &sized);
+        Ok((base, rings))
+    }
+
     /// The form at `size` (mm), or the measurement it cannot take.
     pub fn build(&self, size: &Measurements, quality: Quality) -> Result<BuiltForm, SizeError> {
-        let base = Rings::from_file(&self.torso).with_half_angles(quality.half_angles());
-        let rings = resize::resize(&self.torso, &base, size)?;
+        let (base, rings) = self.rings(size, quality)?;
         let landmarks = landmarks(&self.torso, &rings);
-        let torso = rings.mesh();
         let tapes = tape::tapes(&self.torso, &rings);
         Ok(BuiltForm {
+            torso: rings.mesh(),
             tapes: tape::ribbons(&tapes, &rings),
-            stand: stand::stand(&self.torso, &base, &rings, &torso),
+            stand: stand::stand(&self.torso, &base, &rings),
             stations: self
                 .torso
                 .stations
@@ -129,7 +140,6 @@ impl Form {
                 .map(|(name, &i)| (name.clone(), rings.y[i]))
                 .collect(),
             measured: measure_all(&self.torso, &rings, &landmarks),
-            torso,
             landmarks,
             collision: self.torso.collision.clone(),
         })
@@ -188,31 +198,9 @@ fn measure_all(
 
 #[cfg(test)]
 mod tests {
+    use super::testing::*;
     use super::*;
     use crate::boundary_edge_count;
-
-    const WOMEN: &str = include_str!("../../../../assets/forms/women-torso.form.json");
-    const MEN: &str = include_str!("../../../../assets/forms/men-torso.form.json");
-
-    const WOMEN_EXTREME: [(&str, f64); 8] = [
-        ("bust", 1050.0),
-        ("under_bust", 900.0),
-        ("waist", 820.0),
-        ("hip", 1080.0),
-        ("neck", 390.0),
-        ("shoulder_length", 140.0),
-        ("back_waist_length", 440.0),
-        ("waist_to_hip", 210.0),
-    ];
-    const MEN_EXTREME: [(&str, f64); 7] = [
-        ("chest", 1120.0),
-        ("waist", 940.0),
-        ("hip", 1120.0),
-        ("neck", 420.0),
-        ("shoulder_length", 165.0),
-        ("back_waist_length", 500.0),
-        ("waist_to_hip", 220.0),
-    ];
 
     fn form() -> Form {
         Form::new(fixture::torso()).unwrap()
@@ -220,10 +208,6 @@ mod tests {
 
     fn own_size(f: &Form) -> Measurements {
         f.base_measurements(Quality::Standard)
-    }
-
-    fn lowest(m: &BodyMesh) -> f32 {
-        m.positions.iter().map(|p| p.y).fold(f32::MAX, f32::min)
     }
 
     #[test]
@@ -247,32 +231,53 @@ mod tests {
         assert_eq!(b.collision, f.file().collision);
     }
 
+    /// Landmarks are the file's, placed on the built torso: each lies on its triangles (within
+    /// 1 mm; in fact a micrometre) and the right-hand copies mirror the left exactly.
+    fn assert_landmarks_on_the_torso(id: &str, f: &Form, b: &BuiltForm) {
+        assert_eq!(
+            b.landmarks.len(),
+            15 + 8,
+            "{id}: 15 landmarks, 8 of them off the centre line"
+        );
+        for (name, &[phi, _]) in &f.file().landmarks {
+            let off_centre = phi > CENTRE_LINE && phi < PI - CENTRE_LINE;
+            let right = format!("{name}_R");
+            assert_eq!(b.landmarks.contains_key(&right), off_centre, "{id}: {name}");
+            for key in [name, &right] {
+                if let Some(&p) = b.landmarks.get(key) {
+                    let off = distance_to_mesh(p, &b.torso);
+                    assert!(
+                        off < 1e-3,
+                        "{id}: {key} is {:.3} mm off the torso",
+                        off * 1e3
+                    );
+                }
+            }
+            if off_centre {
+                let (l, r) = (b.landmarks[name], b.landmarks[&right]);
+                assert!((l.x + r.x).abs() < 1e-9 && l.x > 0.0, "{id}: {name}");
+                assert!(
+                    (l.y - r.y).abs() < 1e-9 && (l.z - r.z).abs() < 1e-9,
+                    "{id}: {name}"
+                );
+            }
+        }
+    }
+
     #[test]
-    fn landmarks_sit_on_the_sized_surface_and_mirror_exactly() {
+    fn landmarks_sit_on_the_sized_torso_and_mirror_exactly() {
         let f = form();
         let mut size = own_size(&f);
         size.insert("hip".into(), size["hip"] * 1.1);
         let b = f.build(&size, Quality::Standard).unwrap();
-        let base = Rings::from_file(f.file());
-        let rings = resize::resize(f.file(), &base, &size).unwrap();
-        for (name, &[phi, v]) in &f.file().landmarks {
-            assert_eq!(b.landmarks[name], rings.point(phi, v), "{name}");
-            let off_centre = phi > CENTRE_LINE && phi < PI - CENTRE_LINE;
-            assert_eq!(b.landmarks.contains_key(&format!("{name}_R")), off_centre);
-            if off_centre {
-                let (l, r) = (b.landmarks[name], b.landmarks[&format!("{name}_R")]);
-                assert!((l.x + r.x).abs() < 1e-9 && l.x > 0.0, "{name}");
-                assert!(
-                    (l.y - r.y).abs() < 1e-9 && (l.z - r.z).abs() < 1e-9,
-                    "{name}"
-                );
-            }
-        }
-        assert_eq!(
-            b.landmarks.len(),
-            15 + 8,
-            "15 landmarks, 8 of them off the centre line"
-        );
+        assert_landmarks_on_the_torso("fixture", &f, &b);
+        // They follow the sizing: the same landmarks sit higher on a longer back.
+        let mut longer = size.clone();
+        *longer.get_mut("back_waist_length").unwrap() += 30.0;
+        let c = f.build(&longer, Quality::Standard).unwrap();
+        assert_landmarks_on_the_torso("fixture, longer back", &f, &c);
+        assert!(c.landmarks["back_neck"].y > b.landmarks["back_neck"].y + 0.02);
+        assert!((c.landmarks["cb_bottom"].y - b.landmarks["cb_bottom"].y).abs() < 1e-3);
     }
 
     #[test]
@@ -353,52 +358,61 @@ mod tests {
         let f = Form::new(FormFile::from_json(json).unwrap()).unwrap();
         let id = f.file().id.clone();
         let women = f.file().stations.contains_key("bust");
-        let mut extreme_size = own_size(&f);
-        for &(m, mm) in extreme {
-            extreme_size.insert(m.to_string(), mm);
-        }
-        assert_ne!(extreme_size, own_size(&f));
+        let with = |base: Measurements, changes: &[(&str, f64)]| {
+            let mut size = base;
+            for &(m, mm) in changes {
+                size.insert(m.to_string(), mm);
+            }
+            size
+        };
+        let (small, large) = neck_extremes(f.file());
+        let own = own_size(&f);
+        let low = f.base_measurements(Quality::Low);
         for (case, size, quality) in [
-            ("own size", own_size(&f), Quality::Standard),
-            ("extreme", extreme_size, Quality::Standard),
+            ("own size", own.clone(), Quality::Standard),
+            ("extreme", with(own.clone(), extreme), Quality::Standard),
             (
-                "low quality",
-                f.base_measurements(Quality::Low),
-                Quality::Low,
+                "smallest neck",
+                with(own.clone(), &[("neck", small)]),
+                Quality::Standard,
             ),
+            (
+                "largest neck",
+                with(own, &[("neck", large)]),
+                Quality::Standard,
+            ),
+            ("low quality", low.clone(), Quality::Low),
+            ("low extreme", with(low, extreme), Quality::Low),
         ] {
+            let case = format!("{id} {case}");
             let b = f
                 .build(&size, quality)
-                .unwrap_or_else(|e| panic!("{id} {case}: {e}"));
-            assert_eq!(boundary_edge_count(&b.torso), 0, "{id} {case}");
-            assert_eq!(boundary_edge_count(&b.stand), 0, "{id} {case}");
-            assert_eq!(lowest(&b.stand), 0.0, "{id} {case}");
-            assert!(!b.tapes.triangles.is_empty(), "{id} {case}");
-            assert_eq!(b.landmarks.len(), 15 + 8, "{id} {case}");
+                .unwrap_or_else(|e| panic!("{case}: {e}"));
+            assert_eq!(boundary_edge_count(&b.torso), 0, "{case}");
+            assert_eq!(boundary_edge_count(&b.stand), 0, "{case}");
+            assert_eq!(lowest(&b.stand), 0.0, "{case}");
+            assert!(!b.tapes.triangles.is_empty(), "{case}");
+            assert_landmarks_on_the_torso(&case, &f, &b);
             // `measured` has every input, within what the resizing promises (girths 1 mm,
-            // lengths 2 mm), the ring-tape girths and front waist length, and apex to apex only
-            // where there is a bust.
+            // lengths 2 mm) even where the neck was trimmed to its plane, the ring-tape
+            // girths and front waist length, and apex to apex only where there is a bust.
             for m in &f.file().inputs {
                 let tol = if f.file().stations.contains_key(m) {
                     1.0
                 } else {
                     2.0
                 };
-                assert!((b.measured[m] - size[m]).abs() <= tol, "{id} {case}: {m}");
+                assert!((b.measured[m] - size[m]).abs() <= tol, "{case}: {m}");
             }
             for m in ["high_hip", "front_waist_length"] {
-                assert!(b.measured[m] > 0.0, "{id} {case}: {m}");
+                assert!(b.measured[m] > 0.0, "{case}: {m}");
             }
-            assert_eq!(
-                b.measured.contains_key("apex_to_apex"),
-                women,
-                "{id} {case}"
-            );
+            assert_eq!(b.measured.contains_key("apex_to_apex"), women, "{case}");
             if women {
                 let a = b.measured["apex_to_apex"];
-                assert!((100.0..300.0).contains(&a), "{id} {case}: apex to apex {a}");
+                assert!((100.0..300.0).contains(&a), "{case}: apex to apex {a}");
             }
-            assert!(b.landmarks.contains_key("bust_apex_R"), "{id} {case}");
+            assert!(b.landmarks.contains_key("bust_apex_R"), "{case}");
             // The files keep 5 decimals, so centre back reads 3.14159: still on the centre line.
             for name in [
                 "back_neck",
@@ -409,19 +423,19 @@ mod tests {
             ] {
                 assert!(
                     !b.landmarks.contains_key(&format!("{name}_R")),
-                    "{id} {case}: {name}"
+                    "{case}: {name}"
                 );
             }
         }
     }
 
     #[test]
-    fn the_womens_form_builds_at_its_own_size_and_an_extreme_one() {
+    fn the_womens_form_builds_at_its_own_size_and_extreme_ones() {
         real(WOMEN, &WOMEN_EXTREME);
     }
 
     #[test]
-    fn the_mens_form_builds_at_its_own_size_and_an_extreme_one() {
+    fn the_mens_form_builds_at_its_own_size_and_extreme_ones() {
         // The men's form has a bust_apex landmark (the middle of the chest), but no bust.
         real(MEN, &MEN_EXTREME);
     }
@@ -429,7 +443,6 @@ mod tests {
     #[test]
     fn the_stand_rises_with_the_neck() {
         let f = Form::new(FormFile::from_json(WOMEN).unwrap()).unwrap();
-        let highest = |m: &BodyMesh| m.positions.iter().map(|p| p.y).fold(f32::MIN, f32::max);
         let size = own_size(&f);
         let mut longer = size.clone();
         *longer.get_mut("back_waist_length").unwrap() += 40.0;
