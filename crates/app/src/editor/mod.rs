@@ -194,6 +194,8 @@ pub struct PatternEditor {
     pub notice: Option<String>,
     /// The form pieces are placed round (Place at… needs it); None without a 3D view.
     pub stage: Option<Arc<Stage>>,
+    /// The garment is draping: placements don't apply until Reset, so they are not offered.
+    pub draping: bool,
     canvas: canvas::CanvasState,
     panel: panel::PanelState,
     cache: cache::ShapeCache,
@@ -222,6 +224,7 @@ impl PatternEditor {
             canvas_rect: egui::Rect::NOTHING,
             notice: None,
             stage: None,
+            draping: false,
             canvas: canvas::CanvasState::default(),
             panel: panel::PanelState::default(),
             cache: cache::ShapeCache::default(),

@@ -1,6 +1,7 @@
 //! Placing pieces in 3D from the pattern window and Properties: Place at… (wrapped round the
-//! form at its front, back or sides), Flat, and typed positions and angles. Each is one undo
-//! step, and works on a twin as on any piece (the twin then keeps a placement of its own).
+//! form at its front, back or sides, or round an arm), Flat, and typed positions and angles.
+//! Each is one undo step, and works on a twin as on any piece (the twin then keeps a placement
+//! of its own). While the garment drapes, placements don't apply: they are not offered then.
 
 use super::{PatternEditor, Selection};
 use crate::tr;
@@ -61,6 +62,46 @@ impl PatternEditor {
         self.set_placement(id, placement);
     }
 
+    /// Place at → Left arm (`arm` 0) or Right arm (1): wraps `id` round that arm (see
+    /// `place::place_at_arm`). Its partner in a mirrored pair goes on the other arm: a twin by
+    /// taking its piece's placement mirrored, a piece by being given the twin's mirrored. One
+    /// undo step. Needs a form.
+    pub fn place_at_arm(&mut self, id: PieceId, arm: usize) {
+        let Some(stage) = self.stage.clone() else {
+            return;
+        };
+        let project = self.doc.project();
+        let shapes = geom::shapes(project);
+        let (Some(shape), Some(on)) = (shapes.iter().find(|s| s.id == id), stage.arms().get(arm))
+        else {
+            return;
+        };
+        let placement = place::place_at_arm(
+            shape,
+            on,
+            &|along, angle| stage.arm_surface_distance(arm, along, angle),
+            &|p| stage.signed_distance(p) < 0.0,
+        );
+        let partner = match project.owner(id) {
+            Some((piece, opendrape_core::Side::Master)) => {
+                piece.twin.as_ref().map(|t| (t.id, None))
+            }
+            Some((piece, opendrape_core::Side::Twin)) => {
+                Some((piece.id, Some(placement.mirrored())))
+            }
+            None => None,
+        };
+        self.doc.edit(|p| {
+            p.set_placement(id, Some(placement));
+            if let Some((other, its)) = partner {
+                p.set_placement(other, its);
+            }
+        });
+        if !self.note_if_refused() {
+            self.selection = Selection::Piece(id);
+        }
+    }
+
     /// Flat: takes away the curve, leaving the piece where it is.
     pub fn flatten(&mut self, id: PieceId) {
         if let Some(p) = self.placement(id) {
@@ -68,21 +109,32 @@ impl PatternEditor {
         }
     }
 
-    /// The Place at… menu for `id` (right-click on a piece, in 2D or 3D).
+    /// The Place at… menu for `id` (right-click on a piece, in 2D or 3D). While the garment
+    /// drapes its items are greyed out: placements apply after Reset.
     pub fn place_menu(&mut self, ui: &mut egui::Ui, id: PieceId) {
+        let free = !self.draping;
         for (at, label) in [
             (PlaceAt::Front, tr!("place-front")),
             (PlaceAt::Back, tr!("place-back")),
             (PlaceAt::LeftSide, tr!("place-left")),
             (PlaceAt::RightSide, tr!("place-right")),
         ] {
-            if ui.button(label).clicked() {
+            if ui.add_enabled(free, egui::Button::new(label)).clicked() {
                 self.place_at(id, at);
                 ui.close();
             }
         }
+        for (arm, label) in [(0, tr!("place-left-arm")), (1, tr!("place-right-arm"))] {
+            if ui.add_enabled(free, egui::Button::new(label)).clicked() {
+                self.place_at_arm(id, arm);
+                ui.close();
+            }
+        }
         ui.separator();
-        if ui.button(tr!("place-flat")).clicked() {
+        if ui
+            .add_enabled(free, egui::Button::new(tr!("place-flat")))
+            .clicked()
+        {
             self.flatten(id);
             ui.close();
         }
@@ -97,6 +149,21 @@ impl PatternEditor {
         let units = self.doc.project().units;
         ui.add_space(6.0);
         ui.strong(tr!("panel-placement"));
+        if self.draping {
+            ui.label(tr!("panel-placement-draping"));
+        }
+        let free = !self.draping;
+        ui.add_enabled_ui(free, |ui| self.placement_fields(ui, id, placement, units));
+    }
+
+    /// The position and rotation fields of the "3D placement" group.
+    fn placement_fields(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: PieceId,
+        placement: Placement,
+        units: opendrape_core::Units,
+    ) {
         egui::Grid::new("placement_properties")
             .num_columns(3)
             .show(ui, |ui| {

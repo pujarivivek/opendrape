@@ -386,6 +386,7 @@ impl OpenDrapeApp {
         // From the moment Play is pressed, not from the first frame of the drape: the drape is
         // made from the pieces as they are then.
         let draping = self.is_draping();
+        self.editor.draping = draping;
         let (Some(viewport), Some(rs), Some(scene)) =
             (self.viewport.as_mut(), frame.wgpu_render_state(), scene)
         else {

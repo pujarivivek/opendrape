@@ -8,7 +8,7 @@ use egui_kittest::kittest::Queryable;
 use glam::{DQuat, DVec3};
 use opendrape::editor::Selection;
 use opendrape::stage::Stage;
-use opendrape_core::{PieceId, Placement, Point2};
+use opendrape_core::{Piece, PieceId, Placement, Point2};
 use opendrape_mesh::place;
 
 /// The pattern window with the form to place pieces round.
@@ -135,4 +135,96 @@ fn without_a_form_there_is_no_place_at_menu() {
     with_rectangle(&mut h);
     right_click(&mut h, 250.0, 300.0);
     assert!(h.query_by_label("Place at front").is_none());
+}
+
+/// A 340 × 220 mm sleeve at (100,100) with its twin to its right, at 600..940.
+fn with_sleeves(h: &mut H) -> (PieceId, PieceId) {
+    let (sleeve, twin) = h.state_mut().doc.edit(|p| {
+        let id = p.add_piece(Piece::rectangle(
+            PieceId(0),
+            "Sleeve",
+            Point2::new(100.0, 100.0),
+            340.0,
+            220.0,
+        ));
+        let twin = p
+            .add_twin(id, "Sleeve (mirror)".into(), Point2::new(1040.0, 0.0))
+            .unwrap();
+        (id, twin)
+    });
+    h.state_mut().fit();
+    h.run();
+    (sleeve, twin)
+}
+
+/// How far each point of shape `id`'s outline is from arm `arm`'s line, in 3D: (nearest,
+/// farthest).
+fn round_arm(h: &H, id: PieceId, arm: usize) -> (f64, f64) {
+    let shapes = opendrape_geom::shapes(h.state().doc.project());
+    let shape = shapes.iter().find(|s| s.id == id).unwrap();
+    let p = h.state().placement(id).unwrap();
+    let line = Stage::shared().arms()[arm];
+    opendrape_geom::outline_points(&shape.piece, 0.5)
+        .into_iter()
+        .map(|q| line.distance(place::apply(&p, place::centre_of(shape), q)))
+        .fold((f64::MAX, f64::MIN), |(lo, hi), d| (lo.min(d), hi.max(d)))
+}
+
+#[test]
+fn place_at_left_arm_puts_a_sleeve_round_it_and_its_twin_round_the_other_as_one_step() {
+    let mut h = harness_with_form();
+    let (sleeve, twin) = with_sleeves(&mut h);
+    right_click(&mut h, 250.0, 200.0);
+    h.get_by_label("Place at left arm").click();
+    h.run();
+    let p = placement(&h, sleeve).expect("placed");
+    let r = p.curve.expect("curved round the arm");
+    let (near, far) = round_arm(&h, sleeve, 0);
+    assert!(
+        (near - r).abs() < 1e-6 && (far - r).abs() < 1e-6,
+        "{near}..{far} vs {r}"
+    );
+    assert_eq!(
+        placement(&h, twin),
+        None,
+        "the twin takes the sleeve's, mirrored"
+    );
+    let (near, far) = round_arm(&h, twin, 1);
+    assert!(
+        (near - r).abs() < 1e-6 && (far - r).abs() < 1e-6,
+        "{near}..{far}"
+    );
+    cmd(&mut h, Key::Z);
+    assert_eq!((placement(&h, sleeve), placement(&h, twin)), (None, None));
+}
+
+#[test]
+fn placing_a_twin_at_an_arm_puts_its_piece_round_the_other() {
+    let mut h = harness_with_form();
+    let (sleeve, twin) = with_sleeves(&mut h);
+    h.state_mut().place_at_arm(twin, 1);
+    h.run();
+    let (near, far) = round_arm(&h, twin, 1);
+    let r = placement(&h, twin).unwrap().curve.unwrap();
+    assert!((near - r).abs() < 1e-6 && (far - r).abs() < 1e-6);
+    let (near, far) = round_arm(&h, sleeve, 0);
+    assert!(
+        (near - r).abs() < 1e-6 && (far - r).abs() < 1e-6,
+        "{near}..{far}"
+    );
+}
+
+#[test]
+fn while_draping_placements_are_not_offered() {
+    let mut h = harness_with_form();
+    let id = with_rectangle(&mut h);
+    h.state_mut().draping = true;
+    click(&mut h, 250.0, 300.0);
+    h.get_by_label("Placements apply after Reset.");
+    type_into(&mut h, "Position Y", "100");
+    assert_eq!(placement(&h, id), None, "the field is greyed out");
+    right_click(&mut h, 250.0, 300.0);
+    h.get_by_label("Place at left arm").click();
+    h.run();
+    assert_eq!(placement(&h, id), None, "and so is Place at…");
 }
