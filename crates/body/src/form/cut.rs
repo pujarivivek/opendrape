@@ -19,13 +19,10 @@ const ON_PLANE: f64 = 0.0001;
 /// No radius shrinks below this when it is trimmed.
 const MIN_RADIUS: f64 = 0.0005;
 
-/// The plane the neck is cut by, as a frame: `u` runs across the form (+x), `w` up the slope
-/// (backwards and up) and `n` is the normal pointing away from the form, tilted towards the
-/// front. (`u`, `w`, `n`) is right-handed, so an outline counter-clockwise in (u, w) faces `n`.
+/// The plane the neck is cut by: through the pole at the cut's height, lower at the front.
 pub(super) struct Plane {
     pub origin: DVec3,
-    pub u: DVec3,
-    pub w: DVec3,
+    /// Unit normal, pointing away from the form and tilted towards the front.
     pub n: DVec3,
 }
 
@@ -37,8 +34,6 @@ impl Plane {
         let (s, c) = file.stand.neck_cut.tilt_deg.to_radians().sin_cos();
         Self {
             origin: DVec3::new(x, cut_y, z),
-            u: DVec3::X,
-            w: DVec3::new(0.0, s, -c),
             n: DVec3::new(0.0, c, s),
         }
     }
@@ -48,15 +43,9 @@ impl Plane {
         (p - self.origin).dot(self.n)
     }
 
-    /// Where `p` lands on the plane, in (u, w).
-    pub fn coords(&self, p: DVec3) -> DVec2 {
-        let d = p - self.origin;
-        DVec2::new(d.dot(self.u), d.dot(self.w))
-    }
-
-    /// The point at `c` (u, w) lifted `height` along the normal.
-    pub fn point(&self, c: DVec2, height: f64) -> DVec3 {
-        self.origin + self.u * c.x + self.w * c.y + self.n * height
+    /// The plane's height at (x, z).
+    pub fn y_at(&self, x: f64, z: f64) -> f64 {
+        self.origin.y - ((x - self.origin.x) * self.n.x + (z - self.origin.z) * self.n.z) / self.n.y
     }
 }
 
@@ -192,11 +181,16 @@ mod tests {
             assert_eq!(h > 0.0, cut_away, "({y}, {z})");
             assert!((h - ((y - 1.52) * tilt.cos() + z * tilt.sin())).abs() < 1e-12);
         }
-        // The frame is orthonormal and right-handed, and lower at the front.
-        assert!((plane.u.cross(plane.w) - plane.n).length() < 1e-12);
-        assert!(plane.w.dot(plane.n).abs() < 1e-12 && plane.w.y > 0.0 && plane.w.z < 0.0);
-        assert!(plane.height(plane.point(DVec2::new(0.3, -0.2), 0.0)).abs() < 1e-12);
-        assert!(plane.point(DVec2::ZERO, 0.0).distance(plane.origin) < 1e-12);
+        // The normal is a unit vector tilted to the front; the plane is lower there.
+        assert!((plane.n.length() - 1.0).abs() < 1e-12 && plane.n.z > 0.0);
+        for (x, z) in [(0.0, 0.0), (0.04, 0.05), (-0.03, -0.06)] {
+            let y = plane.y_at(x, z);
+            assert!(
+                plane.height(DVec3::new(x, y, z)).abs() < 1e-12,
+                "({x}, {z})"
+            );
+            assert!((y - (1.52 - z * tilt.tan())).abs() < 1e-12);
+        }
     }
 
     #[test]

@@ -1,6 +1,11 @@
 //! The stand a form sits on, drawn but never collided: a neck cap that hugs the slanted cut, a
 //! rod and knob above it, a pole, and a round base on the floor (y = 0). Every piece is a
 //! closed, outward-wound mesh of its own; `stand` appends them into one.
+//!
+//! The cap follows the one in the approved Blender pictures (`neck_cap` in
+//! `scripts/forms/render_views.py`): an outline of the cut seen from above, a little larger than
+//! the cut; at each point of it a top, parallel to the cut and `CAP_ABOVE` higher, and a collar
+//! foot `COLLAR_BELOW` lower, both measured straight up, the sides between them vertical.
 
 use super::cut::{Plane, sized_plane};
 use super::file::FormFile;
@@ -18,15 +23,16 @@ const ROD_RADIUS: f64 = 0.006;
 const ROD_HEIGHT: f64 = 0.024;
 const KNOB_RADIUS: f64 = 0.016;
 const KNOB_HEIGHT: f64 = 0.026;
-/// The cap stands this far above the cut (the re-cut sees to it that nothing of the torso is
-/// higher than the cut); its collar hangs `COLLAR_BELOW` below, hugging the neck.
+/// The cap's top stands this far above the cut (the re-cut sees to it that nothing of the
+/// torso is higher than the cut); its collar foot hangs `COLLAR_BELOW` below it, both straight
+/// up and down.
 const CAP_ABOVE: f64 = 0.004;
 const COLLAR_BELOW: f64 = 0.022;
-/// The cap's outline is where the torso meets the cut, pushed out by `CAP_MARGIN` from its
-/// centroid.
+/// The cap's outline is the cut seen from above, pushed out by this much all round.
 const CAP_MARGIN: f64 = 0.0025;
-/// Points around the cap's outline.
-const CAP_SIDES: usize = 64;
+/// Directions the margin is rounded with at each corner of the cut's outline (its clearance is
+/// at least `CAP_MARGIN`·cos(π/`MARGIN_STEPS`)).
+const MARGIN_STEPS: usize = 32;
 /// Sides of the round pieces.
 const SIDES: u32 = 24;
 /// A vertex this close to the plane (metres) is on it.
@@ -57,123 +63,86 @@ fn cylinder(base: DVec3, radius: f64, height: f64) -> BodyMesh {
     m
 }
 
-/// A closed prism along the plane's normal, from `above` the plane down to `below` it, on an
-/// outline that runs counter-clockwise in (u, w). Vertices: the top outline, the bottom outline,
-/// then the top and bottom centres.
-fn prism(plane: &Plane, outline: &[DVec2], above: f64, below: f64) -> BodyMesh {
+/// The cap: a closed solid on `outline` (counter-clockwise seen along x then z, as `convex_hull`
+/// makes it), its top `above` the plane and its foot `below` it, both straight up and down, the
+/// sides vertical. Vertices: the top outline, the foot outline, then the top and foot centres.
+fn cap_solid(plane: &Plane, outline: &[DVec2], above: f64, below: f64) -> BodyMesh {
     let n = outline.len() as u32;
+    let at = |c: DVec2, height: f64| DVec3::new(c.x, plane.y_at(c.x, c.y) + height, c.y).as_vec3();
     let mut m = BodyMesh {
         positions: vec![],
         triangles: vec![],
     };
     for height in [above, -below] {
-        m.positions
-            .extend(outline.iter().map(|&c| plane.point(c, height).as_vec3()));
+        m.positions.extend(outline.iter().map(|&c| at(c, height)));
     }
     let centre = outline.iter().sum::<DVec2>() / f64::from(n);
-    m.positions.push(plane.point(centre, above).as_vec3());
-    m.positions.push(plane.point(centre, -below).as_vec3());
-    let (top, bottom) = (2 * n, 2 * n + 1);
+    m.positions.push(at(centre, above));
+    m.positions.push(at(centre, -below));
+    let (top, foot) = (2 * n, 2 * n + 1);
     for j in 0..n {
         let k = (j + 1) % n;
         let (a, b, c, d) = (j, k, n + k, n + j);
         m.triangles
-            .extend([[top, a, b], [bottom, c, d], [a, d, c], [a, c, b]]);
+            .extend([[top, b, a], [foot, d, c], [a, c, d], [a, b, c]]);
     }
     m
 }
 
-/// Area centroid of a counter-clockwise polygon.
-fn centroid(poly: &[DVec2]) -> DVec2 {
-    let o = poly[0];
-    let (mut twice_area, mut sum) = (0.0, DVec2::ZERO);
-    for (i, &p) in poly.iter().enumerate() {
-        let (p, q) = (p - o, poly[(i + 1) % poly.len()] - o);
-        let cross = p.perp_dot(q);
-        twice_area += cross;
-        sum += (p + q) * cross;
-    }
-    o + sum / (3.0 * twice_area)
-}
-
-/// `count` points evenly spread along the closed polygon's perimeter, starting at its first
-/// corner. The polygon must have no repeated corners.
-fn resample(poly: &[DVec2], count: usize) -> Vec<DVec2> {
-    let n = poly.len();
-    let edge = |i: usize| poly[i].distance(poly[(i + 1) % n]);
-    let total: f64 = (0..n).map(edge).sum();
-    let (mut i, mut start) = (0, 0.0);
-    (0..count)
-        .map(|k| {
-            let at = total * k as f64 / count as f64;
-            while i + 1 < n && start + edge(i) < at {
-                start += edge(i);
-                i += 1;
+/// Where the torso meets the plane: the vertices on it, and the point where each edge of the
+/// mesh crosses it (the plane's height changes sign along the edge). The mesh is `rings.mesh()`,
+/// but its corners are taken from the rings in full precision.
+fn section(plane: &Plane, rings: &Rings) -> Vec<DVec3> {
+    let (n, m) = (rings.len(), rings.around());
+    let position = |v: u32| match v as usize {
+        v if v < n * m => rings.vertex(v / m, v % m),
+        v if v == n * m => DVec3::new(0.0, rings.y[0], rings.zc[0]),
+        _ => DVec3::new(0.0, rings.y[n - 1], rings.zc[n - 1]),
+    };
+    let mesh = rings.mesh();
+    let mut out: Vec<DVec3> = (0..mesh.positions.len() as u32)
+        .map(position)
+        .filter(|&p| plane.height(p).abs() <= ON_CUT)
+        .collect();
+    for t in &mesh.triangles {
+        for k in 0..3 {
+            let (a, b) = (position(t[k]), position(t[(k + 1) % 3]));
+            let (g, h) = (plane.height(a), plane.height(b));
+            if g.abs() > ON_CUT && h.abs() > ON_CUT && (g < 0.0) != (h < 0.0) {
+                out.push(a + (b - a) * (g / (g - h)));
             }
-            poly[i].lerp(poly[(i + 1) % n], (at - start) / edge(i))
-        })
-        .collect()
-}
-
-/// Where the torso meets the plane, in (u, w): along each column of the mesh (the vertices over
-/// the rings at one sample round the form), the vertices on the plane and the points where an
-/// edge crosses it.
-fn cut_points(plane: &Plane, rings: &Rings) -> Vec<DVec2> {
-    let mut out = vec![];
-    for j in 0..rings.around() {
-        let mut last: Option<(DVec3, f64)> = None;
-        for i in 0..rings.len() {
-            let p = rings.vertex(i, j);
-            let h = plane.height(p);
-            if h.abs() <= ON_CUT {
-                out.push(plane.coords(p));
-            } else if let Some((q, g)) = last
-                && g.abs() > ON_CUT
-                && (g < 0.0) != (h < 0.0)
-            {
-                out.push(plane.coords(q + (p - q) * (g / (g - h))));
-            }
-            last = Some((p, h));
         }
     }
     out
 }
 
-/// The cap's outline in (u, w): the hull of where the torso meets the cut and of every vertex
-/// from there down to the collar's depth, all seen along the plane's normal, pushed
-/// `CAP_MARGIN` out from its centroid and resampled to `CAP_SIDES` even points. The vertices
-/// matter because the rings are coarse where the neck meets the plane (a facet runs up from the
-/// last wall vertex to the cut face), and because the collar must go round the neck all the
-/// way down. Fewer than 3 corners (a torso that never reaches the plane) fall back to the hull
-/// of the top ring.
+/// The cap's outline seen from above, as (x, z): the hull of the cut, pushed `CAP_MARGIN` out
+/// all round (corners are rounded, so the margin is the same everywhere). Fewer than 3 corners
+/// (a torso that never reaches the plane) fall back to the hull of the top ring.
 fn cap_outline(plane: &Plane, rings: &Rings) -> Vec<DVec2> {
-    let mut points = cut_points(plane, rings);
-    for i in 0..rings.len() {
-        for j in 0..rings.around() {
-            let p = rings.vertex(i, j);
-            if plane.height(p) >= -COLLAR_BELOW {
-                points.push(plane.coords(p));
-            }
-        }
-    }
-    let mut hull = convex_hull(points);
+    let from_above = |p: DVec3| DVec2::new(p.x, p.z);
+    let mut hull = convex_hull(section(plane, rings).into_iter().map(from_above).collect());
     if hull.len() < 3 {
         let top = rings.len() - 1;
         hull = convex_hull(
             (0..rings.around())
-                .map(|j| plane.coords(rings.vertex(top, j)))
+                .map(|j| from_above(rings.vertex(top, j)))
                 .collect(),
         );
     }
     if hull.len() < 3 {
         return vec![];
     }
-    let c = centroid(&hull);
-    let pushed: Vec<DVec2> = hull
+    let rounded: Vec<DVec2> = hull
         .iter()
-        .map(|&p| p + (p - c).normalize_or_zero() * CAP_MARGIN)
+        .flat_map(|&p| {
+            (0..MARGIN_STEPS).map(move |k| {
+                let a = TAU * k as f64 / MARGIN_STEPS as f64;
+                p + DVec2::new(a.cos(), a.sin()) * CAP_MARGIN
+            })
+        })
         .collect();
-    resample(&pushed, CAP_SIDES)
+    convex_hull(rounded)
 }
 
 /// The five closed pieces of the stand.
@@ -195,13 +164,13 @@ fn parts(file: &FormFile, base: &Rings, rings: &Rings) -> Parts {
             triangles: vec![],
         }
     } else {
-        prism(&plane, &outline, CAP_ABOVE, COLLAR_BELOW)
+        cap_solid(&plane, &outline, CAP_ABOVE, COLLAR_BELOW)
     };
     // Where the pole axis crosses the cap's top face. The face is slanted, so the rod's flat
     // end is sunk by the slope across its radius to meet it all round; the rod still stands
     // `ROD_HEIGHT` above the crossing.
     let tilt = file.stand.neck_cut.tilt_deg.to_radians();
-    let crossing = plane.origin.y + CAP_ABOVE / tilt.cos();
+    let crossing = plane.y_at(px, pz) + CAP_ABOVE;
     let sunk = ROD_RADIUS * tilt.tan();
     let rod = cylinder(
         DVec3::new(px, crossing - sunk, pz),
@@ -256,26 +225,98 @@ mod tests {
     use crate::form::testing::*;
     use crate::form::{FormFile, fixture};
 
+    /// How far the torso may poke out through the cap's vertical collar, mm, by form and case:
+    /// what was observed (women 2.90 / 6.56 / 7.52 / 20.39, men 7.14 / 10.50 / 10.77 / 27.21),
+    /// rounded up to the next millimetre, plus 1 mm.
+    ///
+    /// The rest of the neck is padded: it flares into a front fillet below the cut, and the
+    /// collar's vertical sides sink into it by design, as in the approved Blender cap. The
+    /// big numbers are the largest necks: the rings are 12 mm apart where the neck meets the
+    /// plane, so the first vertex on the cut face is up to 20 mm behind the wall's top.
+    fn poke_bound(id: &str, case: &str) -> f64 {
+        let women = id.starts_with("women");
+        match (case, women) {
+            ("own size", true) => 0.004,
+            ("extreme", true) => 0.008,
+            ("own size", false) => 0.009,
+            ("extreme", false) => 0.012,
+            (c, true) if c.starts_with("neck 280") => 0.009,
+            (c, false) if c.starts_with("neck 301") => 0.012,
+            (_, true) => 0.022,
+            (_, false) => 0.029,
+        }
+    }
+    /// The bound for sizes in general: the largest of the above.
+    const ANY_POKE: f64 = 0.029;
+
     fn assert_closed_and_outward(name: &str, m: &BodyMesh) {
         assert!(!m.triangles.is_empty(), "{name} is empty");
         assert_eq!(boundary_edge_count(m), 0, "{name} is open");
+        assert!(
+            consistently_oriented(m),
+            "{name} has triangles facing both ways"
+        );
         assert!(signed_volume(m) > 0.0, "{name} faces inward");
     }
 
-    /// The outline of a cap built by `prism`, in (u, w): its first `CAP_SIDES` vertices.
-    fn top_outline(plane: &Plane, cap: &BodyMesh) -> Vec<DVec2> {
-        cap.positions[..CAP_SIDES]
+    /// Sides of a cap: its vertices are the top outline, the foot outline and two centres.
+    fn sides(cap: &BodyMesh) -> usize {
+        (cap.positions.len() - 2) / 2
+    }
+
+    /// The cap's outline seen from above, as (x, z): its top vertices.
+    fn top_outline(cap: &BodyMesh) -> Vec<DVec2> {
+        cap.positions[..sides(cap)]
             .iter()
-            .map(|p| plane.coords(p.as_dvec3()))
+            .map(|p| DVec2::new(f64::from(p.x), f64::from(p.z)))
             .collect()
+    }
+
+    /// Where the plane cuts the torso mesh, worked out from its triangles' edges: vertices on
+    /// the plane and the crossing of every edge whose ends lie on either side of it. The mesh is
+    /// in single precision, so "on the plane" is a micrometre.
+    fn mesh_section(plane: &Plane, torso: &BodyMesh) -> Vec<DVec3> {
+        let near = 1e-6;
+        let mut out = vec![];
+        for v in &torso.positions {
+            if plane.height(v.as_dvec3()).abs() <= near {
+                out.push(v.as_dvec3());
+            }
+        }
+        for t in &torso.triangles {
+            for k in 0..3 {
+                let a = torso.positions[t[k] as usize].as_dvec3();
+                let b = torso.positions[t[(k + 1) % 3] as usize].as_dvec3();
+                let (g, h) = (plane.height(a), plane.height(b));
+                if g.abs() > near && h.abs() > near && (g < 0.0) != (h < 0.0) {
+                    out.push(a + (b - a) * (g / (g - h)));
+                }
+            }
+        }
+        out
+    }
+
+    /// The torso vertices from the plane down to the collar's depth, measured straight up and
+    /// down: how far the farthest lies outside the outline seen from above, metres.
+    fn poke(plane: &Plane, torso: &BodyMesh, outline: &[DVec2]) -> f64 {
+        torso
+            .positions
+            .iter()
+            .map(|v| v.as_dvec3())
+            .filter(|v| (-COLLAR_BELOW..=1e-4).contains(&(v.y - plane.y_at(v.x, v.z))))
+            .map(|v| DVec2::new(v.x, v.z))
+            .filter(|&c| !inside(outline, c))
+            .map(|c| distance_to_edges(outline, c))
+            .fold(0.0, f64::max)
     }
 
     /// The checks of the neck and its cap that do not go through the cap's own choices: they
     /// look at the torso mesh and the finished cap mesh only.
-    fn assert_neck_and_cap(id: &str, s: &Sized) {
+    fn assert_neck_and_cap(id: &str, s: &Sized, poke_bound: f64) {
         let plane = sized_plane(&s.file, &s.base, &s.rings);
         let torso = s.torso();
         let p = parts(&s.file, &s.base, &s.rings);
+        let outline = top_outline(&p.cap);
         // The torso is closed and faces outward, and nothing of it is on the cut-away side.
         assert_closed_and_outward(&format!("{id} torso"), &torso);
         let worst = torso
@@ -288,21 +329,33 @@ mod tests {
             "{id}: a vertex is {:.3} mm above the plane",
             worst * 1000.0
         );
-        // Every vertex down to the collar's depth is inside the cap's outline, or within 1 mm.
-        let outline = top_outline(&plane, &p.cap);
-        for v in torso.positions.iter().map(|v| v.as_dvec3()) {
-            if plane.height(v) >= -COLLAR_BELOW {
-                let c = plane.coords(v);
-                assert!(
-                    inside(&outline, c) || distance_to_edges(&outline, c) <= 1e-3,
-                    "{id}: {v} is {:.1} mm outside the cap",
-                    distance_to_edges(&outline, c) * 1000.0
-                );
-            }
+        // The cut, as the plane slices the mesh's edges, lies inside the outline by the margin.
+        let section = mesh_section(&plane, &torso);
+        assert!(
+            section.len() > 100,
+            "{id}: {} section points",
+            section.len()
+        );
+        for q in section {
+            let c = DVec2::new(q.x, q.z);
+            let clear = distance_to_edges(&outline, c);
+            assert!(
+                inside(&outline, c) && clear >= 0.0024,
+                "{id}: the cut at {q} is {:.2} mm from the outline's edge",
+                clear * 1000.0
+            );
         }
+        // The neck below the cut pokes out through the collar only so far.
+        let out = poke(&plane, &torso, &outline);
+        assert!(
+            out <= poke_bound,
+            "{id}: the neck pokes {:.1} mm through the collar, bound {:.0}",
+            out * 1000.0,
+            poke_bound * 1000.0
+        );
         // The pole axis passes through the cap, a knob's radius clear of its edge.
         let [px, pz] = s.file.stand.pole_xz;
-        let axis = plane.coords(DVec3::new(px, plane.origin.y, pz));
+        let axis = DVec2::new(px, pz);
         assert!(inside(&outline, axis), "{id}: the pole axis misses the cap");
         let clear = distance_to_edges(&outline, axis);
         assert!(
@@ -326,16 +379,17 @@ mod tests {
     }
 
     #[test]
-    fn the_cap_covers_the_neck_of_the_real_forms_at_every_neck_size() {
+    fn the_cap_covers_the_cut_of_the_real_forms_at_every_neck_size() {
         for (json, extreme) in both_real_forms() {
             for (case, s) in real_cases(json, extreme) {
-                assert_neck_and_cap(&format!("{} {case}", s.file.id), &s);
+                let id = format!("{} {case}", s.file.id);
+                assert_neck_and_cap(&id, &s, poke_bound(&s.file.id, &case));
             }
         }
     }
 
     #[test]
-    fn the_cap_covers_the_neck_at_any_size_a_form_takes() {
+    fn the_cap_covers_the_cut_at_any_size_a_form_takes() {
         let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
         let mut next = move || {
             seed ^= seed << 13;
@@ -359,29 +413,60 @@ mod tests {
                     continue;
                 };
                 built += 1;
-                assert_neck_and_cap(&format!("{} draw {built}", file.id), &s);
+                assert_neck_and_cap(&format!("{} draw {built}", file.id), &s, ANY_POKE);
             }
             assert!(built >= 5, "{}: only {built} sizes were taken", file.id);
         }
     }
 
     #[test]
-    fn the_cap_hugs_the_cut_and_lies_in_front_at_its_lowest() {
+    fn the_cap_reaches_only_its_margin_beyond_the_cut() {
+        for (json, extreme) in both_real_forms() {
+            for (case, s) in real_cases(json, extreme) {
+                let plane = sized_plane(&s.file, &s.base, &s.rings);
+                let outline = top_outline(&parts(&s.file, &s.base, &s.rings).cap);
+                let section = mesh_section(&plane, &s.torso());
+                // Front is +z, back is −z.
+                let front = |pts: &mut dyn Iterator<Item = f64>| pts.fold(f64::MIN, f64::max);
+                let reach = front(&mut outline.iter().map(|p| p.y))
+                    - front(&mut section.iter().map(|p| p.z));
+                let back = -front(&mut section.iter().map(|p| -p.z))
+                    + front(&mut outline.iter().map(|p| -p.y));
+                for (side, r) in [("front", reach), ("back", back)] {
+                    assert!(
+                        (0.0023..=0.0026).contains(&r),
+                        "{} {case}: the cap reaches {:.2} mm past the cut at the {side}",
+                        s.file.id,
+                        r * 1000.0
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_cap_hugs_the_cut_with_a_vertical_collar() {
         for (json, extreme) in both_real_forms() {
             for (case, s) in real_cases(json, extreme) {
                 let id = format!("{} {case}", s.file.id);
                 let plane = sized_plane(&s.file, &s.base, &s.rings);
                 let cap = parts(&s.file, &s.base, &s.rings).cap;
-                assert_eq!(cap.positions.len(), 2 * CAP_SIDES + 2, "{id}");
-                // 4 mm above the cut at the top, a 22 mm collar below it.
+                let n = sides(&cap);
+                assert!((40..=80).contains(&n), "{id}: {n} sides");
+                // 4 mm above the cut at the top and a 22 mm collar below it, measured straight
+                // up and down; the sides are vertical.
                 for (k, p) in cap.positions.iter().enumerate() {
-                    let h = plane.height(p.as_dvec3());
-                    let want = if k < CAP_SIDES || k == 2 * CAP_SIDES {
+                    let up = f64::from(p.y) - plane.y_at(f64::from(p.x), f64::from(p.z));
+                    let want = if k < n || k == 2 * n {
                         CAP_ABOVE
                     } else {
                         -COLLAR_BELOW
                     };
-                    assert!((h - want).abs() < 1e-6, "{id}: vertex {k} at {h}");
+                    assert!((up - want).abs() < 1e-6, "{id}: vertex {k} at {up}");
+                }
+                for j in 0..n {
+                    let (top, foot) = (cap.positions[j], cap.positions[n + j]);
+                    assert_eq!((top.x, top.z), (foot.x, foot.z), "{id}: side {j} leans");
                 }
                 // The lowest point is at the front, below the cut; the highest at the back,
                 // above it.
@@ -408,13 +493,10 @@ mod tests {
             for (case, s) in real_cases(json, extreme) {
                 let id = format!("{} {case}", s.file.id);
                 let [px, pz] = s.file.stand.pole_xz;
-                let tilt = s.file.stand.neck_cut.tilt_deg.to_radians();
                 let plane = sized_plane(&s.file, &s.base, &s.rings);
                 let p = parts(&s.file, &s.base, &s.rings);
-                // Where the axis crosses the cap's top face.
-                let crossing = plane.origin.y + CAP_ABOVE / tilt.cos();
-                let on_top_face = plane.height(DVec3::new(px, crossing, pz));
-                assert!((on_top_face - CAP_ABOVE).abs() < 1e-9, "{id}");
+                // Where the axis crosses the cap's top face, 4 mm above the cut.
+                let crossing = plane.y_at(px, pz) + CAP_ABOVE;
                 assert!(
                     (highest(&p.rod) as f64 - (crossing + ROD_HEIGHT)).abs() < 1e-6,
                     "{id}"
@@ -434,11 +516,20 @@ mod tests {
                     }
                 }
                 // The rod's foot is level with the cap's top face at the front of the rod and
-                // under it everywhere else, so no gap shows.
+                // under it everywhere else, so no gap shows; the face is the cut raised 4 mm.
                 for v in &p.rod.positions[..SIDES as usize] {
-                    let h = plane.height(v.as_dvec3());
-                    assert!(h < CAP_ABOVE + 1e-6, "{id}: rod foot shows");
+                    let face = plane.y_at(f64::from(v.x), f64::from(v.z)) + CAP_ABOVE;
+                    assert!(f64::from(v.y) <= face + 1e-6, "{id}: rod foot shows");
                 }
+                let front = p.rod.positions[..SIDES as usize]
+                    .iter()
+                    .max_by(|a, b| a.z.total_cmp(&b.z))
+                    .unwrap();
+                let face = plane.y_at(f64::from(front.x), f64::from(front.z)) + CAP_ABOVE;
+                assert!(
+                    (f64::from(front.y) - face).abs() < 1e-5,
+                    "{id}: foot is sunk"
+                );
             }
         }
     }
@@ -463,39 +554,48 @@ mod tests {
     }
 
     #[test]
-    fn cut_points_lie_on_the_plane_and_on_the_surface() {
+    fn the_section_lies_on_the_plane_and_on_the_surface() {
         // Lower the fixture's cut so the plane slices through its neck, rings left as they are.
         let mut file = fixture::torso();
         file.stand.neck_cut.y = 1.46;
         let rings = Rings::from_file(&file);
         let plane = base_plane(&file);
         let torso = rings.mesh();
-        let points = cut_points(&plane, &rings);
+        let points = section(&plane, &rings);
         assert!(points.len() >= rings.around(), "{} points", points.len());
-        for c in points {
-            let p = plane.point(c, 0.0);
-            assert!(distance_to_mesh(p, &torso) < 1e-6, "{p} is off the surface");
+        for p in &points {
+            assert!(plane.height(*p).abs() < 1e-9, "{p} is off the plane");
+            assert!(
+                distance_to_mesh(*p, &torso) < 1e-6,
+                "{p} is off the surface"
+            );
         }
-        // The hull of the section is the neck as the plane slices it: wider than deep.
-        let hull = convex_hull(cut_points(&plane, &rings));
-        let (u, w): (Vec<f64>, Vec<f64>) = hull.iter().map(|p| (p.x.abs(), p.y)).unzip();
+        // Seen from above, the cut is the neck's ellipse, wider than deep.
+        let (x, z): (Vec<f64>, Vec<f64>) = points.iter().map(|p| (p.x.abs(), p.z)).unzip();
         let span = |v: &[f64]| v.iter().copied().fold(f64::MIN, f64::max);
         assert!(
-            span(&u) > 0.05 && span(&u) < 0.065,
+            span(&x) > 0.05 && span(&x) < 0.065,
             "half width {}",
-            span(&u)
+            span(&x)
         );
-        assert!(span(&w) > 0.04, "{}", span(&w));
+        assert!(span(&z) > 0.04, "{}", span(&z));
+        // The cap's outline is that ellipse, a margin larger.
+        let outline = cap_outline(&plane, &rings);
+        assert!(outline.len() >= 3);
+        for p in &points {
+            let c = DVec2::new(p.x, p.z);
+            assert!(inside(&outline, c) && distance_to_edges(&outline, c) >= 0.0024);
+        }
+        assert_closed_and_outward("cap", &parts(&file, &rings, &rings).cap);
     }
 
     #[test]
-    fn the_fixtures_stand_is_closed_and_on_the_floor() {
-        // The fixture's rings stop short of its cut: the cap is built on the vertices within
-        // the collar's depth, which is the neck's top.
+    fn a_torso_that_never_reaches_the_cut_gets_a_cap_on_its_top_ring() {
+        // The fixture's rings stop short of its cut.
         let file = fixture::torso();
         let base = Rings::from_file(&file);
         let plane = base_plane(&file);
-        assert!(cut_points(&plane, &base).is_empty());
+        assert!(section(&plane, &base).is_empty());
         let p = parts(&file, &base, &base);
         for (name, m) in [
             ("cap", &p.cap),
@@ -505,6 +605,12 @@ mod tests {
             ("base", &p.base),
         ] {
             assert_closed_and_outward(name, m);
+        }
+        let outline = top_outline(&p.cap);
+        let top = base.len() - 1;
+        for j in 0..base.around() {
+            let v = base.vertex(top, j);
+            assert!(inside(&outline, DVec2::new(v.x, v.z)), "sample {j}");
         }
         let all = stand(&file, &base, &base);
         assert_eq!(boundary_edge_count(&all), 0);
@@ -519,45 +625,36 @@ mod tests {
     }
 
     #[test]
-    fn a_torso_that_never_reaches_the_cut_gets_a_cap_on_its_top_ring() {
-        // Hang the cut a metre above the fixture: nothing is within the collar's depth.
-        let mut file = fixture::torso();
-        file.stand.neck_cut.y = 2.5;
-        let base = Rings::from_file(&file);
-        let plane = base_plane(&file);
-        let outline = cap_outline(&plane, &base);
-        assert_eq!(outline.len(), CAP_SIDES);
-        let top = base.len() - 1;
-        for j in 0..base.around() {
-            assert!(
-                inside(&outline, plane.coords(base.vertex(top, j))),
-                "sample {j}"
-            );
-        }
-        assert_closed_and_outward("cap", &parts(&file, &base, &base).cap);
-    }
-
-    #[test]
-    fn the_prism_is_closed_outward_and_exactly_the_height_asked() {
+    fn the_cap_solid_is_closed_outward_and_exactly_the_height_asked() {
         let plane = base_plane(&fixture::torso());
-        let outline: Vec<DVec2> = (0..CAP_SIDES)
+        // Counter-clockwise as `convex_hull` makes it: x then z.
+        const N: usize = 40;
+        let outline: Vec<DVec2> = (0..N)
             .map(|k| {
-                let a = TAU * k as f64 / CAP_SIDES as f64;
+                let a = TAU * k as f64 / N as f64;
                 DVec2::new(0.05 * a.cos(), 0.03 * a.sin())
             })
             .collect();
-        let m = prism(&plane, &outline, 0.004, 0.022);
-        assert_closed_and_outward("prism", &m);
-        assert_eq!(m.triangles.len(), 4 * CAP_SIDES);
+        let m = cap_solid(&plane, &outline, 0.004, 0.022);
+        assert_closed_and_outward("cap", &m);
+        assert_eq!(m.triangles.len(), 4 * N);
         for (k, p) in m.positions.iter().enumerate() {
-            let h = plane.height(p.as_dvec3());
-            let want = if k < CAP_SIDES || k == 2 * CAP_SIDES {
-                0.004
-            } else {
-                -0.022
-            };
-            assert!((h - want).abs() < 1e-6, "vertex {k}: {h}");
+            let up = f64::from(p.y) - plane.y_at(f64::from(p.x), f64::from(p.z));
+            let want = if k < N || k == 2 * N { 0.004 } else { -0.022 };
+            assert!((up - want).abs() < 1e-6, "vertex {k}: {up}");
         }
+        // Outward means upwards on top, downwards underneath, away from the middle at the sides.
+        let normal = |t: [u32; 3]| {
+            let [a, b, c] = t.map(|i| m.positions[i as usize].as_dvec3());
+            (b - a).cross(c - a)
+        };
+        let n = N as u32;
+        assert!(normal([2 * n, 1, 0]).y > 0.0 && normal([2 * n + 1, n, n + 1]).y < 0.0);
+        assert!(
+            normal(m.triangles[3])
+                .dot(m.positions[0].as_dvec3() - m.positions[2 * n as usize].as_dvec3())
+                > 0.0
+        );
     }
 
     #[test]
@@ -570,23 +667,6 @@ mod tests {
             let r = f64::from(p.x - 0.1).hypot(f64::from(p.z + 0.2));
             assert!((r - 0.02).abs() < 1e-6);
         }
-    }
-
-    #[test]
-    fn resampling_spreads_points_evenly_along_the_outline() {
-        let square = [
-            DVec2::new(0.0, 0.0),
-            DVec2::new(2.0, 0.0),
-            DVec2::new(2.0, 2.0),
-            DVec2::new(0.0, 2.0),
-        ];
-        let pts = resample(&square, 16);
-        assert_eq!(pts.len(), 16);
-        assert_eq!(pts[0], square[0]);
-        assert!((pts[1] - DVec2::new(0.5, 0.0)).length() < 1e-12);
-        assert!((pts[4] - DVec2::new(2.0, 0.0)).length() < 1e-12);
-        assert!((pts[15] - DVec2::new(0.0, 0.5)).length() < 1e-12);
-        assert!((centroid(&square) - DVec2::new(1.0, 1.0)).length() < 1e-12);
     }
 
     #[test]

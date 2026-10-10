@@ -101,6 +101,20 @@ pub fn signed_volume(m: &BodyMesh) -> f64 {
         .sum()
 }
 
+/// Every edge is used by two triangles, once in each direction: the mesh is closed and its
+/// triangles agree on which way is out.
+pub fn consistently_oriented(m: &BodyMesh) -> bool {
+    let mut directed = std::collections::HashMap::<(u32, u32), u32>::new();
+    for t in &m.triangles {
+        for k in 0..3 {
+            *directed.entry((t[k], t[(k + 1) % 3])).or_default() += 1;
+        }
+    }
+    directed
+        .iter()
+        .all(|(&(a, b), &n)| n == 1 && directed.get(&(b, a)) == Some(&1))
+}
+
 pub fn lowest(m: &BodyMesh) -> f32 {
     m.positions.iter().map(|p| p.y).fold(f32::MAX, f32::min)
 }
