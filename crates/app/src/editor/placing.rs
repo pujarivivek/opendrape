@@ -65,15 +65,18 @@ impl PatternEditor {
     /// Place at → Left arm (`arm` 0) or Right arm (1): wraps `id` round that arm (see
     /// `place::place_at_arm`). Its partner in a mirrored pair goes on the other arm: a twin by
     /// taking its piece's placement mirrored, a piece by being given the twin's mirrored. One
-    /// undo step. Needs a form.
+    /// undo step. Needs a form with arms: on one without, nothing changes and the notice says so.
     pub fn place_at_arm(&mut self, id: PieceId, arm: usize) {
         let Some(stage) = self.stage.clone() else {
             return;
         };
+        let Some(arms) = stage.arms() else {
+            self.notice = Some(tr!("notice-no-arms"));
+            return;
+        };
         let project = self.doc.project();
         let shapes = geom::shapes(project);
-        let (Some(shape), Some(on)) = (shapes.iter().find(|s| s.id == id), stage.arms().get(arm))
-        else {
+        let (Some(shape), Some(on)) = (shapes.iter().find(|s| s.id == id), arms.get(arm)) else {
             return;
         };
         let placement = place::place_at_arm(
@@ -124,8 +127,13 @@ impl PatternEditor {
                 ui.close();
             }
         }
+        // A form without arms greys the arm items out and says why.
+        let no_arms = self.stage.as_ref().is_some_and(|s| s.arms().is_none());
         for (arm, label) in [(0, tr!("place-left-arm")), (1, tr!("place-right-arm"))] {
-            if ui.add_enabled(free, egui::Button::new(label)).clicked() {
+            let item = ui.add_enabled(free && !no_arms, egui::Button::new(label));
+            if no_arms {
+                item.on_disabled_hover_text(tr!("notice-no-arms"));
+            } else if item.clicked() {
                 self.place_at_arm(id, arm);
                 ui.close();
             }

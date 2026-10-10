@@ -220,6 +220,7 @@ place-left = Place at left side
 place-right = Place at right side
 place-left-arm = Place at left arm
 place-right-arm = Place at right arm
+notice-no-arms = This form has no arms.
 place-flat = Flat
 panel-placement-draping = Placements apply after Reset.
 panel-placement = 3D placement

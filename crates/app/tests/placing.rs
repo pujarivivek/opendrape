@@ -4,7 +4,7 @@
 mod common;
 use common::*;
 use egui::Key;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use glam::{DQuat, DVec3};
 use opendrape::editor::Selection;
 use opendrape::stage::Stage;
@@ -163,7 +163,7 @@ fn round_arm(h: &H, id: PieceId, arm: usize) -> (f64, f64) {
     let shapes = opendrape_geom::shapes(h.state().doc.project());
     let shape = shapes.iter().find(|s| s.id == id).unwrap();
     let p = h.state().placement(id).unwrap();
-    let line = Stage::shared().arms()[arm];
+    let line = Stage::shared().arms().expect("the bundled body has arms")[arm];
     opendrape_geom::outline_points(&shape.piece, 0.5)
         .into_iter()
         .map(|q| line.distance(place::apply(&p, place::centre_of(shape), q)))
@@ -227,4 +227,80 @@ fn while_draping_placements_are_not_offered() {
     h.get_by_label("Place at left arm").click();
     h.run();
     assert_eq!(placement(&h, id), None, "and so is Place at…");
+}
+
+/// A form with no arms: a closed box 34 cm wide, 1.6 m tall and 24 cm deep, centred on the
+/// centre line.
+fn armless_form() -> std::sync::Arc<Stage> {
+    let positions: Vec<glam::Vec3> = (0..8)
+        .map(|k| {
+            glam::Vec3::new(
+                if k & 1 == 0 { -0.17 } else { 0.17 },
+                if k & 2 == 0 { 0.0 } else { 1.6 },
+                if k & 4 == 0 { -0.12 } else { 0.12 },
+            )
+        })
+        .collect();
+    let mut triangles: Vec<[u32; 3]> = [
+        [0, 2, 3],
+        [0, 3, 1],
+        [4, 5, 7],
+        [4, 7, 6],
+        [0, 4, 6],
+        [0, 6, 2],
+        [1, 3, 7],
+        [1, 7, 5],
+        [0, 1, 5],
+        [0, 5, 4],
+        [2, 6, 7],
+        [2, 7, 3],
+    ]
+    .to_vec();
+    // Outwards: a closed surface with a negative volume is inside out.
+    let volume: f32 = triangles
+        .iter()
+        .map(|t| {
+            let [a, b, c] = t.map(|i| positions[i as usize]);
+            a.dot(b.cross(c))
+        })
+        .sum();
+    if volume < 0.0 {
+        triangles.iter_mut().for_each(|t| t.swap(1, 2));
+    }
+    std::sync::Arc::new(Stage::from_mesh(positions, triangles).expect("a closed box"))
+}
+
+#[test]
+fn on_a_form_without_arms_place_at_arm_is_greyed_out_and_says_why() {
+    let mut h = harness();
+    let form = armless_form();
+    assert!(form.arms().is_none());
+    h.state_mut().stage = Some(form);
+    h.run();
+    let (sleeve, twin) = with_sleeves(&mut h);
+    right_click(&mut h, 250.0, 200.0);
+    for label in ["Place at left arm", "Place at right arm"] {
+        assert!(
+            h.get_by_label(label).accesskit_node().is_disabled(),
+            "{label}"
+        );
+    }
+    assert!(
+        !h.get_by_label("Place at front")
+            .accesskit_node()
+            .is_disabled()
+    );
+    h.get_by_label("Place at left arm").click();
+    h.run();
+    assert_eq!((placement(&h, sleeve), placement(&h, twin)), (None, None));
+    // Asked for anyway, it changes nothing and the notice says why.
+    let undo_before = h.state().doc.can_undo();
+    h.state_mut().place_at_arm(sleeve, 1);
+    h.run();
+    assert_eq!((placement(&h, sleeve), placement(&h, twin)), (None, None));
+    assert_eq!(h.state().doc.can_undo(), undo_before, "not an undo step");
+    assert_eq!(h.state().notice.as_deref(), Some("This form has no arms."));
+    // The other places still work on it.
+    h.state_mut().place_at(sleeve, place::PlaceAt::Front);
+    assert!(placement(&h, sleeve).is_some_and(|p| p.curve.is_some()));
 }

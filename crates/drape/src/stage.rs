@@ -24,9 +24,13 @@ const ARM_STEP_M: f64 = 0.01;
 /// ...an arm's cross-section is a loop of the cut whose middle is at least this far (m) out
 /// from the centre line (the torso's own never is, below the shoulders)...
 const ARM_OUT_M: f64 = 0.15;
-/// ...and the arm's line is fitted through its cross-sections this far (m, in height) below the
-/// armpit.
+/// ...the arm's line is fitted through its cross-sections this far (m, in height) below the
+/// armpit, from at least this many of them...
 const UPPER_ARM_M: f64 = 0.10;
+const MIN_ARM_CUTS: usize = 5;
+/// ...and the line is taken to run inside the arm down to the cut where it first comes this
+/// close (m) to the cut's outline.
+const ARM_LINE_MARGIN_M: f64 = 0.012;
 
 /// The form, its frame and its collider. Dress forms (Track B) swap the body here.
 pub struct Stage {
@@ -34,8 +38,8 @@ pub struct Stage {
     triangles: Vec<[u32; 3]>,
     collider: BodyCollider,
     shoulder_y: f64,
-    /// The left arm (+x), then the right.
-    arms: [Arm; 2],
+    /// The left arm (+x), then the right; None for a form without arms.
+    arms: Option<[Arm; 2]>,
 }
 
 impl Stage {
@@ -44,19 +48,30 @@ impl Stage {
         let body = BodyMesh::female_average();
         let centre = torso_centre(&body);
         let positions: Vec<Vec3> = body.positions.iter().map(|p| *p - centre).collect();
-        let collider =
-            BodyCollider::new(&positions, &body.triangles).expect("the bundled body is closed");
+        Self::from_mesh(positions, body.triangles).expect("the bundled body is closed")
+    }
+
+    /// A stage from a closed mesh already in the form's frame (metres, y up from the floor, the
+    /// form facing +z with its left at +x, its centre line at x = 0, z = 0): its shoulders at
+    /// [`SHOULDER_SHARE`] of its height, and its arms found if it has them (see
+    /// [`Self::arms`]). None when the solver's collider refuses the mesh.
+    pub fn from_mesh(positions: Vec<Vec3>, triangles: Vec<[u32; 3]>) -> Option<Self> {
+        let collider = BodyCollider::new(&positions, &triangles).ok()?;
         let height = f64::from(positions.iter().map(|p| p.y).fold(0.0_f32, f32::max));
         let shoulder_y = SHOULDER_SHARE * height;
-        let arms =
-            [1.0, -1.0].map(|side| find_arm(&positions, &body.triangles, height, shoulder_y, side));
-        Self {
+        let arms = match [1.0, -1.0]
+            .map(|side| find_arm(&positions, &triangles, height, shoulder_y, side))
+        {
+            [Some(left), Some(right)] => Some([left, right]),
+            _ => None,
+        };
+        Some(Self {
             positions,
-            triangles: body.triangles,
+            triangles,
             collider,
             shoulder_y,
             arms,
-        }
+        })
     }
 
     /// One stage for the whole app (and its tests): building the collider takes a moment.
@@ -105,49 +120,59 @@ impl Stage {
         self.collider.signed_distance(p)
     }
 
-    /// The form's arms: its left (+x), then its right.
-    pub fn arms(&self) -> &[Arm; 2] {
-        &self.arms
+    /// The form's arms: its left (+x), then its right. None when it has none (or they could
+    /// not be found): Place at → arm is not offered then.
+    pub fn arms(&self) -> Option<&[Arm; 2]> {
+        self.arms.as_ref()
     }
 
     /// How far (m) the surface of arm `arm` (0 left, 1 right) is from its line, `along` metres
     /// down from the shoulder and at `angle` round it (see [`Arm::around`]), if a ray from the
-    /// line finds it within [`ARM_RAY_M`].
+    /// line finds it within [`ARM_RAY_M`]. Meaningful where the line runs inside the arm: from
+    /// [`Arm::free`] down to [`Arm::length`].
     pub fn arm_surface_distance(&self, arm: usize, along: f64, angle: f64) -> Option<f64> {
-        let a = self.arms.get(arm)?;
+        let a = self.arms.as_ref()?.get(arm)?;
         self.collider
             .ray_exit(a.at(along), a.around(angle), ARM_RAY_M)
     }
 }
 
+/// A closed loop of a cut across the form: its (x, z) points in order.
+type Loop = Vec<(f64, f64)>;
+
 /// The arm on side `side` (+1 the form's left, -1 its right) of a form `height` m tall whose
-/// shoulders are at `shoulder_y`. The form is cut across at heights [`ARM_STEP_M`] apart,
-/// from the shoulders down to 55% of its height; below the armpit the arm's cut is a loop of its
-/// own, its middle at least [`ARM_OUT_M`] out. The armpit is the highest cut where it is: from
-/// there down the arm hangs free. The line is fitted (least squares, x and z against height)
-/// through the middles of the arm's cuts within [`UPPER_ARM_M`] below the armpit, from shoulder
-/// height down to the lowest cut that still finds the arm.
+/// shoulders are at `shoulder_y`; None when the form has no arm there.
+///
+/// The form is cut across at heights [`ARM_STEP_M`] apart, from the shoulders down to 55% of its
+/// height; below the armpit the arm's cut is a loop of its own, its middle at least
+/// [`ARM_OUT_M`] out. The armpit is the highest cut where it is: from there down the arm hangs
+/// free. The line is fitted (least squares, x and z against height) through the middles of the
+/// arm's cuts within [`UPPER_ARM_M`] below the armpit, from shoulder height down. It runs inside
+/// the arm as far as the cuts where it is at least [`ARM_LINE_MARGIN_M`] inside the arm's loop
+/// (the elbow bends away from it below that): that is the arm's `length`.
+///
+/// None when no cut finds an arm, or fewer than [`MIN_ARM_CUTS`] of them are within
+/// [`UPPER_ARM_M`] of the armpit to fit a line through.
 fn find_arm(
     positions: &[Vec3],
     triangles: &[[u32; 3]],
     height: f64,
     shoulder_y: f64,
     side: f64,
-) -> Arm {
+) -> Option<Arm> {
     let steps = ((shoulder_y - 0.55 * height) / ARM_STEP_M).floor() as usize;
-    // From the shoulders down: each cut's height, and the middle of the arm's loop if it has one.
-    let cuts: Vec<(f64, Option<(f64, f64)>)> = (1..=steps)
+    // From the shoulders down: each cut's height, and the arm's loop if it has one.
+    let cuts: Vec<(f64, Option<Loop>)> = (1..=steps)
         .map(|k| {
             let y = shoulder_y - k as f64 * ARM_STEP_M;
             let arm = cross_sections(positions, triangles, y)
-                .iter()
-                .map(|l| loop_middle(l))
-                .filter(|(x, _)| side * x >= ARM_OUT_M)
-                .max_by(|a, b| (side * a.0).total_cmp(&(side * b.0)));
+                .into_iter()
+                .filter(|l| side * loop_middle(l).0 >= ARM_OUT_M)
+                .max_by(|a, b| (side * loop_middle(a).0).total_cmp(&(side * loop_middle(b).0)));
             (y, arm)
         })
         .collect();
-    let first = cuts.iter().position(|(_, arm)| arm.is_some()).unwrap_or(0);
+    let first = cuts.iter().position(|(_, arm)| arm.is_some())?;
     let armpit = cuts[first].0;
     let last = cuts[first..]
         .iter()
@@ -157,9 +182,13 @@ fn find_arm(
     let fit: Vec<(f64, f64, f64)> = cuts[first..=last]
         .iter()
         .filter(|(y, _)| *y >= armpit - UPPER_ARM_M)
-        .filter_map(|(y, arm)| arm.map(|(x, z)| (*y, x, z)))
+        .filter_map(|(y, arm)| arm.as_ref().map(|l| (*y, loop_middle(l))))
+        .map(|(y, (x, z))| (y, x, z))
         .collect();
-    let n = fit.len().max(1) as f64;
+    if fit.len() < MIN_ARM_CUTS {
+        return None;
+    }
+    let n = fit.len() as f64;
     let (my, mx, mz) = fit.iter().fold((0.0, 0.0, 0.0), |(a, b, c), (y, x, z)| {
         (a + y / n, b + x / n, c + z / n)
     });
@@ -172,18 +201,59 @@ fn find_arm(
     let (dx, dz) = (slope(|f| f.1, mx), slope(|f| f.2, mz));
     let direction = DVec3::new(-dx, -1.0, -dz).normalize();
     let shoulder = DVec3::new(mx, my, mz) + DVec3::new(dx, 1.0, dz) * (shoulder_y - my);
-    Arm {
+    let along = |y: f64| (shoulder_y - y) / -direction.y;
+    let free = along(armpit);
+    // Down the cuts while the line is well inside the arm's loop at each.
+    let inside_to = cuts[first..=last]
+        .iter()
+        .map_while(|(y, arm)| {
+            let at = shoulder + direction * along(*y);
+            let clear = arm
+                .as_ref()
+                .is_some_and(|l| depth_inside(l, (at.x, at.z)) >= ARM_LINE_MARGIN_M);
+            clear.then_some(*y)
+        })
+        .last();
+    Some(Arm {
         shoulder,
         direction,
-        length: (shoulder_y - cuts[last].0) / -direction.y,
-        free: (shoulder_y - armpit) / -direction.y,
+        length: inside_to.map_or(free, along),
+        free,
+    })
+}
+
+/// How far (m) point `p` is inside the closed loop `points`: its distance to the loop's nearest
+/// edge, negative when `p` is outside it.
+fn depth_inside(points: &[(f64, f64)], p: (f64, f64)) -> f64 {
+    let n = points.len();
+    let (mut nearest, mut crossings) = (f64::MAX, 0);
+    for k in 0..n {
+        let (a, b) = (points[k], points[(k + 1) % n]);
+        // Distance from p to the segment ab.
+        let (dx, dz) = (b.0 - a.0, b.1 - a.1);
+        let len2 = dx * dx + dz * dz;
+        let t = if len2 > 0.0 {
+            (((p.0 - a.0) * dx + (p.1 - a.1) * dz) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        nearest = nearest.min((p.0 - a.0 - t * dx).hypot(p.1 - a.1 - t * dz));
+        // A ray from p towards +x crosses the edge.
+        if (a.1 > p.1) != (b.1 > p.1) && p.0 < a.0 + (p.1 - a.1) / (b.1 - a.1) * dx {
+            crossings += 1;
+        }
+    }
+    if crossings % 2 == 1 {
+        nearest
+    } else {
+        -nearest
     }
 }
 
 /// Where the plane at height `y` cuts the form's surface: each closed loop of the cut, as its
 /// (x, z) points in order. The form is closed, with every edge shared by two triangles, so every
 /// edge the plane crosses joins two triangles' cuts.
-fn cross_sections(positions: &[Vec3], triangles: &[[u32; 3]], y: f64) -> Vec<Vec<(f64, f64)>> {
+fn cross_sections(positions: &[Vec3], triangles: &[[u32; 3]], y: f64) -> Vec<Loop> {
     use std::collections::{BTreeMap, BTreeSet};
     let above = |i: u32| f64::from(positions[i as usize].y) >= y;
     // Each crossed edge, and the two other crossed edges of its triangles.
@@ -481,7 +551,7 @@ mod tests {
     #[test]
     fn the_arms_hang_down_and_out_from_the_shoulders_and_mirror_each_other() {
         let stage = Stage::shared();
-        let [left, right] = *stage.arms();
+        let [left, right] = *stage.arms().expect("the bundled body has arms");
         let mirror = |v: DVec3| DVec3::new(-v.x, v.y, v.z);
         assert!((right.shoulder - mirror(left.shoulder)).length() < 1e-9);
         assert!((right.direction - mirror(left.direction)).length() < 1e-9);
@@ -495,7 +565,12 @@ mod tests {
         assert!((left.shoulder.y - stage.shoulder_y()).abs() < 1e-9);
         assert!((0.08..0.25).contains(&left.shoulder.x), "{}", left.shoulder);
         assert!((0.1..0.2).contains(&left.free), "free from {}", left.free);
-        assert!((0.4..0.8).contains(&left.length), "{}", left.length);
+        // The line runs inside the upper arm, and ends where the elbow bends away from it: a
+        // little inside the arm at its end, and well outside it by a hand's width further on.
+        assert!((0.25..0.45).contains(&left.length), "{}", left.length);
+        assert!(left.length - left.free > 0.12, "the upper arm is measured");
+        assert!(stage.signed_distance(left.at(left.length)) < -0.005);
+        assert!(stage.signed_distance(left.at(left.length + 0.1)) > 0.0);
         // Where the arm hangs free, its line runs inside it: rays find its surface 2.5 to 6 cm
         // away all round, on both arms.
         for along in [left.free, left.free + 0.05, left.free + 0.1] {
@@ -513,6 +588,161 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// A closed tube (a cylinder with lids), facing outwards: radius `r` round (`cx`, `cz`),
+    /// from `y0` to `y1`.
+    fn tube(cx: f32, cz: f32, r: f32, y0: f32, y1: f32) -> (Vec<Vec3>, Vec<[u32; 3]>) {
+        const N: u32 = 16;
+        let mut p = Vec::new();
+        for y in [y0, y1] {
+            for i in 0..N {
+                let a = std::f32::consts::TAU * i as f32 / N as f32;
+                p.push(Vec3::new(cx + r * a.cos(), y, cz + r * a.sin()));
+            }
+        }
+        p.push(Vec3::new(cx, y0, cz));
+        p.push(Vec3::new(cx, y1, cz));
+        let mut t = Vec::new();
+        for i in 0..N {
+            let j = (i + 1) % N;
+            t.push([i, j, N + j]);
+            t.push([i, N + j, N + i]);
+            t.push([2 * N, j, i]);
+            t.push([2 * N + 1, N + i, N + j]);
+        }
+        // Outwards: a closed surface with a negative volume is inside out.
+        let volume: f32 = t
+            .iter()
+            .map(|&[a, b, c]| p[a as usize].dot(p[b as usize].cross(p[c as usize])))
+            .sum();
+        if volume < 0.0 {
+            for tri in &mut t {
+                tri.swap(1, 2);
+            }
+        }
+        (p, t)
+    }
+
+    /// Several closed meshes as one.
+    fn together(parts: Vec<(Vec<Vec3>, Vec<[u32; 3]>)>) -> (Vec<Vec3>, Vec<[u32; 3]>) {
+        let (mut positions, mut triangles) = (Vec::new(), Vec::new());
+        for (p, t) in parts {
+            let base = positions.len() as u32;
+            positions.extend(p);
+            triangles.extend(
+                t.into_iter()
+                    .map(|[a, b, c]| [a + base, b + base, c + base]),
+            );
+        }
+        (positions, triangles)
+    }
+
+    /// A torso 1.6 m tall (shoulders at 1.312 m) with a vertical arm 4 cm in radius at `x` from
+    /// `from_y` up to 1.31 m, for each `x` in `arms`.
+    fn torso_with_arms(arms: &[f32], from_y: f32) -> Option<Stage> {
+        let mut parts = vec![tube(0.0, 0.0, 0.17, 0.0, 1.6)];
+        parts.extend(arms.iter().map(|x| tube(*x, 0.0, 0.04, from_y, 1.31)));
+        let (positions, triangles) = together(parts);
+        Stage::from_mesh(positions, triangles)
+    }
+
+    #[test]
+    fn arms_hanging_straight_down_are_found_with_their_outer_side_out() {
+        let stage = torso_with_arms(&[0.27, -0.27], 0.9).expect("a closed form");
+        let [left, right] = *stage.arms().expect("two arms");
+        for (arm, x) in [(left, 0.27), (right, -0.27)] {
+            assert!((arm.shoulder.x - x).abs() < 1e-3, "{}", arm.shoulder);
+            assert!(arm.direction.x.abs() < 1e-3 && arm.direction.y < -0.999);
+            // The arm is 41 cm of line from the shoulders to its end at 0.9 m.
+            assert!((arm.length - 0.412).abs() < 0.02, "{}", arm.length);
+            assert!(arm.free < 0.02, "the armpit is at the top: {}", arm.free);
+            assert!(arm.around(std::f64::consts::FRAC_PI_2).x * x.signum() > 0.99);
+            assert!(arm.around(0.0).z > 0.99);
+        }
+        for (arm, angle) in [(0, 0.3), (1, 2.5), (0, 4.0)] {
+            let d = stage.arm_surface_distance(arm, 0.2, angle);
+            assert!(d.is_some_and(|d| (0.038..0.041).contains(&d)), "{d:?}");
+        }
+    }
+
+    #[test]
+    fn a_form_without_arms_has_none_and_offers_no_arm_distances() {
+        // A bare torso: every cut is one loop in the middle.
+        let (positions, triangles) = tube(0.0, 0.0, 0.17, 0.0, 1.6);
+        let stage = Stage::from_mesh(positions, triangles).expect("a closed form");
+        assert_eq!(stage.arms(), None);
+        assert_eq!(stage.arm_surface_distance(0, 0.2, 0.0), None);
+        assert_eq!(stage.arm_surface_distance(1, 0.2, 0.0), None);
+        assert!(
+            (stage.shoulder_y() - 1.312).abs() < 1e-6,
+            "still has shoulders"
+        );
+        // No triangles at all is no stage.
+        assert!(Stage::from_mesh(vec![], vec![]).is_none());
+    }
+
+    #[test]
+    fn a_form_is_without_arms_unless_both_are_found_and_long_enough_to_fit_a_line_to() {
+        // Only one arm: the form is not taken to have arms.
+        assert!(torso_with_arms(&[0.27], 0.9).unwrap().arms().is_none());
+        // Stubs 3 cm tall at the shoulders: three cuts, too few for a line.
+        assert!(
+            torso_with_arms(&[0.27, -0.27], 1.28)
+                .unwrap()
+                .arms()
+                .is_none()
+        );
+        // Arms on the torso itself, not out from it: never separate loops.
+        assert!(
+            torso_with_arms(&[0.12, -0.12], 0.9)
+                .unwrap()
+                .arms()
+                .is_none()
+        );
+        // Whereas arms 6 cm tall (6 cuts) are enough.
+        assert!(
+            torso_with_arms(&[0.27, -0.27], 1.25)
+                .unwrap()
+                .arms()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn sleeves_from_ten_to_sixty_centimetres_long_are_curved_round_the_upper_arm() {
+        use opendrape_core::{Piece, PieceId, Point2, Project};
+        use opendrape_mesh::place::place_at_arm;
+        let stage = Stage::shared();
+        let arm = stage.arms().unwrap()[0];
+        let radius = |tall_mm: f64| {
+            let mut pr = Project::new();
+            pr.add_piece(Piece::rectangle(
+                PieceId(0),
+                "Sleeve",
+                Point2::new(0.0, 0.0),
+                340.0,
+                tall_mm,
+            ));
+            let shape = opendrape_geom::shapes(&pr).remove(0);
+            place_at_arm(
+                &shape,
+                &arm,
+                &|along, angle| stage.arm_surface_distance(0, along, angle),
+                &|q| stage.signed_distance(q) < 0.0,
+            )
+            .curve
+            .unwrap()
+        };
+        let t_shirt = radius(250.0);
+        assert!((0.05..0.12).contains(&t_shirt), "{t_shirt}");
+        for tall in [100.0, 400.0, 600.0] {
+            let r = radius(tall);
+            assert!(
+                (r - t_shirt).abs() < 0.02,
+                "{tall} mm long: {r:.3} m against {t_shirt:.3} m"
+            );
         }
     }
 }

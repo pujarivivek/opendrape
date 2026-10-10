@@ -153,7 +153,7 @@ fn shirt(stage: &Stage) -> Shirt {
     let shape = shapes.iter().find(|s| s.id == sleeve).unwrap();
     let placed = place::place_at_arm(
         shape,
-        &stage.arms()[0],
+        &stage.arms().expect("the bundled body has arms")[0],
         &|along, angle| stage.arm_surface_distance(0, along, angle),
         &|q| stage.signed_distance(q) < 0.0,
     );
@@ -248,7 +248,7 @@ fn a_drafted_t_shirt_drapes_with_its_sleeves_on_the_arms() {
     let mut farthest: f64 = 0.0;
     for (shape, arm) in [(s.sleeve, 0), (s.twin, 1)] {
         let panel = drape.fabric.panel(shape).unwrap();
-        let line = stage.arms()[arm];
+        let line = stage.arms().expect("the bundled body has arms")[arm];
         let range = panel.first_particle..panel.first_particle + panel.flat.len();
         for (i, q) in x.iter().enumerate().take(range.end).skip(range.start) {
             if cloth.is_alive(i) {
@@ -306,7 +306,7 @@ fn the_sleeves_start_round_the_arms_clear_of_the_body() {
     let x = drape.solver.cloth().positions();
     for (shape, arm) in [(s.sleeve, 0), (s.twin, 1)] {
         let panel = drape.fabric.panel(shape).unwrap();
-        let line = stage.arms()[arm];
+        let line = stage.arms().expect("the bundled body has arms")[arm];
         let start = &x[panel.first_particle..panel.first_particle + panel.flat.len()];
         assert!(start.iter().all(|q| stage.signed_distance(*q) > 0.0));
         // Wrapped round its arm, its top a little way down from the shoulder.

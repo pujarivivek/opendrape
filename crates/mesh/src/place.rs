@@ -15,8 +15,11 @@ pub const PLACE_GAP_M: f64 = 0.03;
 pub const FALLBACK_RADIUS_M: f64 = 0.2;
 /// Place at… measures the form at 25 angles across the span a piece covers...
 const ANGLE_STEPS: usize = 24;
-/// ...and at heights this far apart (m) over the piece's height.
+/// ...and at heights this far apart (m) over the piece's height...
 const ROW_SPACING_M: f64 = 0.02;
+/// ...or, on a piece more than 200 rows tall, 200 rows over it, so that a huge piece (chosen by
+/// mistake) is measured as quickly as a sleeve.
+const MAX_ROWS: usize = 200;
 /// How many times it measures again at the radius it found.
 const RADIUS_TRIES: usize = 3;
 /// Place at → arm curves a piece this much (m) when no ray finds the arm near it.
@@ -163,38 +166,18 @@ pub fn place_at(
         }
     });
     let theta = at.angle();
-    let rows = ((tall / ROW_SPACING_M).ceil() as usize).max(1);
+    let rows = rows_over(tall);
     // The radius the piece needs when it is wrapped at radius `r`: it covers a span of angles
     // that depends on `r`, and the form is `surface` away across that span and the piece's
     // heights. Wider pieces and tighter curves cover more of the form.
     let need = |r: f64| {
-        let middle = theta - facing / r;
-        let half_span = width / 2.0 / r;
-        let mut farthest: Option<f64> = None;
-        for i in 0..=ANGLE_STEPS {
-            let angle = middle - half_span + 2.0 * half_span * i as f64 / ANGLE_STEPS as f64;
-            for j in 0..=rows {
-                let y = height - tall / 2.0 + tall * j as f64 / rows as f64;
-                if let Some(d) = surface(angle, y).filter(|d| d.is_finite()) {
-                    farthest = Some(farthest.map_or(d, |f: f64| f.max(d)));
-                }
-            }
-        }
-        farthest
-            .map_or(FALLBACK_RADIUS_M, |d| d + PLACE_GAP_M)
-            .clamp(MIN_CURVE_M, MAX_CURVE_M)
+        let reach = |angle, share| surface(angle, height - tall / 2.0 + tall * share);
+        radius_clear_of(
+            farthest(theta - facing / r, width / 2.0 / r, rows, reach),
+            FALLBACK_RADIUS_M,
+        )
     };
-    // A larger radius covers a narrower span, so `need` never grows with `r`, and trying again
-    // can settle into a two-cycle (a piece that just reaches an arm at the low radius and just
-    // misses it at the high one). The larger of the last two tries is always enough for the span
-    // it covers: if it is the earlier one, `need` of it is the later; if it is the later one,
-    // `need` of it is at most what the earlier one needed, which is the later.
-    let (mut previous, mut radius) = (FALLBACK_RADIUS_M, FALLBACK_RADIUS_M);
-    for _ in 0..RADIUS_TRIES {
-        previous = radius;
-        radius = need(radius);
-    }
-    let radius = radius.max(previous);
+    let radius = settle_radius(FALLBACK_RADIUS_M, need);
     let phi = theta - facing / radius;
     Placement {
         position: [radius * phi.sin(), height, radius * phi.cos()],
@@ -203,10 +186,66 @@ pub fn place_at(
     }
 }
 
+/// How many rows of heights to measure the form at over a piece `tall` metres high: about
+/// [`ROW_SPACING_M`] apart, but never more than [`MAX_ROWS`].
+fn rows_over(tall: f64) -> usize {
+    let spacing = ROW_SPACING_M.max(tall / MAX_ROWS as f64);
+    ((tall / spacing).ceil() as usize).max(1)
+}
+
+/// The farthest the form is from the axis a piece curves round (m): the largest finite
+/// `reach(angle, share)` over [`ANGLE_STEPS`] + 1 angles evenly across `middle ± half_span`
+/// and `rows` + 1 heights, `share` running from 0 to 1 over the piece's. None when no ray
+/// finds the form.
+fn farthest(
+    middle: f64,
+    half_span: f64,
+    rows: usize,
+    reach: impl Fn(f64, f64) -> Option<f64>,
+) -> Option<f64> {
+    let mut farthest: Option<f64> = None;
+    for i in 0..=ANGLE_STEPS {
+        let angle = middle - half_span + 2.0 * half_span * i as f64 / ANGLE_STEPS as f64;
+        for j in 0..=rows {
+            if let Some(d) = reach(angle, j as f64 / rows as f64).filter(|d| d.is_finite()) {
+                farthest = Some(farthest.map_or(d, |f: f64| f.max(d)));
+            }
+        }
+    }
+    farthest
+}
+
+/// The radius that keeps a piece [`PLACE_GAP_M`] clear of a form `farthest` away; `fallback`
+/// when no ray found the form.
+fn radius_clear_of(farthest: Option<f64>, fallback: f64) -> f64 {
+    farthest
+        .map_or(fallback, |d| d + PLACE_GAP_M)
+        .clamp(MIN_CURVE_M, MAX_CURVE_M)
+}
+
+/// The curve radius a piece settles at, starting from `start`: `need(r)` is the radius the
+/// piece needs when it is wrapped at `r`, and measuring again at the radius it found is done
+/// [`RADIUS_TRIES`] times.
+///
+/// A larger radius covers a narrower span, so `need` never grows with `r`, and trying again
+/// can settle into a two-cycle (a piece that just reaches an arm at the low radius and just
+/// misses it at the high one). The larger of the last two tries is always enough for the span
+/// it covers: if it is the earlier one, `need` of it is the later; if it is the later one,
+/// `need` of it is at most what the earlier one needed, which is the later.
+fn settle_radius(start: f64, need: impl Fn(f64) -> f64) -> f64 {
+    let (mut previous, mut radius) = (start, start);
+    for _ in 0..RADIUS_TRIES {
+        previous = radius;
+        radius = need(radius);
+    }
+    radius.max(previous)
+}
+
 /// One arm of the form, as a straight line down its upper arm: from `shoulder` (at the form's
-/// shoulder height) along the unit `direction` for `length` (m). From `free` (m) down the line,
-/// past the armpit, the arm hangs free of the body. The arms are each other's mirror image
-/// across x = 0.
+/// shoulder height) along the unit `direction`. The line runs inside the arm from `free` (m)
+/// down to `length` (m) and no further: the elbow bends away from it, and below that a ray from
+/// the line finds the body or nothing. From `free` down, past the armpit, the arm hangs free of
+/// the body. The arms are each other's mirror image across x = 0.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Arm {
     pub shoulder: DVec3,
@@ -216,9 +255,10 @@ pub struct Arm {
 }
 
 impl Arm {
-    /// +1 for the form's left arm (+x), -1 for its right.
+    /// +1 for the form's left arm (+x), -1 for its right: the side its shoulder is on (an arm
+    /// can hang straight, or lean in, so its direction doesn't say).
     fn side(&self) -> f64 {
-        if self.direction.x >= 0.0 { 1.0 } else { -1.0 }
+        if self.shoulder.x >= 0.0 { 1.0 } else { -1.0 }
     }
 
     /// The unit direction square to the arm at `angle` (radians) round it: 0 is the arm's
@@ -235,11 +275,10 @@ impl Arm {
         self.shoulder + self.direction * along
     }
 
-    /// How far (m) `p` is from the arm's line, between its shoulder and its far end.
+    /// How far (m) `p` is from the arm's line, from the shoulder on down (past `length` too: a
+    /// sleeve longer than the straight part of the arm still wraps round the same line).
     pub fn distance(&self, p: DVec3) -> f64 {
-        let along = (p - self.shoulder)
-            .dot(self.direction)
-            .clamp(0.0, self.length);
+        let along = (p - self.shoulder).dot(self.direction).max(0.0);
         (p - self.at(along)).length()
     }
 }
@@ -249,14 +288,18 @@ impl Arm {
 /// [`SLEEVE_ANGLE`] round it.
 /// - It curves round the arm's line, [`PLACE_GAP_M`] clear of the arm where the arm hangs free:
 ///   the largest surface distance (`surface(along, angle)`, from the arm's line, if a ray finds
-///   the arm there) over the angles the piece covers and the stretch of free arm it covers, plus
-///   the gap; [`ARM_FALLBACK_RADIUS_M`] when no ray finds the arm there. (Up by the shoulder a
-///   ray runs on into the body: a curve that clears that leaves a gap under the arm too wide
-///   for the underarm seam to close across.)
-/// - Its top goes at the shoulder, or as little further down the arm (in steps of
-///   [`ARM_STEP_M`], at most [`ARM_MAX_DROP_M`] or the piece's own length) as keeps every point
-///   of it out of the form (`inside(point)`); the cap seams pull it up into the armhole. When
-///   no such place is found it stays at the shoulder.
+///   the arm there) over the angles the piece covers and the stretch of arm it covers between
+///   `arm.free` and `arm.length`, plus the gap; [`ARM_FALLBACK_RADIUS_M`] when no ray finds the
+///   arm there. (Up by the shoulder a ray runs on into the body: a curve that clears that
+///   leaves a gap under the arm too wide for the underarm seam to close across. Down past the
+///   elbow the line has left the arm, and a ray from it finds the body or the air: a sleeve
+///   longer than the straight part of the arm is measured on that part alone.)
+/// - Its top goes at the shoulder, or as little further down the arm (in steps of 1 cm, at
+///   most 20 cm or the piece's own length) as keeps every point of it out of the form
+///   (`inside(point)`); the cap seams pull it up into the armhole. When no such place is found
+///   it stays at the shoulder.
+/// - A cut-on-fold piece is placed as its whole outline, the fold lying on the arm's outer
+///   side. A piece wider than the arm's circumference overlaps itself round it.
 ///
 /// The placement's own position and turn put that axis on the arm's line, so moving or turning
 /// the piece later moves the axis with it, as for any placement.
@@ -270,26 +313,22 @@ pub fn place_at_arm(
     let (lo, hi) = crate::bounds(&outline);
     let width = (hi.x - lo.x) / 1000.0;
     let tall = (hi.y - lo.y) / 1000.0;
-    let rows = ((tall / ROW_SPACING_M).ceil() as usize).max(1);
+    let rows = rows_over(tall);
     // The radius the piece needs when it is wrapped at radius `r` with its top at `top`.
     let need = |r: f64, top: f64| {
         let half_span = (width / 2.0 / r).min(std::f64::consts::PI);
-        let mut farthest: Option<f64> = None;
-        for i in 0..=ANGLE_STEPS {
-            let angle = SLEEVE_ANGLE - half_span + 2.0 * half_span * i as f64 / ANGLE_STEPS as f64;
-            for j in 0..=rows {
-                let along = top + tall * j as f64 / rows as f64;
-                if along < arm.free {
-                    continue;
-                }
-                if let Some(d) = surface(along, angle).filter(|d| d.is_finite()) {
-                    farthest = Some(farthest.map_or(d, |f: f64| f.max(d)));
-                }
-            }
-        }
-        farthest
-            .map_or(ARM_FALLBACK_RADIUS_M, |d| d + PLACE_GAP_M)
-            .clamp(MIN_CURVE_M, MAX_CURVE_M)
+        let reach = |angle, share| {
+            let along = top + tall * share;
+            // Only where the arm's line runs inside the arm.
+            (arm.free..=arm.length)
+                .contains(&along)
+                .then(|| surface(along, angle))
+                .flatten()
+        };
+        radius_clear_of(
+            farthest(SLEEVE_ANGLE, half_span, rows, reach),
+            ARM_FALLBACK_RADIUS_M,
+        )
     };
     // The placement with the piece's top `top` down the arm and curved to radius `r`.
     let centre = lo.lerp(hi, 0.5);
@@ -314,16 +353,8 @@ pub fn place_at_arm(
         }
     }
     let clear = |p: &Placement| !points.iter().any(|q| inside(apply(p, centre, *q)));
-    // At each height, the radius is tried again as for Place at…: the larger of the last two
-    // tries covers the span it reaches.
-    let at = |top: f64| {
-        let (mut previous, mut radius) = (ARM_FALLBACK_RADIUS_M, ARM_FALLBACK_RADIUS_M);
-        for _ in 0..RADIUS_TRIES {
-            previous = radius;
-            radius = need(radius, top);
-        }
-        placed(top, radius.max(previous))
-    };
+    // At each height, the radius is settled as for Place at….
+    let at = |top: f64| placed(top, settle_radius(ARM_FALLBACK_RADIUS_M, |r| need(r, top)));
     let steps = (tall.min(ARM_MAX_DROP_M) / ARM_STEP_M).floor() as usize;
     (0..=steps)
         .map(|k| at(k as f64 * ARM_STEP_M))
@@ -331,8 +362,8 @@ pub fn place_at_arm(
         .unwrap_or_else(|| at(0.0))
 }
 
-/// Points round the closed polyline `outline`, no more than `spacing` apart.
-pub fn along_outline(outline: &[Point2], spacing: f64) -> Vec<Point2> {
+/// Points round the closed polyline `outline`, no more than `spacing` (more than 0) apart.
+fn along_outline(outline: &[Point2], spacing: f64) -> Vec<Point2> {
     let n = outline.len();
     let mut out = Vec::new();
     for k in 0..n {
@@ -822,9 +853,44 @@ mod tests {
         for angle in [0.0, 0.7, 2.0, -1.2] {
             near(right.around(angle), mirror(left.around(angle)));
         }
-        // 5 cm in front of the shoulder; and past the far end, measured from the end.
+        // 5 cm in front of the shoulder; further down than the line is inside the arm, still
+        // measured from the line; and above the shoulder, from the shoulder.
         assert!((left.distance(left.shoulder + left.around(0.0) * 0.05) - 0.05).abs() < 1e-12);
-        assert!((left.distance(left.at(0.7)) - 0.1).abs() < 1e-12);
+        assert!((left.distance(left.at(0.7) + left.around(0.0) * 0.05) - 0.05).abs() < 1e-12);
+        assert!((left.distance(left.at(-0.1)) - 0.1).abs() < 1e-12);
+    }
+
+    #[test]
+    fn an_arm_that_hangs_straight_or_leans_in_still_has_its_outer_side_out() {
+        // The side comes from which shoulder it is, not from which way the arm leans.
+        for lean in [0.0, 1e-15, -1e-15, 0.02, -0.02, -0.4] {
+            let left = Arm {
+                shoulder: DVec3::new(0.2, 1.3, 0.0),
+                direction: DVec3::new(lean, -1.0, 0.0).normalize(),
+                ..left_arm()
+            };
+            let right = Arm {
+                shoulder: left.shoulder * DVec3::new(-1.0, 1.0, 1.0),
+                direction: left.direction * DVec3::new(-1.0, 1.0, 1.0),
+                ..left
+            };
+            for (arm, outwards) in [(left, 1.0), (right, -1.0)] {
+                let (front, out) = (arm.around(0.0), arm.around(std::f64::consts::FRAC_PI_2));
+                assert!(out.x * outwards > 0.9, "lean {lean}: out is {out}");
+                assert!(front.z > 0.99, "lean {lean}: front is {front}");
+            }
+            let mirror = |v: DVec3| v * DVec3::new(-1.0, 1.0, 1.0);
+            near(right.around(1.1), mirror(left.around(1.1)));
+        }
+        // And a sleeve put round such an arm goes on its outer side.
+        let pr = sleeves();
+        let shapes = geom::shapes(&pr);
+        let arm = Arm {
+            direction: DVec3::new(-0.02, -1.0, 0.0).normalize(),
+            ..left_arm()
+        };
+        let placed = place_at_arm(&shapes[0], &arm, &|_, _| Some(0.045), &|_| false);
+        assert!(position(&placed).x > arm.shoulder.x + 0.07, "{placed:?}");
     }
 
     #[test]
@@ -966,32 +1032,201 @@ mod tests {
         );
     }
 
+    /// A rectangle `w` × `h` mm centred on the origin, alone in a project.
+    fn lone_piece(w: f64, h: f64) -> Shape {
+        let mut pr = Project::new();
+        pr.add_piece(Piece::rectangle(
+            PieceId(0),
+            "Piece",
+            p(-w / 2.0, -h / 2.0),
+            w,
+            h,
+        ));
+        geom::shapes(&pr).remove(0)
+    }
+
     #[test]
-    fn place_at_arm_on_a_huge_piece_checks_a_bounded_number_of_points() {
-        // A 2 m square (no sleeve; chosen by mistake), on an arm where nothing is ever clear:
-        // the search gives up after 20 cm, checking at most a few thousand points each step.
+    fn a_sleeve_longer_than_the_arm_line_is_measured_on_the_line_alone() {
+        // The line runs inside the arm to 0.3 m, 4.5 cm from its surface; below that a ray from
+        // it finds the body, 16 cm away. Sleeves from 10 to 60 cm get the curve of the arm.
+        let arm = Arm {
+            length: 0.3,
+            free: 0.05,
+            ..left_arm()
+        };
+        let surface = |along: f64, _: f64| Some(if along <= 0.3 { 0.045 } else { 0.16 });
+        let radius = |tall: f64| {
+            let shape = lone_piece(340.0, tall);
+            place_at_arm(&shape, &arm, &surface, &|_| false)
+                .curve
+                .unwrap()
+        };
+        let short = radius(250.0);
+        assert!((short - (0.045 + PLACE_GAP_M)).abs() < 1e-9, "{short}");
+        for tall in [100.0, 400.0, 600.0, 1000.0] {
+            let r = radius(tall);
+            assert!(
+                (r - short).abs() < 0.02,
+                "{tall} mm long: {r} against {short}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_radius_settles_on_the_larger_of_the_last_two_tries() {
+        // Below 0.2 m the piece reaches something 0.3 m away, from 0.2 m up it doesn't: trying
+        // again swings between 0.1 and 0.3 and stops on either; it must stop on the 0.3.
+        let two_cycle = |r: f64| if r < 0.2 { 0.3 } else { 0.1 };
+        assert_eq!(settle_radius(0.1, two_cycle), 0.3);
+        assert_eq!(settle_radius(0.3, two_cycle), 0.3);
+        // A radius that is already enough stays; one that is more than enough comes down.
+        assert_eq!(settle_radius(0.2, |_| 0.2), 0.2);
+        assert_eq!(settle_radius(0.2, |_| 0.05), 0.05);
+        // The gap and the limits: nothing in reach is the fallback; far away is the largest curve.
+        assert_eq!(radius_clear_of(None, 0.2), 0.2);
+        assert_eq!(radius_clear_of(Some(0.1), 0.2), 0.1 + PLACE_GAP_M);
+        assert_eq!(radius_clear_of(Some(1e9), 0.2), MAX_CURVE_M);
+    }
+
+    #[test]
+    fn rows_are_spaced_by_the_gap_or_capped_at_two_hundred() {
+        assert_eq!(rows_over(0.0), 1);
+        assert_eq!(rows_over(0.01), 1);
+        assert_eq!(rows_over(0.6), 30);
+        assert_eq!(rows_over(4.0), 200);
+        assert_eq!(rows_over(2000.0), 200);
+        assert_eq!(rows_over(f64::INFINITY), 1);
+    }
+
+    /// Calls a surface stand-in until it has been called a million times, then fails: a count
+    /// made without the cap on rows would take a minute.
+    fn counting(calls: &std::cell::Cell<usize>) -> impl Fn(f64, f64) -> Option<f64> + '_ {
+        move |_, _| {
+            calls.set(calls.get() + 1);
+            assert!(calls.get() < 1_000_000, "measured a million times");
+            Some(0.1)
+        }
+    }
+
+    #[test]
+    fn place_at_and_place_at_arm_on_a_piece_kilometres_tall_measure_a_bounded_number_of_rows() {
+        // A 2 km square (no garment; chosen by mistake).
         let mut pr = Project::new();
         pr.add_piece(Piece::rectangle(
             PieceId(0),
             "Huge",
-            p(0.0, 0.0),
-            2000.0,
-            2000.0,
+            p(-1_000_000.0, -1_000_000.0),
+            2_000_000.0,
+            2_000_000.0,
         ));
         let shapes = geom::shapes(&pr);
+        let layout = layout(&shapes);
+        let calls = std::cell::Cell::new(0);
+        let started = std::time::Instant::now();
+        let placed = place_at(
+            &pr,
+            &shapes[0],
+            PlaceAt::Front,
+            &layout,
+            1.3,
+            &counting(&calls),
+        );
+        // (Its start is a kilometre down, so the placement is not one the model would take.)
+        assert!(placed.position.iter().all(|v| v.is_finite()));
+        // At most 25 angles × 201 heights, measured three times.
+        assert!(calls.get() <= 3 * 25 * 201, "{} measurements", calls.get());
+        calls.set(0);
+        // An arm that nothing is clear of, long enough to be measured all down the piece: all
+        // twenty-one places on the arm are tried.
+        let arm = Arm {
+            length: 1e9,
+            ..left_arm()
+        };
+        let placed = place_at_arm(&shapes[0], &arm, &counting(&calls), &|_| true);
+        assert!(placed.position.iter().all(|v| v.is_finite()));
+        assert!(
+            calls.get() <= 22 * 3 * 25 * 201,
+            "{} measurements",
+            calls.get()
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn place_at_arm_on_a_huge_piece_checks_a_bounded_number_of_points() {
+        // A 2 m square (no sleeve; chosen by mistake), on an arm where nothing is ever inside
+        // the form: the first place is clear, after one pass over the piece's points.
+        let shape = lone_piece(2000.0, 2000.0);
         let checked = std::cell::Cell::new(0_usize);
-        let placed = place_at_arm(&shapes[0], &left_arm(), &|_, _| Some(0.045), &|_| {
+        let placed = place_at_arm(&shape, &left_arm(), &|_, _| Some(0.045), &|_| {
             checked.set(checked.get() + 1);
-            true
+            false
         });
         assert!(placed.is_valid());
+        // Points are 50 mm apart, not 10: some 1,800, not 40,000.
         assert!(
-            checked.get() < 21 * 2_000,
+            (1_000..2_000).contains(&checked.get()),
             "{} points checked",
             checked.get()
         );
-        // It stays at the shoulder: its top level with it.
-        let top = (position(&placed) - left_arm().shoulder).dot(left_arm().direction) - 1.0;
-        assert!(top.abs() < 1e-9, "{top}");
+    }
+
+    /// The highest point of the outline of `shape` placed with `placement` (m); a wrapped piece
+    /// is highest part-way along an edge as often as at a corner.
+    fn highest(shape: &Shape, placement: &Placement) -> f64 {
+        let centre = centre_of(shape);
+        let outline = geom::outline_points(&shape.piece, 0.5);
+        along_outline(&outline, 1.0)
+            .into_iter()
+            .map(|q| apply(placement, centre, q).y)
+            .fold(f64::MIN, f64::max)
+    }
+
+    /// How far down `arm` (m) the top of a piece `tall` m tall, placed as `placement`, is.
+    fn top_of(placement: &Placement, arm: &Arm, tall: f64) -> f64 {
+        (position(placement) - arm.shoulder).dot(arm.direction) - tall / 2.0
+    }
+
+    #[test]
+    fn place_at_arm_goes_no_further_down_than_twenty_centimetres_or_the_piece_is_long() {
+        let arm = left_arm();
+        let surface = |_: f64, _: f64| Some(0.045);
+        let rise = -arm.direction.y;
+        // Translating a placement down the arm lowers every point by `rise` per metre, so a
+        // form that is inside everything above `level` is clear of the piece from `drop` down.
+        let level_for = |shape: &Shape, drop: f64| {
+            let at_the_shoulder = place_at_arm(shape, &arm, &surface, &|_| false);
+            highest(shape, &at_the_shoulder) - rise * drop + 1e-6
+        };
+        // A 500 mm sleeve, and a form it is only clear of 30 cm down the arm: 20 cm is as far
+        // as it goes, so it stays at the shoulder.
+        let long = lone_piece(340.0, 500.0);
+        let level = level_for(&long, 0.3);
+        let placed = place_at_arm(&long, &arm, &surface, &|q| q.y > level);
+        assert!(
+            top_of(&placed, &arm, 0.5).abs() < 1e-9,
+            "stays at the shoulder"
+        );
+        // The same form takes a place 15 cm down when that is where it is clear.
+        let level = level_for(&long, 0.15);
+        let placed = place_at_arm(&long, &arm, &surface, &|q| q.y > level);
+        assert!((top_of(&placed, &arm, 0.5) - 0.15).abs() < 1e-9);
+        // A 50 mm piece goes at most 5 cm down, as far as it is long (it would be clear 8 cm
+        // down), not 20.
+        let short = lone_piece(340.0, 50.0);
+        let level = level_for(&short, 0.075);
+        let placed = place_at_arm(&short, &arm, &surface, &|q| q.y > level);
+        assert!(
+            top_of(&placed, &arm, 0.05).abs() < 1e-9,
+            "stays at the shoulder"
+        );
+        // ...and one that is clear 4 cm down gets that.
+        let level = level_for(&short, 0.04);
+        let placed = place_at_arm(&short, &arm, &surface, &|q| q.y > level);
+        assert!((top_of(&placed, &arm, 0.05) - 0.04).abs() < 1e-9);
     }
 }
