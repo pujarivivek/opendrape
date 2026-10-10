@@ -1,0 +1,71 @@
+{
+  "schema_version": 2,
+  "units": "cm",
+  "pieces": [
+    {
+      "id": 1,
+      "name": "Skirt front",
+      "vertices": [
+        { "pos": { "x": 0.0, "y": 0.0 }, "kind": "corner" },
+        { "pos": { "x": 250.0, "y": 0.0 }, "kind": "corner" },
+        { "pos": { "x": 200.0, "y": 600.0 }, "kind": "corner" },
+        { "pos": { "x": 0.0, "y": 600.0 }, "kind": "corner" }
+      ],
+      "edges": [
+        { "type": "line" },
+        { "type": "line" },
+        { "type": "curve", "c1": { "x": 130.0, "y": 610.0 }, "c2": { "x": 60.0, "y": 605.0 } },
+        { "type": "line" }
+      ],
+      "grain_deg": 90.0,
+      "allowance": 10.0,
+      "edge_props": [
+        { "allowance": null, "hem": true },
+        { "allowance": 15.0, "hem": false },
+        { "allowance": null, "hem": false },
+        { "allowance": null, "hem": false }
+      ],
+      "notches": [
+        { "edge": 1, "distance": 180.0, "marks": 1, "style": "slit" },
+        { "edge": 2, "distance": 40.0, "marks": 2, "style": "v" }
+      ],
+      "lines": [
+        {
+          "vertices": [
+            { "pos": { "x": 30.0, "y": 300.0 }, "kind": "corner" },
+            { "pos": { "x": 120.0, "y": 300.0 }, "kind": "corner" }
+          ],
+          "edges": [{ "type": "line" }],
+          "closed": false,
+          "kind": "marking"
+        }
+      ],
+      "fold": 3,
+      "twin": null
+    },
+    {
+      "id": 2,
+      "name": "Back left",
+      "vertices": [
+        { "pos": { "x": 400.0, "y": 0.0 }, "kind": "corner" },
+        { "pos": { "x": 600.0, "y": 0.0 }, "kind": "corner" },
+        { "pos": { "x": 580.0, "y": 600.0 }, "kind": "corner" },
+        { "pos": { "x": 400.0, "y": 600.0 }, "kind": "corner" }
+      ],
+      "edges": [{ "type": "line" }, { "type": "line" }, { "type": "line" }, { "type": "line" }],
+      "grain_deg": 90.0,
+      "allowance": 12.0,
+      "edge_props": [
+        { "allowance": null, "hem": true },
+        { "allowance": null, "hem": false },
+        { "allowance": null, "hem": false },
+        { "allowance": null, "hem": false }
+      ],
+      "notches": [],
+      "lines": [],
+      "fold": null,
+      "twin": { "id": 3, "name": "Back right", "offset": { "x": 1300.0, "y": 0.0 } }
+    }
+  ],
+  "next_piece_id": 4
+}

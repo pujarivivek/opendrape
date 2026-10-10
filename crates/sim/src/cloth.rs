@@ -36,6 +36,8 @@ pub struct Cloth {
     /// `rest` = distance when the seam was made; it shrinks to 0 while the seam closes.
     pub(crate) stitches: Vec<Link>,
     pub(crate) topology_version: u64,
+    /// Points of the cloth pulled to targets (see `attach.rs`); a removed one leaves None.
+    pub(crate) attachments: Vec<Option<crate::attach::Attachment>>,
 }
 
 pub struct ClothBuilder {

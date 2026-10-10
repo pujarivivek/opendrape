@@ -71,6 +71,10 @@ impl Solver {
     pub fn cloth(&self) -> &Cloth {
         &self.cloth
     }
+    /// The cloth, to attach points of it to targets (see [`Cloth::attach`]).
+    pub fn cloth_mut(&mut self) -> &mut Cloth {
+        &mut self.cloth
+    }
     pub fn params(&self) -> &Params {
         &self.params
     }
@@ -129,6 +133,8 @@ impl Solver {
                     1.0,
                     sdt,
                 );
+                // Held points last of all, so a pin holds exactly.
+                crate::attach::solve(c, sdt);
             }
             if let Some(planes) = &planes {
                 collide(c, planes, p.thickness, p.friction);

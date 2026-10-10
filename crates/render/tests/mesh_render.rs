@@ -172,3 +172,22 @@ fn opengl_fallback_renders_the_cube() {
         "centre pixel is background"
     );
 }
+
+#[test]
+fn a_mesh_can_change_colour() {
+    let gpu = headless_device().expect("a GPU or software adapter");
+    let target = RenderTarget::new(&gpu.device, 64, 64);
+    let r = MeshRenderer::new(&gpu.device);
+    let (p, t) = flat_cube();
+    let mut cube = r.create_mesh(&gpu.device, &gpu.queue, &p, &t, [0.9, 0.1, 0.1]);
+    let view_proj = OrbitCamera::default().view_proj(1.0);
+    r.render(&gpu.device, &gpu.queue, &target, view_proj, &[&cube]);
+    let red = *read_back(&gpu.device, &gpu.queue, &target).get_pixel(32, 32);
+    cube.set_color([0.1, 0.1, 0.9]);
+    r.render(&gpu.device, &gpu.queue, &target, view_proj, &[&cube]);
+    let blue = *read_back(&gpu.device, &gpu.queue, &target).get_pixel(32, 32);
+    assert!(
+        red[0] > red[2] && blue[2] > blue[0],
+        "{red:?} then {blue:?}"
+    );
+}

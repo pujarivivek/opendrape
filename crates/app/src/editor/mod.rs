@@ -1,20 +1,33 @@
 //! The 2D pattern window: drawing and editing pattern pieces.
 
+mod cache;
 mod canvas;
 mod document;
+mod free_sew;
 mod length_box;
+mod line_tool;
+mod notch_tool;
 mod paint;
 mod panel;
+mod pins;
+mod placing;
+mod seams;
+mod sew_tool;
 mod view;
 
 pub use canvas::PenPoint;
-pub use document::{Document, UNDO_LIMIT};
+pub use document::{Document, PinShift, UNDO_LIMIT};
+pub(crate) use paint::PIN_COLOUR;
+pub use placing::DEFAULT_SHOULDER_M;
 pub use view::View;
 
 use crate::tr;
 use egui::{Key, KeyboardShortcut, Modifiers};
-use opendrape_core::{PieceId, Point2, Project, Units};
+use opendrape_core::{PieceId, Point2, Project, SeamId, Units};
+use opendrape_drape::Stage;
+use opendrape_geom as geom;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Undo: Cmd+Z (Ctrl+Z on Windows).
 pub const UNDO: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Z);
@@ -28,6 +41,8 @@ pub const REDO: KeyboardShortcut = KeyboardShortcut::new(
 );
 /// Redo the Windows way: Ctrl+Y.
 const REDO_Y: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Y);
+/// Show every piece: Cmd+0 (Ctrl+0 on Windows). F is the Free Sew tool's.
+pub const FIT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Num0);
 
 /// Pointer distance (screen points) that counts as touching a point, handle or edge.
 const HIT_PX: f64 = 8.0;
@@ -41,10 +56,23 @@ pub enum Tool {
     Pen,
     Rectangle,
     AddPoint,
+    Notch,
+    Line,
+    Sew,
+    FreeSew,
 }
 
 impl Tool {
-    pub const ALL: [Self; 4] = [Self::Edit, Self::Pen, Self::Rectangle, Self::AddPoint];
+    pub const ALL: [Self; 8] = [
+        Self::Edit,
+        Self::Pen,
+        Self::Rectangle,
+        Self::AddPoint,
+        Self::Notch,
+        Self::Line,
+        Self::Sew,
+        Self::FreeSew,
+    ];
 
     /// Single-key shortcut: the letters other pattern software uses, so habits carry over.
     pub fn key(self) -> Key {
@@ -53,6 +81,11 @@ impl Tool {
             Self::Pen => Key::H,
             Self::Rectangle => Key::S,
             Self::AddPoint => Key::X,
+            Self::Notch => Key::N,
+            Self::Line => Key::L,
+            // S is the Rectangle's.
+            Self::Sew => Key::W,
+            Self::FreeSew => Key::F,
         }
     }
 
@@ -62,6 +95,10 @@ impl Tool {
             Self::Pen => tr!("tool-pen"),
             Self::Rectangle => tr!("tool-rectangle"),
             Self::AddPoint => tr!("tool-add-point"),
+            Self::Notch => tr!("tool-notch"),
+            Self::Line => tr!("tool-line"),
+            Self::Sew => tr!("tool-sew"),
+            Self::FreeSew => tr!("tool-free-sew"),
         }
     }
 
@@ -71,11 +108,16 @@ impl Tool {
             Self::Pen => tr!("tool-pen-tip"),
             Self::Rectangle => tr!("tool-rectangle-tip"),
             Self::AddPoint => tr!("tool-add-point-tip"),
+            Self::Notch => tr!("tool-notch-tip"),
+            Self::Line => tr!("tool-line-tip"),
+            Self::Sew => tr!("tool-sew-tip"),
+            Self::FreeSew => tr!("tool-free-sew-tip"),
         }
     }
 }
 
-/// What the properties panel shows and Delete removes.
+/// What the properties panel shows and Delete removes. The ids are shape ids (a piece's own, or
+/// its twin's); point and edge numbers are the stored piece's, whichever shape was clicked.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Selection {
     #[default]
@@ -83,24 +125,55 @@ pub enum Selection {
     Piece(PieceId),
     Vertex(PieceId, usize),
     Edge(PieceId, usize),
+    /// A notch: the shape's id and the index into the stored piece's notches.
+    Notch(PieceId, usize),
+    /// An internal line: the shape's id and the index into the stored piece's lines.
+    Line(PieceId, usize),
+    /// A stored seam (clicking a seam's mirror image selects the seam).
+    Seam(SeamId),
+    /// A pin: its index in the project's pins.
+    Pin(usize),
 }
 
 impl Selection {
     pub fn piece(self) -> Option<PieceId> {
         match self {
-            Self::None => None,
-            Self::Piece(id) | Self::Vertex(id, _) | Self::Edge(id, _) => Some(id),
+            Self::None | Self::Seam(_) | Self::Pin(_) => None,
+            Self::Piece(id)
+            | Self::Vertex(id, _)
+            | Self::Edge(id, _)
+            | Self::Notch(id, _)
+            | Self::Line(id, _) => Some(id),
         }
     }
 
     /// This selection if it still exists in `project` (after an undo, say); otherwise its
-    /// piece, or nothing.
+    /// piece, or nothing. The id may name a twin: its points and edges are its stored piece's.
     pub fn validated(self, project: &Project) -> Self {
-        let Some(piece) = self.piece().and_then(|id| project.piece(id)) else {
+        if let Self::Seam(id) = self {
+            return if project.seam(id).is_some() {
+                self
+            } else {
+                Self::None
+            };
+        }
+        if let Self::Pin(k) = self {
+            return if k < project.pins.len() {
+                self
+            } else {
+                Self::None
+            };
+        }
+        let Some(id) = self.piece() else {
+            return Self::None;
+        };
+        let Some((piece, _)) = project.owner(id) else {
             return Self::None;
         };
         match self {
-            Self::Vertex(_, i) | Self::Edge(_, i) if i >= piece.len() => Self::Piece(piece.id),
+            Self::Vertex(_, i) | Self::Edge(_, i) if i >= piece.len() => Self::Piece(id),
+            Self::Notch(_, k) if k >= piece.notches.len() => Self::Piece(id),
+            Self::Line(_, l) if l >= piece.lines.len() => Self::Piece(id),
             other => other,
         }
     }
@@ -113,12 +186,21 @@ pub struct PatternEditor {
     pub selection: Selection,
     /// Show every edge's length on the pattern.
     pub show_lengths: bool,
+    /// Show the seam allowance: a light band out to the cut line.
+    pub show_allowance: bool,
     /// Where the canvas was last drawn (tests use it to turn millimetres into screen points).
     pub canvas_rect: egui::Rect,
     /// Why the last action was refused, shown in the status bar until the next click.
     pub notice: Option<String>,
+    /// The form pieces are placed round (Place at… needs it); None without a 3D view.
+    pub stage: Option<Arc<Stage>>,
+    /// The garment is draping: placements don't apply until Reset, so they are not offered.
+    pub draping: bool,
+    /// How pins were renumbered since the app last took them for the 3D view.
+    pin_shifts: Vec<PinShift>,
     canvas: canvas::CanvasState,
     panel: panel::PanelState,
+    cache: cache::ShapeCache,
     fit_pending: bool,
     /// A units switch asked for in the toolbar this frame, applied once the panels and the
     /// canvas have run: a number typed in the old units and applied by the very same click
@@ -140,10 +222,15 @@ impl PatternEditor {
             tool: Tool::default(),
             selection: Selection::None,
             show_lengths: true,
+            show_allowance: true,
             canvas_rect: egui::Rect::NOTHING,
             notice: None,
+            stage: None,
+            draping: false,
+            pin_shifts: Vec::new(),
             canvas: canvas::CanvasState::default(),
             panel: panel::PanelState::default(),
+            cache: cache::ShapeCache::default(),
             fit_pending: true,
             pending_units: None,
         }
@@ -151,12 +238,23 @@ impl PatternEditor {
 
     /// Starts over with `project` (File → New or Open): clears the history and fits the view.
     pub fn set_project(&mut self, project: Project, path: Option<PathBuf>) {
-        let show_lengths = self.show_lengths;
+        let (show_lengths, show_allowance) = (self.show_lengths, self.show_allowance);
+        let stage = self.stage.take();
         *self = Self {
             show_lengths,
+            show_allowance,
+            stage,
             ..Self::new()
         };
         self.doc = Document::new(project, path);
+        // The old project's pins are gone, and with them whatever holds one in the 3D view.
+        self.pin_shifts.push(PinShift::none_kept());
+    }
+
+    /// Like [`Self::set_project`], for work restored from a recovery copy: it stays unsaved.
+    pub fn set_recovered(&mut self, project: Project, path: Option<PathBuf>) {
+        self.set_project(Project::new(), None);
+        self.doc = Document::recovered(project, path);
     }
 
     /// Shows the "can't be made" notice when the document refused the last change (it would
@@ -180,29 +278,46 @@ impl PatternEditor {
         self.tool = tool;
     }
 
-    /// Undo. While a piece is being drawn with the pen, removes its last point instead.
+    /// Undo. While a line or a piece is being drawn, removes its last point instead; while a
+    /// seam is half made (with either Sew tool), cancels that.
     pub fn undo(&mut self) {
-        if self.canvas.pen.pop().is_none() {
+        if self.canvas.line.pop().is_some() {
+            if self.canvas.line.is_empty() {
+                self.canvas.line_owner = None;
+            }
+        } else if self.canvas.pen.pop().is_none() && !self.cancel_half_made_seam() {
             self.canvas.drag = None;
             self.doc.undo();
         }
+        self.sync_pins();
         self.selection = self.selection.validated(self.doc.project());
+        self.drop_stale_sew();
+        self.drop_stale_free_sew();
     }
 
+    /// Redo. Waits while a line or a piece is being drawn. A seam with only its first side is
+    /// dropped: what is redone may change the edges it points at.
     pub fn redo(&mut self) {
-        if self.canvas.pen.is_empty() {
+        if self.canvas.pen.is_empty() && self.canvas.line.is_empty() {
             self.canvas.drag = None;
+            self.cancel_half_made_seam();
             self.doc.redo();
         }
+        self.sync_pins();
         self.selection = self.selection.validated(self.doc.project());
+        self.drop_stale_sew();
+        self.drop_stale_free_sew();
     }
 
     pub fn can_undo(&self) -> bool {
-        !self.canvas.pen.is_empty() || self.doc.can_undo()
+        !self.canvas.pen.is_empty()
+            || !self.canvas.line.is_empty()
+            || self.has_half_made_seam()
+            || self.doc.can_undo()
     }
 
     pub fn can_redo(&self) -> bool {
-        self.canvas.pen.is_empty() && self.doc.can_redo()
+        self.canvas.pen.is_empty() && self.canvas.line.is_empty() && self.doc.can_redo()
     }
 
     /// Show every piece on the next frame.
@@ -210,9 +325,19 @@ impl PatternEditor {
         self.fit_pending = true;
     }
 
+    /// Every shape on the table (see `geom::shapes`).
+    pub(super) fn shapes(&self) -> Vec<geom::Shape> {
+        geom::shapes(self.doc.project())
+    }
+
     /// Points placed so far in the piece being drawn with the pen.
     pub fn pen(&self) -> &[PenPoint] {
         &self.canvas.pen
+    }
+
+    /// Points placed so far in the internal line being drawn with the line tool.
+    pub fn line_draft(&self) -> &[PenPoint] {
+        &self.canvas.line
     }
 
     /// The number box (typed length and angle, or width and height) is open.
@@ -240,7 +365,10 @@ impl PatternEditor {
         if keys_free {
             self.shortcuts(ui);
         }
+        self.sync_pins();
         self.selection = self.selection.validated(self.doc.project());
+        self.drop_stale_sew();
+        self.drop_stale_free_sew();
         egui::Panel::top("pattern_tools").show(ui, |ui| self.toolbar(ui));
         egui::Panel::bottom("pattern_status").show(ui, |ui| self.status_bar(ui));
         egui::Panel::right("pattern_properties")
@@ -267,7 +395,7 @@ impl PatternEditor {
                 self.set_tool(tool);
             }
         }
-        if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F)) {
+        if ui.input_mut(|i| i.consume_shortcut(&FIT)) {
             self.fit_pending = true;
         }
     }
@@ -296,8 +424,14 @@ impl PatternEditor {
             }
             ui.separator();
             ui.checkbox(&mut self.show_lengths, tr!("toolbar-show-lengths"));
+            ui.checkbox(&mut self.show_allowance, tr!("toolbar-show-allowance"));
+            let fit = format!(
+                "{} ({})",
+                tr!("toolbar-fit"),
+                ui.ctx().format_shortcut(&FIT)
+            );
             if ui
-                .button(tr!("toolbar-fit"))
+                .button(fit)
                 .on_hover_text(tr!("toolbar-fit-tip"))
                 .clicked()
             {
@@ -325,14 +459,14 @@ fn select_all_on_focus(
     }
 }
 
-/// The smallest box (mm) holding every piece.
+/// The smallest box (mm) holding every shape (twins and the pale halves of folds included).
 fn project_bounds(project: &Project) -> Option<(Point2, Point2)> {
-    let mut points = project
-        .pieces
+    let points: Vec<Point2> = geom::shapes(project)
         .iter()
-        .flat_map(|p| opendrape_geom::outline_points(p, 1.0));
-    let first = points.next()?;
-    Some(points.fold((first, first), |(lo, hi), p| {
+        .flat_map(|s| geom::outline_points(&s.piece, 1.0))
+        .collect();
+    let first = *points.first()?;
+    Some(points.iter().fold((first, first), |(lo, hi), p| {
         (
             Point2::new(lo.x.min(p.x), lo.y.min(p.y)),
             Point2::new(hi.x.max(p.x), hi.y.max(p.y)),

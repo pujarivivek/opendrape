@@ -10,11 +10,12 @@ publish.workspace = true
 
 [dependencies]
 opendrape-core.workspace = true
+opendrape-drape.workspace = true
 opendrape-geom.workspace = true
 opendrape-io.workspace = true
+opendrape-mesh.workspace = true
 opendrape-render.workspace = true
 opendrape-sim.workspace = true
-opendrape-testkit.workspace = true
 earcut.workspace = true
 glam.workspace = true
 arc-swap.workspace = true
@@ -43,7 +44,6 @@ winit = { version = "=0.30.13", default-features = false }
 winresource = "0.1"
 
 [dev-dependencies]
-opendrape-testkit.workspace = true
 egui_kittest.workspace = true
 tempfile.workspace = true
 

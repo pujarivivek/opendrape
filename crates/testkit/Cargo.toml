@@ -14,5 +14,11 @@ opendrape-sim.workspace = true
 glam.workspace = true
 rayon.workspace = true
 
+[dev-dependencies]
+opendrape-core.workspace = true
+opendrape-drape.workspace = true
+opendrape-geom.workspace = true
+opendrape-mesh.workspace = true
+
 [lints]
 workspace = true

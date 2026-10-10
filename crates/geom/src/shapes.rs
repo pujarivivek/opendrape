@@ -1,0 +1,578 @@
+//! What each stored piece shows on the pattern table. A cut-on-fold piece is stored as half
+//! and shown whole; a paired piece also shows its mirror-image twin. Each [`Shape`] is a
+//! concrete piece, and remembers how its points and indices map back to what is stored,
+//! because edits always go to the stored piece.
+
+use crate::edge_length;
+use opendrape_core::{
+    Edge, EdgeProps, Half, InternalLine, Notch, Piece, PieceId, Point2, Project, Vertex,
+};
+
+/// One thing drawn on the pattern table.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Shape {
+    /// The id this shape is selected by: the piece's own, or its twin's.
+    pub id: PieceId,
+    /// The stored piece it comes from.
+    pub source: PieceId,
+    pub kind: ShapeKind,
+    /// The full outline as an ordinary piece (unfolded, or reflected and moved), with its
+    /// edges' allowances, its notches and its internal lines in place.
+    pub piece: Piece,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ShapeKind {
+    /// The stored piece as it is.
+    Plain,
+    /// A cut-on-fold piece. Outline vertices `0..drawn` are the stored half's, starting at
+    /// stored vertex `first` (the fold's far end); the rest are its pale mirror image. `fold`
+    /// is the fold line, from its near end to its far end.
+    Folded {
+        first: usize,
+        drawn: usize,
+        fold: (Point2, Point2),
+    },
+    /// A twin: the stored piece reflected left to right, then moved by `offset`.
+    Twin { offset: Point2 },
+}
+
+impl Shape {
+    /// The stored piece's vertex for outline vertex `k`; `None` on the pale half of a fold.
+    pub fn stored_vertex(&self, k: usize) -> Option<usize> {
+        match self.kind {
+            ShapeKind::Plain | ShapeKind::Twin { .. } => Some(k),
+            ShapeKind::Folded { first, drawn, .. } => (k < drawn).then_some((first + k) % drawn),
+        }
+    }
+    /// The stored piece's edge for outline edge `j`; `None` on the pale half of a fold.
+    pub fn stored_edge(&self, j: usize) -> Option<usize> {
+        match self.kind {
+            ShapeKind::Plain | ShapeKind::Twin { .. } => Some(j),
+            ShapeKind::Folded { first, drawn, .. } => {
+                (j + 1 < drawn).then_some((first + j) % drawn)
+            }
+        }
+    }
+    /// The outline vertex showing stored vertex `i`.
+    pub fn shape_vertex(&self, i: usize) -> usize {
+        match self.kind {
+            ShapeKind::Plain | ShapeKind::Twin { .. } => i,
+            ShapeKind::Folded { first, drawn, .. } => (i + drawn - first) % drawn,
+        }
+    }
+    /// The outline edge showing stored edge `i` (for a fold, `i` must not be the fold edge).
+    pub fn shape_edge(&self, i: usize) -> usize {
+        self.shape_vertex(i)
+    }
+    /// A point of this shape in the stored piece's coordinates.
+    pub fn to_stored(&self, p: Point2) -> Point2 {
+        match self.kind {
+            ShapeKind::Twin { offset } => Point2::new(offset.x - p.x, p.y - offset.y),
+            _ => p,
+        }
+    }
+    /// A point of the stored piece where this shape shows it.
+    pub fn from_stored(&self, p: Point2) -> Point2 {
+        match self.kind {
+            ShapeKind::Twin { offset } => Point2::new(offset.x - p.x, p.y + offset.y),
+            _ => p,
+        }
+    }
+
+    /// The stored spot that point `p` of this shape shows, and the half it is on: where a pin
+    /// at `p` is kept. A point on the pale side of a fold line is kept as its mirror image.
+    pub fn pin_spot(&self, p: Point2) -> (Half, Point2) {
+        match self.kind {
+            ShapeKind::Folded {
+                drawn,
+                fold: (near, far),
+                ..
+            } => {
+                let d = far - near;
+                let side = |q: Point2| d.x * (q.y - near.y) - d.y * (q.x - near.x);
+                let stored = self.piece.vertices[..drawn]
+                    .iter()
+                    .map(|v| side(v.pos))
+                    .max_by(|a, b| a.abs().total_cmp(&b.abs()))
+                    .unwrap_or(0.0);
+                if side(p) * stored < 0.0 {
+                    (Half::Pale, reflect_across(p, near, far))
+                } else {
+                    (Half::Drawn, p)
+                }
+            }
+            _ => (Half::Drawn, self.to_stored(p)),
+        }
+    }
+
+    /// Where this shape shows stored spot `at` of `half` (see [`Self::pin_spot`]).
+    pub fn spot_shown(&self, half: Half, at: Point2) -> Point2 {
+        match (self.kind, half) {
+            (
+                ShapeKind::Folded {
+                    fold: (near, far), ..
+                },
+                Half::Pale,
+            ) => reflect_across(at, near, far),
+            _ => self.from_stored(at),
+        }
+    }
+    /// A movement on this shape as a movement of the stored piece.
+    pub fn to_stored_delta(&self, d: Point2) -> Point2 {
+        self.kind.to_stored_delta(d)
+    }
+    /// An internal line drawn on this shape, as the stored piece keeps it. A twin's points are
+    /// mirrored back. The stored piece of a cut-on-fold piece keeps everything on its own side
+    /// of the fold, so:
+    /// - a point of the line within [`ON_OUTLINE_MM`] of the fold line is moved onto it (a line
+    ///   may start on the fold, and a click a fraction of a millimetre to either side of it
+    ///   would otherwise put the line on both sides);
+    /// - a line whose point furthest from the fold is on the pale half is stored as its mirror
+    ///   image across the fold, and the pale half shows it again where it was drawn;
+    /// - a line with every point on the fold is stored as it is.
+    ///
+    /// A line that then still crosses the fold makes an invalid piece, which the document
+    /// refuses.
+    pub fn line_to_stored(&self, line: &InternalLine) -> InternalLine {
+        let ShapeKind::Folded {
+            drawn,
+            fold: (near, far),
+            ..
+        } = self.kind
+        else {
+            return line.mapped(|p| self.to_stored(p));
+        };
+        let d = far - near;
+        let length = d.length();
+        if length < 1e-9 {
+            return line.clone();
+        }
+        // Distance of a point from the fold line, positive on one side and negative on the other.
+        let side = |p: Point2| (d.x * (p.y - near.y) - d.y * (p.x - near.x)) / length;
+        // The stored half is on the side of its point furthest from the fold line.
+        let stored = self.piece.vertices[..drawn]
+            .iter()
+            .map(|v| side(v.pos))
+            .max_by(|a, b| a.abs().total_cmp(&b.abs()))
+            .unwrap_or(0.0);
+        // Points only: a curve handle is left where it was drawn.
+        let mut line = line.clone();
+        for v in &mut line.vertices {
+            let s = side(v.pos);
+            if s.abs() <= ON_OUTLINE_MM {
+                v.pos = v.pos - Point2::new(-d.y, d.x) * (s / length);
+            }
+        }
+        let furthest = line
+            .vertices
+            .iter()
+            .map(|v| side(v.pos))
+            .max_by(|a, b| a.abs().total_cmp(&b.abs()))
+            .unwrap_or(0.0);
+        if furthest * stored < 0.0 {
+            line.mapped(|p| reflect_across(p, near, far))
+        } else {
+            line
+        }
+    }
+}
+
+/// How far (mm) from an outline, or from a fold line, a point may be and still count as on it.
+pub const ON_OUTLINE_MM: f64 = 0.5;
+
+impl ShapeKind {
+    /// A movement on a shape of this kind as a movement of its stored piece: a twin is the
+    /// stored piece mirrored left to right, so it moves the other way along x.
+    pub fn to_stored_delta(&self, d: Point2) -> Point2 {
+        match self {
+            Self::Twin { .. } => Point2::new(-d.x, d.y),
+            Self::Plain | Self::Folded { .. } => d,
+        }
+    }
+}
+
+/// Every shape on the table, in drawing order: each stored piece, then its twin.
+pub fn shapes(project: &Project) -> Vec<Shape> {
+    let mut out = Vec::new();
+    for piece in &project.pieces {
+        out.push(main_shape(piece));
+        if let (Some(t), Some(twin)) = (&piece.twin, piece.twin_shape()) {
+            out.push(Shape {
+                id: t.id,
+                source: piece.id,
+                kind: ShapeKind::Twin { offset: t.offset },
+                piece: twin,
+            });
+        }
+    }
+    out
+}
+
+/// The shape selected by `id` (a piece's or a twin's).
+pub fn shape_of(project: &Project, id: PieceId) -> Option<Shape> {
+    shapes(project).into_iter().find(|s| s.id == id)
+}
+
+/// The whole piece a cut-on-fold half makes (a copy of `piece` when it has no fold).
+pub fn unfolded(piece: &Piece) -> Piece {
+    main_shape(piece).piece
+}
+
+fn main_shape(piece: &Piece) -> Shape {
+    let (full, kind) = match piece.fold {
+        Some(f) if f < piece.len() => unfold(piece, f),
+        _ => (piece.clone(), ShapeKind::Plain),
+    };
+    Shape {
+        id: piece.id,
+        source: piece.id,
+        kind,
+        piece: full,
+    }
+}
+
+/// Mirror image of `p` across the line through `a` and `b`.
+fn reflect_across(p: Point2, a: Point2, b: Point2) -> Point2 {
+    let d = b - a;
+    let t = ((p.x - a.x) * d.x + (p.y - a.y) * d.y) / (d.x * d.x + d.y * d.y);
+    let foot = a + d * t;
+    foot * 2.0 - p
+}
+
+fn unfold(piece: &Piece, f: usize) -> (Piece, ShapeKind) {
+    let n = piece.len();
+    let first = (f + 1) % n;
+    let (near, far) = piece.edge_ends(f);
+    let mirror = |p: Point2| reflect_across(p, near, far);
+    let u = |k: usize| (first + k) % n;
+
+    let mut vertices: Vec<Vertex> = (0..n).map(|k| piece.vertices[u(k)]).collect();
+    let mut edges: Vec<Edge> = (0..n - 1).map(|m| piece.edges[u(m)]).collect();
+    let mut props: Vec<EdgeProps> = (0..n - 1).map(|m| piece.edge_props[u(m)]).collect();
+    for k in (1..n - 1).rev() {
+        let v = piece.vertices[u(k)];
+        vertices.push(Vertex {
+            pos: mirror(v.pos),
+            kind: v.kind,
+        });
+    }
+    for m in (0..n - 1).rev() {
+        edges.push(match piece.edges[u(m)] {
+            Edge::Line => Edge::Line,
+            Edge::Curve { c1, c2 } => Edge::Curve {
+                c1: mirror(c2),
+                c2: mirror(c1),
+            },
+        });
+        props.push(piece.edge_props[u(m)]);
+    }
+    let drawn_index = |stored: usize| (stored + n - first) % n;
+    let mut notches = Vec::new();
+    for notch in &piece.notches {
+        let m = drawn_index(notch.edge);
+        notches.push(Notch { edge: m, ..*notch });
+    }
+    for notch in &piece.notches {
+        let m = drawn_index(notch.edge);
+        let len = edge_length(piece, notch.edge);
+        notches.push(Notch {
+            edge: 2 * n - 3 - m,
+            distance: (len - notch.distance).max(0.0),
+            ..*notch
+        });
+    }
+    let mut lines = piece.lines.clone();
+    lines.extend(piece.lines.iter().map(|l| l.mapped(mirror)));
+    let full = Piece {
+        id: piece.id,
+        name: piece.name.clone(),
+        vertices,
+        edges,
+        grain_deg: piece.grain_deg,
+        allowance: piece.allowance,
+        edge_props: props,
+        notches,
+        lines,
+        fold: None,
+        twin: None,
+        placement: piece.placement,
+    };
+    (
+        full,
+        ShapeKind::Folded {
+            first,
+            drawn: n,
+            fold: (near, far),
+        },
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use opendrape_core::{Edge, InternalLine, Notch, PieceId, Point2, Project};
+
+    fn p(x: f64, y: f64) -> Point2 {
+        Point2::new(x, y)
+    }
+
+    /// The right half of a 200 × 200 square, folded on its left edge (edge 3: (0,200)→(0,0)).
+    fn half() -> Piece {
+        let mut s = Piece::rectangle(PieceId(1), "Front", p(0.0, 0.0), 100.0, 200.0);
+        s.fold = Some(3);
+        s
+    }
+
+    fn close(a: Point2, b: Point2) {
+        assert!(a.distance(b) < 1e-9, "{a:?} vs {b:?}");
+    }
+
+    #[test]
+    fn unfolding_mirrors_the_half_across_the_fold() {
+        let full = unfolded(&half());
+        let corners: Vec<Point2> = full.vertices.iter().map(|v| v.pos).collect();
+        let expected = [
+            p(0.0, 0.0),
+            p(100.0, 0.0),
+            p(100.0, 200.0),
+            p(0.0, 200.0),
+            p(-100.0, 200.0),
+            p(-100.0, 0.0),
+        ];
+        assert_eq!(corners.len(), expected.len());
+        for (a, b) in corners.iter().zip(expected) {
+            close(*a, b);
+        }
+        assert_eq!(full.edges.len(), 6);
+        assert_eq!(full.edge_props.len(), 6);
+        assert_eq!((full.fold, full.check()), (None, Ok(())));
+        assert!((crate::area(&full) - 40_000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn unfolding_maps_indices_and_reverses_curves() {
+        let mut h = half();
+        h.set_curved(1, true); // right edge (100,0)→(100,200)
+        h.notches = vec![Notch::new(0, 30.0)];
+        h.lines = vec![InternalLine::open(&[p(20.0, 50.0), p(60.0, 50.0)])];
+        let s = shape_of(
+            &{
+                let mut pr = Project::new();
+                pr.add_piece(h.clone());
+                pr
+            },
+            PieceId(1),
+        )
+        .unwrap();
+        let ShapeKind::Folded { first, drawn, fold } = s.kind else {
+            panic!("folded")
+        };
+        assert_eq!((first, drawn), (0, 4));
+        close(fold.0, p(0.0, 200.0));
+        close(fold.1, p(0.0, 0.0));
+        assert_eq!((s.stored_vertex(2), s.stored_vertex(4)), (Some(2), None));
+        assert_eq!((s.stored_edge(2), s.stored_edge(3)), (Some(2), None));
+        assert_eq!((s.shape_vertex(1), s.shape_edge(1)), (1, 1));
+        // Mirror of drawn edge 1 is outline edge 2n-3-1 = 4: from (-100,200) to (-100,0).
+        let Edge::Curve { c1, c2 } = s.piece.edges[4] else {
+            panic!("curved")
+        };
+        let Edge::Curve { c1: o1, c2: o2 } = h.edges[1] else {
+            panic!()
+        };
+        close(c1, p(-o2.x, o2.y));
+        close(c2, p(-o1.x, o1.y));
+        // The bottom notch at 30 mm appears on both halves, the mirrored copy measured from
+        // the mirrored edge's start (-100,0): 100 - 30 = 70 mm along.
+        assert_eq!(
+            s.piece.notches,
+            vec![Notch::new(0, 30.0), Notch::new(5, 70.0)]
+        );
+        assert_eq!(s.piece.lines.len(), 2);
+        close(s.piece.lines[1].vertices[1].pos, p(-60.0, 50.0));
+    }
+
+    #[test]
+    fn folds_on_any_edge_map_back() {
+        let mut s = Piece::rectangle(PieceId(1), "Back", p(0.0, 0.0), 100.0, 200.0);
+        s.fold = Some(1); // right edge (100,0)→(100,200)
+        let mut pr = Project::new();
+        pr.add_piece(s);
+        let shape = shape_of(&pr, PieceId(1)).unwrap();
+        let ShapeKind::Folded { first, .. } = shape.kind else {
+            panic!()
+        };
+        assert_eq!(first, 2);
+        assert_eq!(shape.stored_vertex(0), Some(2)); // outline starts at (100,200)
+        close(shape.piece.vertices[0].pos, p(100.0, 200.0));
+        assert_eq!(shape.shape_vertex(2), 0);
+        assert_eq!(shape.shape_edge(3), 1);
+        close(shape.piece.vertices[4].pos, p(200.0, 0.0));
+    }
+
+    #[test]
+    fn a_line_is_stored_the_way_its_piece_keeps_it() {
+        let line = |a: Point2, b: Point2| InternalLine::open(&[a, b]);
+        let same = |a: &InternalLine, b: &InternalLine| {
+            for (u, v) in a.vertices.iter().zip(&b.vertices) {
+                close(u.pos, v.pos);
+            }
+        };
+        // Folded on x = 0, stored on its right: a line on the pale half is stored mirrored.
+        let mut pr = Project::new();
+        pr.add_piece(half());
+        let shape = shape_of(&pr, PieceId(1)).unwrap();
+        let pale = line(p(-30.0, 50.0), p(-60.0, 150.0));
+        same(
+            &shape.line_to_stored(&pale),
+            &line(p(30.0, 50.0), p(60.0, 150.0)),
+        );
+        let drawn = line(p(30.0, 50.0), p(60.0, 150.0));
+        same(&shape.line_to_stored(&drawn), &drawn);
+        // The first point off the fold line decides.
+        let from_fold = line(p(0.0, 50.0), p(-40.0, 50.0));
+        same(
+            &shape.line_to_stored(&from_fold),
+            &line(p(0.0, 50.0), p(40.0, 50.0)),
+        );
+        // On the left of the fold line when the piece is stored on the left.
+        let mut left = Piece::rectangle(PieceId(2), "Left", p(-100.0, 0.0), 100.0, 200.0);
+        left.fold = Some(1); // the right edge, x = 0
+        pr.add_piece(left);
+        let shape = shape_of(&pr, PieceId(2)).unwrap();
+        same(
+            &shape.line_to_stored(&line(p(30.0, 50.0), p(60.0, 150.0))),
+            &line(p(-30.0, 50.0), p(-60.0, 150.0)),
+        );
+        same(
+            &shape.line_to_stored(&drawn.mapped(|q| p(-q.x, q.y))),
+            &drawn.mapped(|q| p(-q.x, q.y)),
+        );
+        // A twin shows the stored point (x, y) at (offset.x - x, y + offset.y).
+        let mut pr = Project::new();
+        let id = pr.add_piece(Piece::rectangle(PieceId(0), "A", p(0.0, 0.0), 100.0, 200.0));
+        pr.add_twin(id, "A (mirror)".into(), p(300.0, 20.0))
+            .unwrap();
+        let twin = &shapes(&pr)[1];
+        same(
+            &twin.line_to_stored(&line(p(250.0, 60.0), p(200.0, 80.0))),
+            &line(p(50.0, 40.0), p(100.0, 60.0)),
+        );
+        same(&shapes(&pr)[0].line_to_stored(&drawn), &drawn);
+    }
+
+    /// `piece` with `line` stored on it, as a project: whether the model accepts it.
+    fn accepted(half: &Piece, line: &InternalLine) -> bool {
+        let mut piece = half.clone();
+        piece.lines.push(line.clone());
+        let mut project = Project::new();
+        project.add_piece(piece);
+        project.check().is_ok()
+    }
+
+    #[test]
+    fn a_line_started_on_the_fold_is_stored_with_that_point_on_it() {
+        // Folded on x = 0, stored on its right. A click within half a millimetre of the fold
+        // line is on it, whichever side it lands on, and the rest of the line decides the side.
+        let mut pr = Project::new();
+        pr.add_piece(half());
+        let shape = shape_of(&pr, PieceId(1)).unwrap();
+        let line = |a: Point2, b: Point2| InternalLine::open(&[a, b]);
+        let cases = [
+            ("pale, then the drawn half", p(-0.3, 50.0), p(60.0, 150.0)),
+            ("drawn, then the drawn half", p(0.3, 50.0), p(60.0, 150.0)),
+            ("drawn, then the pale half", p(0.3, 50.0), p(-60.0, 150.0)),
+            ("pale, then the pale half", p(-0.3, 50.0), p(-60.0, 150.0)),
+            ("at the limit", p(-0.5, 50.0), p(60.0, 150.0)),
+        ];
+        for (name, a, b) in cases {
+            let stored = shape.line_to_stored(&line(a, b));
+            assert!(accepted(&half(), &stored), "{name}: {stored:?}");
+            close(stored.vertices[0].pos, p(0.0, 50.0));
+            assert!(stored.vertices[0].pos.x.abs() < 1e-9, "{name}: on the fold");
+            close(stored.vertices[1].pos, p(60.0, 150.0));
+        }
+        // Further away it is a point on the pale half, and the line crosses the fold.
+        let across = shape.line_to_stored(&line(p(-0.6, 50.0), p(60.0, 150.0)));
+        close(across.vertices[0].pos, p(-0.6, 50.0));
+        assert!(!accepted(&half(), &across));
+        // Every point on the fold: stored as it is.
+        let along = line(p(0.0, 50.0), p(0.0, 150.0));
+        assert_eq!(shape.line_to_stored(&along), along);
+        // Only points are moved: a curve handle stays where it was drawn.
+        let mut curved = line(p(-0.3, 50.0), p(60.0, 150.0));
+        curved.edges = vec![Edge::Curve {
+            c1: p(10.0, 90.0),
+            c2: p(40.0, 120.0),
+        }];
+        let stored = shape.line_to_stored(&curved);
+        assert_eq!(stored.edges, curved.edges);
+        close(stored.vertices[0].pos, p(0.0, 50.0));
+    }
+
+    #[test]
+    fn twins_follow_their_piece_and_map_back() {
+        let mut pr = Project::new();
+        let a = pr.add_piece(Piece::rectangle(
+            PieceId(0),
+            "Back",
+            p(0.0, 0.0),
+            100.0,
+            200.0,
+        ));
+        let t = pr
+            .add_twin(a, "Back (mirror)".into(), p(300.0, 0.0))
+            .unwrap();
+        let all = shapes(&pr);
+        assert_eq!(all.len(), 2);
+        assert_eq!((all[0].id, all[0].kind), (a, ShapeKind::Plain));
+        let twin = &all[1];
+        assert_eq!((twin.id, twin.source), (t, a));
+        assert_eq!(
+            twin.kind,
+            ShapeKind::Twin {
+                offset: p(300.0, 0.0)
+            }
+        );
+        close(twin.piece.vertices[1].pos, p(200.0, 0.0));
+        let q = p(123.0, 45.0);
+        close(twin.to_stored(twin.from_stored(q)), q);
+        close(twin.to_stored_delta(p(5.0, 7.0)), p(-5.0, 7.0));
+        close(twin.kind.to_stored_delta(p(5.0, 7.0)), p(-5.0, 7.0));
+        close(all[0].kind.to_stored_delta(p(5.0, 7.0)), p(5.0, 7.0));
+        assert_eq!((twin.stored_vertex(3), twin.shape_edge(2)), (Some(3), 2));
+    }
+
+    #[test]
+    fn a_pin_spot_is_kept_on_the_stored_piece_and_shown_where_it_was() {
+        let mut pr = Project::new();
+        pr.add_piece(half());
+        let back = pr.add_piece(Piece::rectangle(
+            PieceId(0),
+            "Back",
+            p(300.0, 0.0),
+            100.0,
+            200.0,
+        ));
+        pr.add_twin(back, "Back (mirror)".into(), p(900.0, 0.0))
+            .unwrap();
+        let all = shapes(&pr);
+        // The front: its drawn half is x 0..100, its pale half x -100..0.
+        assert_eq!(all[0].pin_spot(p(30.0, 50.0)), (Half::Drawn, p(30.0, 50.0)));
+        assert_eq!(all[0].pin_spot(p(-30.0, 50.0)), (Half::Pale, p(30.0, 50.0)));
+        // The twin shows stored (x, y) at (900 - x, y).
+        assert_eq!(
+            all[2].pin_spot(p(580.0, 10.0)),
+            (Half::Drawn, p(320.0, 10.0))
+        );
+        for (shape, q) in [
+            (&all[0], p(30.0, 50.0)),
+            (&all[0], p(-30.0, 50.0)),
+            (&all[2], p(580.0, 10.0)),
+        ] {
+            let (half, at) = shape.pin_spot(q);
+            close(shape.spot_shown(half, at), q);
+        }
+    }
+}

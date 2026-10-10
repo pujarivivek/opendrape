@@ -43,6 +43,13 @@ pub struct GpuMesh {
     color: [f32; 3],
 }
 
+impl GpuMesh {
+    /// Draws the mesh in `color` from the next frame on.
+    pub fn set_color(&mut self, color: [f32; 3]) {
+        self.color = color;
+    }
+}
+
 pub struct MeshRenderer {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,

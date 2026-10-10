@@ -172,7 +172,21 @@ Each milestone ends with a **GitHub Release** (installers + portable ZIP) and a 
 
 - **M0 Foundations: complete (2026-10-09).** Public repo https://github.com/pujarivivek/opendrape, CI green on Linux/Windows/macOS, nightly installers published. Windows start-up on real hardware still to be confirmed by a tester.
 - **M1 Drape spike: complete (2026-10-09).** CC0 MakeHuman body; XPBD cloth with seams that close and weld; exact per-frame body collision; skirt and fitted-tube scenes with Play/Pause/Reset and auto-pause when settled. Release bench on an M4 Max: skirt 4,700 particles, 14 ms/frame, 0.00 mm penetration, strain p99 7.5%; fitted tube 1,440 particles, 4.3 ms/frame, 0.00 mm, strain p99 3.1%. The CI smoke test confirmed the Windows exe starts (WARP).
-- **M2a Pattern editor core: complete (2026-10-09).** Pen, rectangle, edit and add-point tools; typed lengths and angles while drawing; a properties panel for lengths, positions, names and grain; cm/inch; undo/redo (200 steps, one per drag); `.odp` save/open with version checks; unsaved-changes guard. M2b (seam allowance, notches, internal lines, symmetric and mirrored pieces) is next.
+- **M2a Pattern editor core: complete (2026-10-09).** Pen, rectangle, edit and add-point tools; typed lengths and angles while drawing; a properties panel for lengths, positions, names and grain; cm/inch; undo/redo (200 steps, one per drag); `.odp` save/open with version checks; unsaved-changes guard.
+- **M2b Pattern details: complete (2026-10-09).** Seam allowance per piece and edge (1 cm default, 3 cm hems with mirrored corners), notches (single/double/triple, slit/V), internal lines (markings and cut-outs), cut-on-fold pieces shown whole, mirrored left/right pairs, project format v2 (v1 files upgrade), a recovery copy when quitting can't ask, Tab cycling in the number box, labels outside pieces, cached drawing for huge files.
+- **M4a Sew & drape, part 1: complete (2026-10-10).**
+  - **Sewing:** the Sew tool (W) joins whole edges. Mirrored seams are derived for cut-on-fold pieces and pairs. A seam panel shows the lengths, a warning over 3 mm, and Flip. Edits keep seams sewn.
+  - **Fabric:** spade's refined triangulation (12 mm, at most 30,000 particles).
+  - **Arranging:** a Stage around the body with a floor; in 3D, click-to-select, an in-house gizmo, Place at front/back/sides and typed placement.
+  - **Draping:** Play/Reset drapes the student's own pattern on the simulation thread, with notes for problems.
+  - **Files:** project format v3 (v1 and v2 files upgrade).
+  - **The drafted-skirt gate:** 0.00 mm penetration, seams welded, strain p99 6.3%.
+- **M4b Sew & drape, part 2: complete (2026-10-10).**
+  - **Sewing:** Free Sew (F) joins any two points of outlines; notches pair up across seams; whole-edge sewing (W) is unchanged; Fit moves to Cmd+0.
+  - **Arranging:** arm lines found on the form; Place at → Left arm / Right arm.
+  - **Draping:** pins (saved) and grabs in 3D; edits while draping carry the drape on, warm-started and coalesced on the simulation thread.
+  - **Files:** project format v4 (v1 to v3 files upgrade).
+  - **The drafted-T-shirt gate:** 0.00 mm penetration, seams welded, the cap notch on the shoulder seam, strain p99 4.5%.
 
 ## On approval: next steps
 1. `git init` in `/Users/vivekpuajri/Developer/vibe-clo3d`, delete the stray `firebase-debug.log`, and save this plan as `docs/specs/2026-10-09-opendrape-design.md`.
