@@ -644,7 +644,7 @@ fn fit_shows_every_piece() {
         ))
     });
     h.run();
-    key(&mut h, Key::F);
+    cmd(&mut h, Key::Num0); // F is the Free Sew tool's now
     let ed = h.state();
     for p in [Point2::new(100.0, 100.0), Point2::new(5200.0, 3200.0)] {
         assert!(

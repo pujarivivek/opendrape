@@ -422,6 +422,9 @@ impl PatternEditor {
         {
             painter.circle_stroke(v.to_screen(rect, p), 4.5, ink);
         }
+        if self.tool == Tool::FreeSew {
+            self.paint_free_sew(painter, rect, c);
+        }
         // The seam side being sewn, thick, with a ring where it starts.
         if let Some(side) = self.sew_draft_side()
             && let Some(shape) = geom::shape_of(self.doc.project(), side.shape)
@@ -433,6 +436,48 @@ impl PatternEditor {
                 Stroke::new(4.0, c.selected),
             ));
             painter.circle_stroke(v.to_screen(rect, start), 6.0, ink);
+        }
+    }
+
+    /// The Free Sew tool's seam so far: the piece its first side is on, outlined; the first side
+    /// once made, thick; the side being picked, from its start to where the next click would
+    /// end it; a ring at each start; and a dot where a click would land.
+    fn paint_free_sew(&self, painter: &Painter, rect: Rect, c: &Palette) {
+        let v = self.view;
+        let ink = Stroke::new(1.5, c.selected);
+        let project = self.doc.project();
+        let side_line = |side: &opendrape_core::SeamSide, width: f32| {
+            let shape = geom::shape_of(project, side.shape)?;
+            let points = geom::side_points(&shape, side, v.mm(0.25))?;
+            painter.add(Shape::line(
+                self.screen_points(rect, points),
+                Stroke::new(width, c.selected),
+            ));
+            Some(())
+        };
+        if let Some(d) = self.canvas.free {
+            if let Some(shape) = geom::shape_of(project, d.start.shape) {
+                let outline = geom::outline_points(&shape.piece, v.mm(0.25));
+                painter.add(Shape::closed_line(
+                    self.screen_points(rect, outline),
+                    Stroke::new(2.5, c.selected),
+                ));
+            }
+            for at in std::iter::once(d.start.at).chain(d.b_start.map(|b| b.at)) {
+                painter.circle_stroke(v.to_screen(rect, at), 6.0, ink);
+            }
+        }
+        let (made, so_far) = self.free_sew_drawing(self.canvas.shift);
+        if let Some(a) = made {
+            side_line(&a, 4.0);
+        }
+        if let Some(s) = so_far {
+            side_line(&s, 2.0);
+        }
+        if let Some(w) = self.canvas.cursor
+            && let Some(hit) = super::free_sew::point_under(project, w, v.mm(super::HIT_PX))
+        {
+            painter.circle_filled(v.to_screen(rect, hit.at), 3.5, c.selected);
         }
     }
 

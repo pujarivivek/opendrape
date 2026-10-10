@@ -3,6 +3,7 @@
 mod cache;
 mod canvas;
 mod document;
+mod free_sew;
 mod length_box;
 mod line_tool;
 mod notch_tool;
@@ -38,6 +39,8 @@ pub const REDO: KeyboardShortcut = KeyboardShortcut::new(
 );
 /// Redo the Windows way: Ctrl+Y.
 const REDO_Y: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Y);
+/// Show every piece: Cmd+0 (Ctrl+0 on Windows). F is the Free Sew tool's.
+pub const FIT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Num0);
 
 /// Pointer distance (screen points) that counts as touching a point, handle or edge.
 const HIT_PX: f64 = 8.0;
@@ -54,10 +57,11 @@ pub enum Tool {
     Notch,
     Line,
     Sew,
+    FreeSew,
 }
 
 impl Tool {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Edit,
         Self::Pen,
         Self::Rectangle,
@@ -65,6 +69,7 @@ impl Tool {
         Self::Notch,
         Self::Line,
         Self::Sew,
+        Self::FreeSew,
     ];
 
     /// Single-key shortcut: the letters other pattern software uses, so habits carry over.
@@ -78,6 +83,7 @@ impl Tool {
             Self::Line => Key::L,
             // S is the Rectangle's.
             Self::Sew => Key::W,
+            Self::FreeSew => Key::F,
         }
     }
 
@@ -90,6 +96,7 @@ impl Tool {
             Self::Notch => tr!("tool-notch"),
             Self::Line => tr!("tool-line"),
             Self::Sew => tr!("tool-sew"),
+            Self::FreeSew => tr!("tool-free-sew"),
         }
     }
 
@@ -102,6 +109,7 @@ impl Tool {
             Self::Notch => tr!("tool-notch-tip"),
             Self::Line => tr!("tool-line-tip"),
             Self::Sew => tr!("tool-sew-tip"),
+            Self::FreeSew => tr!("tool-free-sew-tip"),
         }
     }
 }
@@ -252,7 +260,7 @@ impl PatternEditor {
     }
 
     /// Undo. While a line or a piece is being drawn, removes its last point instead; while a
-    /// seam has only its first side, cancels that.
+    /// seam is half made (with either Sew tool), cancels that.
     pub fn undo(&mut self) {
         if self.canvas.line.pop().is_some() {
             if self.canvas.line.is_empty() {
@@ -264,6 +272,7 @@ impl PatternEditor {
         }
         self.selection = self.selection.validated(self.doc.project());
         self.drop_stale_sew();
+        self.drop_stale_free_sew();
     }
 
     /// Redo. Waits while a line or a piece is being drawn. A seam with only its first side is
@@ -276,6 +285,7 @@ impl PatternEditor {
         }
         self.selection = self.selection.validated(self.doc.project());
         self.drop_stale_sew();
+        self.drop_stale_free_sew();
     }
 
     pub fn can_undo(&self) -> bool {
@@ -336,6 +346,7 @@ impl PatternEditor {
         }
         self.selection = self.selection.validated(self.doc.project());
         self.drop_stale_sew();
+        self.drop_stale_free_sew();
         egui::Panel::top("pattern_tools").show(ui, |ui| self.toolbar(ui));
         egui::Panel::bottom("pattern_status").show(ui, |ui| self.status_bar(ui));
         egui::Panel::right("pattern_properties")
@@ -362,7 +373,7 @@ impl PatternEditor {
                 self.set_tool(tool);
             }
         }
-        if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F)) {
+        if ui.input_mut(|i| i.consume_shortcut(&FIT)) {
             self.fit_pending = true;
         }
     }
@@ -392,8 +403,13 @@ impl PatternEditor {
             ui.separator();
             ui.checkbox(&mut self.show_lengths, tr!("toolbar-show-lengths"));
             ui.checkbox(&mut self.show_allowance, tr!("toolbar-show-allowance"));
+            let fit = format!(
+                "{} ({})",
+                tr!("toolbar-fit"),
+                ui.ctx().format_shortcut(&FIT)
+            );
             if ui
-                .button(tr!("toolbar-fit"))
+                .button(fit)
                 .on_hover_text(tr!("toolbar-fit-tip"))
                 .clicked()
             {

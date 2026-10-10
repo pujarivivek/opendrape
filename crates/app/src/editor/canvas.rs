@@ -44,8 +44,12 @@ pub(super) struct CanvasState {
     pub line_dragging: bool,
     /// Sew tool: the seam being sewn.
     pub sew: Option<super::sew_tool::SewDraft>,
+    /// Free Sew tool: the seam being sewn.
+    pub free: Option<super::free_sew::FreeDraft>,
     /// The shape the Place at… menu was opened on (right-click).
     pub menu_for: Option<PieceId>,
+    /// Shift is held (the Free Sew tool shows the long way round then).
+    pub shift: bool,
 }
 
 /// What placing a pen point did.
@@ -222,11 +226,12 @@ impl PatternEditor {
 
         let tol = self.view.mm(HIT_PX);
         let shift = ui.input(|i| i.modifiers.shift);
+        self.canvas.shift = shift;
         let hover = response.hover_pos().map(|p| self.view.to_world(rect, p));
         let cursor = hover.map(|w| match self.tool {
             Tool::Pen => self.snap(w, tol, shift),
             Tool::Rectangle => self.snap(w, tol, false),
-            Tool::Edit | Tool::AddPoint | Tool::Notch | Tool::Line | Tool::Sew => w,
+            Tool::Edit | Tool::AddPoint | Tool::Notch | Tool::Line | Tool::Sew | Tool::FreeSew => w,
         });
         self.canvas.cursor = cursor;
         // A press on the canvas dismisses the last notice, unless a property field owned the
@@ -251,6 +256,7 @@ impl PatternEditor {
             Tool::Notch => self.notch_tool(&response, hover, pointer, tol),
             Tool::Line => self.line_tool(&response, press, pointer, tol),
             Tool::Sew => self.sew_tool(&response, pointer, tol, shift),
+            Tool::FreeSew => self.free_sew_tool(&response, pointer, tol, shift),
         }
         self.place_menu_on(&response, tol);
         if keys_free {
@@ -508,9 +514,10 @@ impl PatternEditor {
                     self.delete_selection();
                 }
             }
-            Tool::Sew => {
+            Tool::Sew | Tool::FreeSew => {
                 if pressed(Key::Escape) {
                     self.canvas.sew = None;
+                    self.canvas.free = None;
                 }
                 // Only a seam: a piece or point selected earlier is the Edit tool's to delete.
                 if matches!(self.selection, Selection::Seam(_)) && delete_pressed() {

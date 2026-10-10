@@ -143,7 +143,7 @@ pub(super) fn extended(side: EdgeRun, edge: usize, n: usize) -> Option<EdgeRun> 
 
 /// Whether `w` is within `tol` mm of a fold line: the straight line inside a cut-on-fold
 /// piece where its two halves meet.
-fn on_a_fold_line(project: &Project, w: Point2, tol: f64) -> bool {
+pub(super) fn on_a_fold_line(project: &Project, w: Point2, tol: f64) -> bool {
     geom::shapes(project).iter().any(|s| match s.kind {
         geom::ShapeKind::Folded { fold: (a, b), .. } => {
             super::canvas::segment_distance(w, a, b) <= tol
@@ -178,14 +178,16 @@ impl PatternEditor {
         self.canvas.sew = self.canvas.sew.filter(|d| draft_fits(project, d));
     }
 
-    /// A seam with only its first side picked, which is not in the project yet.
+    /// A seam with only its first side picked (or, with the Free Sew tool, any of its points),
+    /// which is not in the project yet.
     pub(super) fn has_half_made_seam(&self) -> bool {
-        self.canvas.sew.is_some_and(|d| d.seam.is_none())
+        self.canvas.sew.is_some_and(|d| d.seam.is_none()) || self.canvas.free.is_some()
     }
 
     /// Drops a half-made seam; true if there was one.
     pub(super) fn cancel_half_made_seam(&mut self) -> bool {
-        self.canvas.sew.take_if(|d| d.seam.is_none()).is_some()
+        let free = self.canvas.free.take().is_some();
+        self.canvas.sew.take_if(|d| d.seam.is_none()).is_some() || free
     }
 
     pub(super) fn sew_tool(

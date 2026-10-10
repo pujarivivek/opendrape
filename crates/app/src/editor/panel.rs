@@ -560,6 +560,12 @@ impl PatternEditor {
                 Some(draft) if draft.seam.is_none() => tr!("hint-sew-second"),
                 Some(_) => tr!("hint-sew-extend"),
             },
+            Tool::FreeSew => match self.canvas.free {
+                None => tr!("hint-free-start"),
+                Some(d) if d.a.is_none() => tr!("hint-free-end"),
+                Some(d) if d.b_start.is_none() => tr!("hint-free-second"),
+                Some(_) => tr!("hint-free-second-end"),
+            },
         }
     }
 }
