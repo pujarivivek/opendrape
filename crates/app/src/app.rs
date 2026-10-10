@@ -1490,6 +1490,8 @@ impl eframe::App for OpenDrapeApp {
                     egui::Panel::top("area_switch").show(ui, |ui| self.area_switch(ui));
                 }
                 if pattern_left {
+                    // `view_3d` keeps this up to date while it is shown.
+                    self.editor.draping = self.is_draping();
                     self.editor.ui_with_keys(ui, keys_left);
                 } else {
                     self.view_3d(ui, frame);

@@ -81,7 +81,7 @@ crates/io       .odp project zip, OBJ/GLB export, PDF tiling, DXF-AAMA writer + 
 crates/i18n     Fluent resources + fl! wrapper
 crates/app      eframe app: 2D editor, 3D view, panels, Document + undo, sim orchestration
 crates/testkit  programmatic acceptance garments, metrics, golden-image compare
-xtask/          MakeHuman CC0 → avatar binary, golden updates, ASSETS.md / license report
+xtask/          app icons, studio lighting bake (CC0 HDRI), golden updates, ASSETS.md / license report
 ```
 Package names are `opendrape-<crate>`. Key pure interfaces:
 - `resolve_piece(&Project, PieceId)`

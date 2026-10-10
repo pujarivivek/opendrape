@@ -2644,3 +2644,24 @@ fn unsaved_work_whose_form_cannot_be_built_is_restored_on_the_default_form_and_s
     h.get_by_label_contains("child-torso");
     h.get_by_label_contains("default dress form");
 }
+
+#[test]
+fn the_pattern_on_the_left_knows_when_a_form_change_ends_the_drape() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    drape_the_sewn_pieces(&mut h);
+    assert!(h.state().editor().draping);
+    // The drape keeps the window redrawing: a few frames at a time.
+    h.state_mut().set_assets_open(true);
+    h.run_steps(2);
+    h.state_mut().set_left_shows_pattern(true);
+    h.run_steps(2);
+    let us14 = opendrape_drape::choice::chart_choice("women-torso", "classic", "US 14").unwrap();
+    h.state_mut().apply_form(us14).unwrap();
+    h.run_steps(2);
+    assert!(!h.state().is_draping());
+    assert!(
+        !h.state().editor().draping,
+        "Place at works again, with the 3D view hidden"
+    );
+}
