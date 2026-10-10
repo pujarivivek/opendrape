@@ -14,7 +14,7 @@ use opendrape_core::{
 };
 use opendrape_drape::{Drape, Stage};
 use opendrape_geom as geom;
-use opendrape_mesh::place::{self, PlaceAt};
+use opendrape_mesh::place::PlaceAt;
 use opendrape_sim::{BodyCollider, FRAME_DT, Solver};
 use opendrape_testkit::metrics::{measure, position_hash};
 use std::sync::Arc;
@@ -133,30 +133,15 @@ fn shirt(stage: &Stage) -> Shirt {
     for id in [front, back] {
         assert!(pr.set_placement(id, Some(Placement::at([0.0, middle, 0.4]))));
     }
-    // Place at front and back, as the app does it.
+    // Place at front and back, then Place at → Left arm, through the one helper the app's menu
+    // uses: the twin, with no placement of its own, mirrors the sleeve's onto the right arm.
     for (id, at) in [(front, PlaceAt::Front), (back, PlaceAt::Back)] {
-        let shapes = geom::shapes(&pr);
-        let shape = shapes.iter().find(|s| s.id == id).unwrap();
-        let placed = place::place_at(
-            &pr,
-            shape,
-            at,
-            &place::layout(&shapes),
-            stage.shoulder_y(),
-            &|angle, y| stage.surface_distance(angle, y),
-        );
+        let placed = stage.place_at(&pr, id, at).expect("the piece is there");
         assert!(pr.set_placement(id, Some(placed)));
     }
-    // Place at → Left arm, as the app does it: the twin, with no placement of its own, mirrors
-    // it onto the right arm.
-    let shapes = geom::shapes(&pr);
-    let shape = shapes.iter().find(|s| s.id == sleeve).unwrap();
-    let placed = place::place_at_arm(
-        shape,
-        &stage.arms().expect("the bundled body has arms")[0],
-        &|along, angle| stage.arm_surface_distance(0, along, angle),
-        &|q| stage.signed_distance(q) < 0.0,
-    );
+    let placed = stage
+        .place_at_arm(&pr, sleeve, 0)
+        .expect("the bundled body has arms");
     assert!(pr.set_placement(sleeve, Some(placed)));
     assert_eq!(pr.check(), Ok(()));
     Shirt {

@@ -10,7 +10,10 @@
 
 use glam::{DVec3, Vec3};
 use opendrape_body::BodyMesh;
+use opendrape_core::{PieceId, Placement, Project};
+use opendrape_geom as geom;
 pub use opendrape_mesh::place::Arm;
+use opendrape_mesh::place::{self, PlaceAt};
 use opendrape_sim::{BodyCollider, Collider, Plane};
 use std::sync::{Arc, OnceLock};
 
@@ -134,6 +137,39 @@ impl Stage {
         let a = self.arms.as_ref()?.get(arm)?;
         self.collider
             .ray_exit(a.at(along), a.around(angle), ARM_RAY_M)
+    }
+
+    /// Place at… front, back or a side: where piece or twin `id` of `project` goes when it is
+    /// wrapped round this form at `at`, at the height it has now. None when `project` has no
+    /// such shape. The one place the form's rays are wired to `place::place_at`: the app's menu
+    /// and the tests both ask here.
+    pub fn place_at(&self, project: &Project, id: PieceId, at: PlaceAt) -> Option<Placement> {
+        let shapes = geom::shapes(project);
+        let shape = shapes.iter().find(|s| s.id == id)?;
+        Some(place::place_at(
+            project,
+            shape,
+            at,
+            &place::layout(&shapes),
+            self.shoulder_y,
+            &|angle, y| self.surface_distance(angle, y),
+        ))
+    }
+
+    /// Place at → Left arm (`arm` 0) or Right arm (1): where piece or twin `id` of `project`
+    /// goes when it is wrapped round that arm, moved down it until no point is inside the form
+    /// (see `place::place_at_arm`). None when `project` has no such shape or this form no such
+    /// arm. Like [`Self::place_at`], the one place the arm's rays are wired.
+    pub fn place_at_arm(&self, project: &Project, id: PieceId, arm: usize) -> Option<Placement> {
+        let on = self.arms.as_ref()?.get(arm)?;
+        let shapes = geom::shapes(project);
+        let shape = shapes.iter().find(|s| s.id == id)?;
+        Some(place::place_at_arm(
+            shape,
+            on,
+            &|along, angle| self.arm_surface_distance(arm, along, angle),
+            &|p| self.signed_distance(p) < 0.0,
+        ))
     }
 }
 
@@ -712,28 +748,18 @@ mod tests {
 
     #[test]
     fn sleeves_from_ten_to_sixty_centimetres_long_are_curved_round_the_upper_arm() {
-        use opendrape_core::{Piece, PieceId, Point2, Project};
-        use opendrape_mesh::place::place_at_arm;
+        use opendrape_core::{Piece, Point2};
         let stage = Stage::shared();
-        let arm = stage.arms().unwrap()[0];
         let radius = |tall_mm: f64| {
             let mut pr = Project::new();
-            pr.add_piece(Piece::rectangle(
+            let id = pr.add_piece(Piece::rectangle(
                 PieceId(0),
                 "Sleeve",
                 Point2::new(0.0, 0.0),
                 340.0,
                 tall_mm,
             ));
-            let shape = opendrape_geom::shapes(&pr).remove(0);
-            place_at_arm(
-                &shape,
-                &arm,
-                &|along, angle| stage.arm_surface_distance(0, along, angle),
-                &|q| stage.signed_distance(q) < 0.0,
-            )
-            .curve
-            .unwrap()
+            stage.place_at_arm(&pr, id, 0).unwrap().curve.unwrap()
         };
         let t_shirt = radius(250.0);
         assert!((0.05..0.12).contains(&t_shirt), "{t_shirt}");
@@ -744,5 +770,83 @@ mod tests {
                 "{tall} mm long: {r:.3} m against {t_shirt:.3} m"
             );
         }
+    }
+
+    /// A 340 × 250 mm sleeve and its mirror-image twin, and a 300 × 450 mm front.
+    fn sleeve_and_front() -> (Project, PieceId, PieceId, PieceId) {
+        use opendrape_core::{Piece, Point2};
+        let mut pr = Project::new();
+        let sleeve = pr.add_piece(Piece::rectangle(
+            PieceId(0),
+            "Sleeve",
+            Point2::new(0.0, 0.0),
+            340.0,
+            250.0,
+        ));
+        let twin = pr
+            .add_twin(sleeve, "Sleeve (mirror)".into(), Point2::new(900.0, 0.0))
+            .unwrap();
+        let front = pr.add_piece(Piece::rectangle(
+            PieceId(0),
+            "Front",
+            Point2::new(0.0, 500.0),
+            300.0,
+            450.0,
+        ));
+        (pr, sleeve, twin, front)
+    }
+
+    /// Where shape `id`'s outline points are in 3D, given placement `p`.
+    fn placed_points(project: &Project, id: PieceId, p: &Placement) -> Vec<DVec3> {
+        let shapes = geom::shapes(project);
+        let shape = shapes.iter().find(|s| s.id == id).unwrap();
+        geom::outline_points(&shape.piece, 5.0)
+            .into_iter()
+            .map(|q| place::apply(p, place::centre_of(shape), q))
+            .collect()
+    }
+
+    #[test]
+    fn place_at_wraps_a_piece_round_the_form_on_the_side_asked_for() {
+        let stage = Stage::shared();
+        let (pr, _, _, front) = sleeve_and_front();
+        let outside = |at: PlaceAt| {
+            let p = stage.place_at(&pr, front, at).expect("a shape");
+            let points = placed_points(&pr, front, &p);
+            // Clear of the form, and the middle of the piece on the side asked for.
+            assert!(
+                points.iter().all(|q| stage.signed_distance(*q) > -0.002),
+                "{at:?} is inside the form"
+            );
+            points.iter().fold(DVec3::ZERO, |a, q| a + *q) / points.len() as f64
+        };
+        assert!(outside(PlaceAt::Front).z > 0.05);
+        assert!(outside(PlaceAt::Back).z < -0.05);
+        assert!(outside(PlaceAt::LeftSide).x > 0.1);
+        assert!(outside(PlaceAt::RightSide).x < -0.1);
+        assert_eq!(stage.place_at(&pr, PieceId(99), PlaceAt::Front), None);
+    }
+
+    #[test]
+    fn place_at_arm_puts_a_sleeve_round_the_arm_asked_for_clear_of_the_form() {
+        let stage = Stage::shared();
+        let arms = *stage.arms().unwrap();
+        let (pr, sleeve, twin, _) = sleeve_and_front();
+        for (arm, id) in [(0, sleeve), (1, twin), (1, sleeve)] {
+            let p = stage
+                .place_at_arm(&pr, id, arm)
+                .expect("a shape and an arm");
+            let r = p.curve.expect("curved round the arm");
+            let points = placed_points(&pr, id, &p);
+            // Every point is a sleeve's radius from this arm's line, nearer it than the other,
+            // and none is inside the form.
+            for q in &points {
+                assert!((arms[arm].distance(*q) - r).abs() < 1e-6);
+                assert!(arms[arm].distance(*q) < arms[1 - arm].distance(*q));
+                assert!(stage.signed_distance(*q) > -0.002, "inside the form");
+            }
+        }
+        assert_eq!(stage.place_at_arm(&pr, sleeve, 2), None, "no third arm");
+        assert_eq!(stage.place_at_arm(&pr, PieceId(99), 0), None);
     }
 }

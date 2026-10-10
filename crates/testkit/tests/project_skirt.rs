@@ -7,8 +7,7 @@
 
 use opendrape_core::{Half, Piece, PieceId, Placement, Point2, Project, SeamSide};
 use opendrape_drape::{DrapeNote, Stage, build_drape};
-use opendrape_geom as geom;
-use opendrape_mesh::place::{self, PlaceAt};
+use opendrape_mesh::place::PlaceAt;
 use opendrape_mesh::{MeshParams, build};
 use opendrape_sim::{BodyCollider, FRAME_DT, Solver};
 use opendrape_testkit::metrics::{measure, position_hash};
@@ -60,18 +59,9 @@ fn skirt(stage: &Stage) -> Project {
     for id in [front, back] {
         assert!(pr.set_placement(id, Some(Placement::at([0.0, middle, 0.4]))));
     }
-    // Place at…, as the app does it.
+    // Place at…, through the one helper the app's menu uses.
     for (id, at) in [(front, PlaceAt::Front), (back, PlaceAt::Back)] {
-        let shapes = geom::shapes(&pr);
-        let shape = shapes.iter().find(|s| s.id == id).unwrap();
-        let placed = place::place_at(
-            &pr,
-            shape,
-            at,
-            &place::layout(&shapes),
-            stage.shoulder_y(),
-            &|angle, y| stage.surface_distance(angle, y),
-        );
+        let placed = stage.place_at(&pr, id, at).expect("the piece is there");
         assert!(pr.set_placement(id, Some(placed)));
     }
     assert_eq!(pr.check(), Ok(()));

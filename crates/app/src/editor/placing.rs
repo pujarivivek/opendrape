@@ -46,20 +46,9 @@ impl PatternEditor {
         let Some(stage) = self.stage.clone() else {
             return;
         };
-        let project = self.doc.project();
-        let shapes = geom::shapes(project);
-        let Some(shape) = shapes.iter().find(|s| s.id == id) else {
-            return;
-        };
-        let placement = place::place_at(
-            project,
-            shape,
-            at,
-            &place::layout(&shapes),
-            stage.shoulder_y(),
-            &|angle, y| stage.surface_distance(angle, y),
-        );
-        self.set_placement(id, placement);
+        if let Some(placement) = stage.place_at(self.doc.project(), id, at) {
+            self.set_placement(id, placement);
+        }
     }
 
     /// Place at → Left arm (`arm` 0) or Right arm (1): wraps `id` round that arm (see
@@ -70,21 +59,14 @@ impl PatternEditor {
         let Some(stage) = self.stage.clone() else {
             return;
         };
-        let Some(arms) = stage.arms() else {
+        if stage.arms().is_none() {
             self.notice = Some(tr!("notice-no-arms"));
             return;
-        };
+        }
         let project = self.doc.project();
-        let shapes = geom::shapes(project);
-        let (Some(shape), Some(on)) = (shapes.iter().find(|s| s.id == id), arms.get(arm)) else {
+        let Some(placement) = stage.place_at_arm(project, id, arm) else {
             return;
         };
-        let placement = place::place_at_arm(
-            shape,
-            on,
-            &|along, angle| stage.arm_surface_distance(arm, along, angle),
-            &|p| stage.signed_distance(p) < 0.0,
-        );
         let partner = match project.owner(id) {
             Some((piece, opendrape_core::Side::Master)) => {
                 piece.twin.as_ref().map(|t| (t.id, None))
