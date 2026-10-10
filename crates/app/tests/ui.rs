@@ -314,7 +314,7 @@ fn opening_a_file_while_draping_returns_to_arranging_and_its_pieces_start_at_the
         FileDialogs::scripted(vec![Some(file)]),
     );
     drape_the_sewn_pieces(&mut h);
-    file_menu(&mut h, "Open…");
+    file_menu_while_draping(&mut h, "Open…");
     h.get_by_label("Don't save").click(); // there are unsaved changes: asked first
     h.run_steps(2);
     assert_eq!(pieces(&h), 1, "the file is open");
@@ -344,7 +344,7 @@ fn new_while_draping_returns_to_arranging_with_no_cloth() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = harness(dir.path(), SharedState::default());
     drape_the_sewn_pieces(&mut h);
-    file_menu(&mut h, "New");
+    file_menu_while_draping(&mut h, "New");
     h.get_by_label("Don't save").click(); // there are unsaved changes: asked first
     h.run_steps(2);
     assert_eq!(pieces(&h), 0, "a new project");
@@ -467,6 +467,15 @@ fn file_menu(h: &mut App, item: &str) {
     h.run();
     h.get_by_label(item).click();
     h.run();
+}
+
+/// [`file_menu`] while the simulation plays: it keeps requesting repaints, so this steps
+/// explicitly instead of waiting for the UI to settle.
+fn file_menu_while_draping(h: &mut App, item: &str) {
+    h.get_by_label("File").click();
+    h.run_steps(2);
+    h.get_by_label(item).click();
+    h.run_steps(2);
 }
 
 fn pieces(h: &App) -> usize {
