@@ -8,17 +8,21 @@
 //! its left is +x, and its centre line is x = 0, z = 0 (the body is moved there when loaded).
 //! The shoulders are at 0.82 × the form's height.
 
+use crate::choice::FormProblem;
 use glam::{DVec3, Vec3};
 use opendrape_body::BodyMesh;
-use opendrape_core::{PieceId, Placement, Project};
+use opendrape_body::form::{BuiltForm, Measurements};
+use opendrape_core::{FormChoice, PieceId, Placement, Project};
 use opendrape_geom as geom;
 pub use opendrape_mesh::place::Arm;
 use opendrape_mesh::place::{self, PlaceAt};
-use opendrape_sim::{BodyCollider, Collider, Plane};
+use opendrape_sim::{BodyCollider, CompoundCollider};
 use std::sync::{Arc, OnceLock};
 
 /// Shoulder height as a share of standing height (the usual proportion of an adult body).
 pub const SHOULDER_SHARE: f64 = 0.82;
+/// Waist height as a share of standing height, for a stage made from a bare mesh.
+pub const WAIST_SHARE: f64 = 0.62;
 /// A ray from an arm's line looks this far (m) for the arm's surface. One that runs on into the
 /// torso finds nothing this close, and so does not count.
 pub const ARM_RAY_M: f64 = 0.15;
@@ -35,14 +39,39 @@ const MIN_ARM_CUTS: usize = 5;
 /// close (m) to the cut's outline.
 const ARM_LINE_MARGIN_M: f64 = 0.012;
 
-/// The form, its frame and its collider. Dress forms (Track B) swap the body here.
+/// A dress form has no arms: each side gets an imaginary arm line for Place at → armhole. It
+/// starts this far (m) out from the armhole plate's centre, at the shoulder point's height...
+pub const FORM_ARM_OUT_M: f64 = 0.10;
+/// ...leans out this far from straight down...
+pub const FORM_ARM_LEAN_DEG: f64 = 20.0;
+/// ...and is this long (m).
+pub const FORM_ARM_LENGTH_M: f64 = 0.6;
+
+/// A mesh to draw: positions and triangles.
+type Mesh = (Vec<Vec3>, Vec<[u32; 3]>);
+
+/// The form, its frame and its collider.
 pub struct Stage {
+    /// What the form was built for; None for a stage made from a bare mesh.
+    choice: Option<FormChoice>,
     positions: Vec<Vec3>,
     triangles: Vec<[u32; 3]>,
-    collider: BodyCollider,
+    /// The form's tape lines and stand, to draw only (empty for a bare mesh).
+    tapes: Mesh,
+    stand: Mesh,
+    /// The form alone: rays and the stage's own signed distance.
+    torso: BodyCollider,
+    /// The form and the floor, for the solver.
+    collider: CompoundCollider,
     shoulder_y: f64,
+    waist_y: f64,
     /// The left arm (+x), then the right; None for a form without arms.
     arms: Option<[Arm; 2]>,
+    /// The arms have a surface to measure round them (false for a dress form's imaginary
+    /// arm lines).
+    arm_surfaces: bool,
+    /// The form's measurements as built, mm (empty for a bare mesh).
+    measured: Measurements,
 }
 
 impl Stage {
@@ -56,10 +85,14 @@ impl Stage {
 
     /// A stage from a closed mesh already in the form's frame (metres, y up from the floor, the
     /// form facing +z with its left at +x, its centre line at x = 0, z = 0): its shoulders at
-    /// [`SHOULDER_SHARE`] of its height, and its arms found if it has them (see
-    /// [`Self::arms`]). None when the solver's collider refuses the mesh.
+    /// [`SHOULDER_SHARE`] of its height, its waist at [`WAIST_SHARE`], and its arms found if it
+    /// has them (see [`Self::arms`]). None when the solver's collider refuses the mesh.
     pub fn from_mesh(positions: Vec<Vec3>, triangles: Vec<[u32; 3]>) -> Option<Self> {
-        let collider = BodyCollider::new(&positions, &triangles).ok()?;
+        let torso = BodyCollider::new(&positions, &triangles).ok()?;
+        let collider = CompoundCollider::new(
+            vec![BodyCollider::new(&positions, &triangles).ok()?],
+            Some(0.0),
+        );
         let height = f64::from(positions.iter().map(|p| p.y).fold(0.0_f32, f32::max));
         let shoulder_y = SHOULDER_SHARE * height;
         let arms = match [1.0, -1.0]
@@ -69,12 +102,50 @@ impl Stage {
             _ => None,
         };
         Some(Self {
+            choice: None,
             positions,
             triangles,
+            tapes: Mesh::default(),
+            stand: Mesh::default(),
+            torso,
             collider,
             shoulder_y,
+            waist_y: WAIST_SHARE * height,
             arms,
+            arm_surfaces: true,
+            measured: Measurements::new(),
         })
+    }
+
+    /// The stage for a dress form built for `choice`: its torso to drape on (with the floor),
+    /// its tapes and stand to draw, its shoulder and waist stations, and an imaginary arm line
+    /// from each armhole (the form has no arms, so nothing is measured round them). The stand's
+    /// pole is the centre line. None when the solver's collider refuses the torso, or the form
+    /// lacks a shoulder or waist station.
+    pub fn from_form(choice: FormChoice, built: &BuiltForm) -> Option<Self> {
+        let mesh = &built.torso;
+        let torso = BodyCollider::new(&mesh.positions, &mesh.triangles).ok()?;
+        let parts = vec![BodyCollider::new(&mesh.positions, &mesh.triangles).ok()?];
+        Some(Self {
+            choice: Some(choice),
+            positions: mesh.positions.clone(),
+            triangles: mesh.triangles.clone(),
+            tapes: (built.tapes.positions.clone(), built.tapes.triangles.clone()),
+            stand: (built.stand.positions.clone(), built.stand.triangles.clone()),
+            torso,
+            collider: CompoundCollider::new(parts, Some(0.0)),
+            shoulder_y: *built.stations.get("shoulder")?,
+            waist_y: *built.stations.get("waist")?,
+            arms: imaginary_arms(built),
+            arm_surfaces: false,
+            measured: built.measured.clone(),
+        })
+    }
+
+    /// The stage for the form `choice` names, or why it can't be built.
+    pub fn for_choice(choice: &FormChoice) -> Result<Self, FormProblem> {
+        let built = crate::choice::build_form(choice)?;
+        Ok(Self::from_form(choice.clone(), &built).expect("a built form's torso is closed"))
     }
 
     /// One stage for the whole app (and its tests): building the collider takes a moment.
@@ -83,17 +154,29 @@ impl Stage {
         STAGE.get_or_init(|| Arc::new(Self::makehuman())).clone()
     }
 
+    /// What the form was built for; None for a stage made from a bare mesh.
+    pub fn choice(&self) -> Option<&FormChoice> {
+        self.choice.as_ref()
+    }
+
     /// The form's triangles, to draw.
     pub fn render_mesh(&self) -> (&[Vec3], &[[u32; 3]]) {
         (&self.positions, &self.triangles)
     }
 
+    /// The form's tape lines, to draw (none for a bare mesh).
+    pub fn tapes_mesh(&self) -> (&[Vec3], &[[u32; 3]]) {
+        (&self.tapes.0, &self.tapes.1)
+    }
+
+    /// The form's stand (neck cap, pole and base), to draw (none for a bare mesh).
+    pub fn stand_mesh(&self) -> (&[Vec3], &[[u32; 3]]) {
+        (&self.stand.0, &self.stand.1)
+    }
+
     /// The form and the floor, for the solver.
-    pub fn drape_collider(&self) -> BodyAndFloor<'_> {
-        BodyAndFloor {
-            body: &self.collider,
-            floor: self.floor_y(),
-        }
+    pub fn drape_collider(&self) -> &CompoundCollider {
+        &self.collider
     }
 
     /// The centre line's x and z: the form's frame puts it at the origin.
@@ -110,21 +193,32 @@ impl Stage {
         self.shoulder_y
     }
 
+    /// The form's waist height (m): where the 3D view looks.
+    pub fn waist_y(&self) -> f64 {
+        self.waist_y
+    }
+
+    /// The form's measurements as built (mm, by name; empty for a bare mesh).
+    pub fn measured(&self) -> &Measurements {
+        &self.measured
+    }
+
     /// How far (m) the form's surface is from its centre line at `angle` (radians from the
     /// front towards the form's left) and height `y`, if a ray from the centre line finds it.
     pub fn surface_distance(&self, angle: f64, y: f64) -> Option<f64> {
         let (x, z) = self.centre_line();
         let dir = DVec3::new(angle.sin(), 0.0, angle.cos());
-        self.collider.ray_exit(DVec3::new(x, y, z), dir, 1.0)
+        self.torso.ray_exit(DVec3::new(x, y, z), dir, 1.0)
     }
 
     /// Distance (m) to the form's surface, negative inside it.
     pub fn signed_distance(&self, p: DVec3) -> f64 {
-        self.collider.signed_distance(p)
+        self.torso.signed_distance(p)
     }
 
     /// The form's arms: its left (+x), then its right. None when it has none (or they could
-    /// not be found): Place at → arm is not offered then.
+    /// not be found): Place at → arm is not offered then. A dress form's are imaginary lines
+    /// from its armholes.
     pub fn arms(&self) -> Option<&[Arm; 2]> {
         self.arms.as_ref()
     }
@@ -132,11 +226,13 @@ impl Stage {
     /// How far (m) the surface of arm `arm` (0 left, 1 right) is from its line, `along` metres
     /// down from the shoulder and at `angle` round it (see [`Arm::around`]), if a ray from the
     /// line finds it within [`ARM_RAY_M`]. Meaningful where the line runs inside the arm: from
-    /// [`Arm::free`] down to [`Arm::length`].
+    /// [`Arm::free`] down to [`Arm::length`]. None round a dress form's imaginary arm lines.
     pub fn arm_surface_distance(&self, arm: usize, along: f64, angle: f64) -> Option<f64> {
+        if !self.arm_surfaces {
+            return None;
+        }
         let a = self.arms.as_ref()?.get(arm)?;
-        self.collider
-            .ray_exit(a.at(along), a.around(angle), ARM_RAY_M)
+        self.torso.ray_exit(a.at(along), a.around(angle), ARM_RAY_M)
     }
 
     /// Place at… front, back or a side: where piece or twin `id` of `project` goes when it is
@@ -171,6 +267,25 @@ impl Stage {
             &|p| self.signed_distance(p) < 0.0,
         ))
     }
+}
+
+/// The imaginary arm lines of a form without arms: from [`FORM_ARM_OUT_M`] out of each
+/// armhole plate's centre, at the shoulder point's height, down and out at
+/// [`FORM_ARM_LEAN_DEG`]. The left (+x) first. None when the form lacks the landmarks.
+fn imaginary_arms(built: &BuiltForm) -> Option<[Arm; 2]> {
+    let lean = FORM_ARM_LEAN_DEG.to_radians();
+    let arm = |suffix: &str| -> Option<Arm> {
+        let plate = *built.landmarks.get(&format!("plate_centre{suffix}"))?;
+        let shoulder = *built.landmarks.get(&format!("shoulder_point{suffix}"))?;
+        let side = plate.x.signum();
+        Some(Arm {
+            shoulder: DVec3::new(plate.x + side * FORM_ARM_OUT_M, shoulder.y, plate.z),
+            direction: DVec3::new(side * lean.sin(), -lean.cos(), 0.0),
+            length: FORM_ARM_LENGTH_M,
+            free: 0.0,
+        })
+    };
+    Some([arm("")?, arm("_R")?])
 }
 
 /// A closed loop of a cut across the form: its (x, z) points in order.
@@ -366,52 +481,11 @@ fn torso_centre(body: &BodyMesh) -> Vec3 {
     Vec3::new(mid.x, 0.0, mid.z)
 }
 
-/// The form and a floor as one collider. A particle inside either takes the nearest way out;
-/// otherwise the nearest surface within the margin. When the dress forms' `CompoundCollider`
-/// (which has a floor) arrives, it replaces this.
-pub struct BodyAndFloor<'a> {
-    body: &'a BodyCollider,
-    floor: f64,
-}
-
-impl BodyAndFloor<'_> {
-    /// Distance to the nearer of the form and the floor, negative inside either.
-    pub fn signed_distance(&self, p: DVec3) -> f64 {
-        self.body.signed_distance(p).min(p.y - self.floor)
-    }
-}
-
-impl Collider for BodyAndFloor<'_> {
-    fn contact_planes(&self, x: &[DVec3], margin: f64) -> Vec<Option<Plane>> {
-        let body = self.body.contact_planes(x, margin);
-        x.iter()
-            .zip(body)
-            .map(|(p, on_body)| {
-                let on_floor = (p.y - self.floor < margin).then(|| Plane {
-                    normal: DVec3::Y,
-                    point: DVec3::new(p.x, self.floor, p.z),
-                });
-                on_body
-                    .into_iter()
-                    .chain(on_floor)
-                    .map(|plane| ((*p - plane.point).dot(plane.normal), plane))
-                    // Inside anything: the nearest way out. Otherwise: the nearest surface.
-                    .min_by(|(a, _), (b, _)| {
-                        (*a >= 0.0)
-                            .cmp(&(*b >= 0.0))
-                            .then(a.abs().total_cmp(&b.abs()))
-                    })
-                    .map(|(_, plane)| plane)
-            })
-            .collect()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use glam::DVec2;
-    use opendrape_sim::{ClothBuilder, Panel, Params, Solver};
+    use opendrape_sim::{ClothBuilder, Collider, Panel, Params, Plane, Solid, Solver};
 
     #[test]
     fn the_form_stands_on_the_floor_round_its_centre_line() {
@@ -504,7 +578,7 @@ mod tests {
         );
         let collider = stage.drape_collider();
         for _ in 0..180 {
-            s.step(Some(&collider));
+            s.step(Some(collider));
         }
         for p in s.cloth().positions() {
             assert!(
@@ -512,76 +586,6 @@ mod tests {
                 "resting on the floor: {p}"
             );
         }
-    }
-
-    /// A closed box as a form.
-    fn slab(lo: Vec3, hi: Vec3) -> BodyCollider {
-        let p = [
-            [lo.x, lo.y, lo.z],
-            [hi.x, lo.y, lo.z],
-            [hi.x, hi.y, lo.z],
-            [lo.x, hi.y, lo.z],
-            [lo.x, lo.y, hi.z],
-            [hi.x, lo.y, hi.z],
-            [hi.x, hi.y, hi.z],
-            [lo.x, hi.y, hi.z],
-        ]
-        .map(Vec3::from_array);
-        let t = [
-            [0, 3, 2],
-            [0, 2, 1],
-            [4, 5, 6],
-            [4, 6, 7],
-            [0, 4, 7],
-            [0, 7, 3],
-            [1, 2, 6],
-            [1, 6, 5],
-            [0, 1, 5],
-            [0, 5, 4],
-            [3, 7, 6],
-            [3, 6, 2],
-        ];
-        BodyCollider::new(&p, &t).expect("a closed box")
-    }
-
-    #[test]
-    fn a_particle_takes_the_nearest_way_out_of_the_form_and_the_floor() {
-        let margin = 0.05;
-        // A form that reaches 1 cm below the floor.
-        let body = slab(Vec3::new(-0.5, -0.01, -0.5), Vec3::new(0.5, 1.0, 0.5));
-        let both = BodyAndFloor {
-            body: &body,
-            floor: 0.0,
-        };
-        let plane = |both: &BodyAndFloor, p: DVec3| both.contact_planes(&[p], margin)[0].unwrap();
-        // Inside the form and above the floor: out through the form (down, 1.4 cm), though the
-        // floor is nearer (0.4 cm) it is not something the particle is inside.
-        let inside = plane(&both, DVec3::new(0.0, 0.004, 0.0));
-        assert!(
-            inside.normal.abs_diff_eq(DVec3::NEG_Y, 1e-6) && (inside.point.y + 0.01).abs() < 1e-6,
-            "the form's plane, not the floor's: {inside:?}"
-        );
-        // Outside both, within the margin: the nearer surface wins either way.
-        let by_the_floor = plane(&both, DVec3::new(0.52, 0.01, 0.0));
-        assert_eq!(
-            by_the_floor.normal,
-            DVec3::Y,
-            "1 cm from the floor, 2 from the form"
-        );
-        let by_the_form = plane(&both, DVec3::new(0.505, 0.03, 0.0));
-        assert!(
-            by_the_form.normal.abs_diff_eq(DVec3::X, 1e-6),
-            "0.5 cm from the form, 3 from the floor: {:?}",
-            by_the_form.normal
-        );
-        // Inside both: the smaller depth wins. 1 cm below the floor is 49 cm inside a big form.
-        let deep = slab(Vec3::splat(-0.5), Vec3::splat(0.5));
-        let both = BodyAndFloor {
-            body: &deep,
-            floor: 0.0,
-        };
-        let shallow = plane(&both, DVec3::new(0.0, -0.01, 0.0));
-        assert_eq!(shallow.normal, DVec3::Y, "up through the floor");
     }
 
     #[test]
@@ -848,5 +852,91 @@ mod tests {
         }
         assert_eq!(stage.place_at_arm(&pr, sleeve, 2), None, "no third arm");
         assert_eq!(stage.place_at_arm(&pr, PieceId(99), 0), None);
+    }
+    fn form_stage(choice: &FormChoice) -> Stage {
+        Stage::for_choice(choice).expect("a bundled size")
+    }
+
+    #[test]
+    fn a_form_stage_has_its_shoulders_waist_and_centre_line_from_the_form() {
+        let choice = FormChoice::default();
+        let built = crate::choice::build_form(&choice).unwrap();
+        let stage = form_stage(&choice);
+        assert_eq!(stage.choice(), Some(&choice));
+        assert!((stage.shoulder_y() - built.stations["shoulder"]).abs() < 1e-12);
+        assert!((stage.waist_y() - built.stations["waist"]).abs() < 1e-12);
+        // The pole is the centre line: rays from it find the torso all round at the waist.
+        use std::f64::consts::{FRAC_PI_2, PI};
+        for a in [0.0, FRAC_PI_2, PI, -FRAC_PI_2] {
+            let d = stage
+                .surface_distance(a, stage.waist_y())
+                .expect("the waist");
+            assert!((0.05..0.2).contains(&d), "{a}: {d}");
+        }
+        assert!(stage.signed_distance(DVec3::new(0.0, stage.waist_y(), 0.0)) < 0.0);
+        // Its own signed distance is the torso's alone; the collider also has the floor.
+        let below = DVec3::new(2.0, -0.1, 2.0);
+        assert!(stage.signed_distance(below) > 0.0);
+        let with_floor = opendrape_sim::Solid::signed_distance(stage.drape_collider(), below);
+        assert!((with_floor + 0.1).abs() < 1e-9, "{with_floor}");
+        assert_eq!(stage.measured(), &built.measured);
+        assert!(!stage.tapes_mesh().1.is_empty() && !stage.stand_mesh().1.is_empty());
+        let low = stage
+            .stand_mesh()
+            .0
+            .iter()
+            .map(|p| p.y)
+            .fold(f32::MAX, f32::min);
+        assert!(low.abs() < 1e-4, "the stand stands on the floor: {low}");
+    }
+
+    #[test]
+    fn a_form_has_an_imaginary_arm_line_from_each_armhole_with_no_surface() {
+        let stage = form_stage(&FormChoice::default());
+        let [left, right] = *stage.arms().expect("imaginary arms");
+        let mirror = |v: DVec3| DVec3::new(-v.x, v.y, v.z);
+        assert!((right.shoulder - mirror(left.shoulder)).length() < 1e-9);
+        assert!((right.direction - mirror(left.direction)).length() < 1e-9);
+        let lean = left.direction.y.abs().acos().to_degrees();
+        assert!(left.direction.x > 0.0 && (lean - FORM_ARM_LEAN_DEG).abs() < 1e-9);
+        // Clear of the torso by more than a sleeve's starting radius, at the shoulder's height.
+        let clear = stage.signed_distance(left.shoulder);
+        assert!(
+            clear > opendrape_mesh::place::ARM_FALLBACK_RADIUS_M,
+            "{clear} at {}",
+            left.shoulder
+        );
+        assert!(
+            (left.shoulder.y - stage.shoulder_y()).abs() < 0.08,
+            "{}",
+            left.shoulder
+        );
+        assert_eq!(stage.arm_surface_distance(0, 0.2, 0.0), None);
+        assert_eq!(stage.arm_surface_distance(1, 0.2, 1.0), None);
+    }
+
+    #[test]
+    fn a_sleeve_placed_at_an_armhole_starts_clear_of_the_form() {
+        use opendrape_core::{Piece, Point2};
+        let stage = form_stage(&FormChoice::default());
+        let mut pr = Project::new();
+        let id = pr.add_piece(Piece::rectangle(
+            PieceId(0),
+            "Sleeve",
+            Point2::new(0.0, 0.0),
+            340.0,
+            200.0,
+        ));
+        let shape = &geom::shapes(&pr)[0];
+        let outline = geom::outline_points(&shape.piece, 0.5);
+        let (lo, hi) = opendrape_mesh::bounds(&outline);
+        let centre = lo.lerp(hi, 0.5);
+        for arm in [0, 1] {
+            let placed = stage.place_at_arm(&pr, id, arm).expect("an arm");
+            for q in &outline {
+                let d = stage.signed_distance(place::apply(&placed, centre, *q));
+                assert!(d > 0.0, "arm {arm}: {d}");
+            }
+        }
     }
 }

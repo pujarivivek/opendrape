@@ -469,7 +469,7 @@ mod tests {
     fn run(drape: &mut Drape, stage: &Stage, frames: usize) {
         let collider = stage.drape_collider();
         for _ in 0..frames {
-            drape.solver.step(Some(&collider));
+            drape.solver.step(Some(collider));
         }
     }
 

@@ -130,7 +130,7 @@ fn a_drafted_skirt_drapes_on_the_form_without_poking_through_and_settles() {
         if solver.cloth().has_open_stitches() {
             before_weld = Some((solver.time(), seam_gaps(&solver)));
         }
-        solver.step(Some(&collider));
+        solver.step(Some(collider));
     }
     let (time, (gap_max, gap_mean)) = before_weld.expect("the seams were open at the start");
     // The step that welds starts at the weld time, so that is the state measured.
@@ -193,7 +193,7 @@ fn the_drafted_skirt_drapes_the_same_every_time() {
     let hash = || {
         let (mut solver, _) = cloth(&stage);
         for _ in 0..90 {
-            solver.step(Some(&collider));
+            solver.step(Some(collider));
         }
         position_hash(solver.cloth())
     };

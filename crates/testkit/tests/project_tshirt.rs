@@ -218,7 +218,7 @@ fn a_drafted_t_shirt_drapes_with_its_sleeves_on_the_arms() {
         if drape.solver.cloth().has_open_stitches() {
             before_weld = Some(seam_gaps(&drape.solver));
         }
-        drape.solver.step(Some(&collider));
+        drape.solver.step(Some(collider));
     }
     let (gap_max, gap_mean) = before_weld.expect("the seams were open at the start");
     eprintln!("seam gaps before welding: max {gap_max:.2} mm, mean {gap_mean:.2} mm");
@@ -276,7 +276,7 @@ fn the_drafted_t_shirt_drapes_the_same_every_time() {
     let hash = || {
         let mut drape = Drape::new(Arc::new(shirt(&stage).project), &stage);
         for _ in 0..90 {
-            drape.solver.step(Some(&collider));
+            drape.solver.step(Some(collider));
         }
         position_hash(drape.solver.cloth())
     };

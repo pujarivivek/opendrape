@@ -459,7 +459,7 @@ fn run(stage: &Stage, rx: &Receiver<Command>, status: &Status, on_frame: &dyn Fn
         let Some(d) = &mut drape else { continue };
         let started = Instant::now();
         let collider = stage.drape_collider();
-        let stepped = guarded(|| d.made.solver.step(Some(&collider))).is_some();
+        let stepped = guarded(|| d.made.solver.step(Some(collider))).is_some();
         seq += 1;
         let ms = started.elapsed().as_secs_f64() * 1000.0;
         let frame = if stepped { d.frame(seq, ms) } else { None };
@@ -638,7 +638,7 @@ mod tests {
         // Later frames go through the same check.
         let collider = stage.drape_collider();
         for _ in 0..3 {
-            drape.made.solver.step(Some(&collider));
+            drape.made.solver.step(Some(collider));
             assert!(drape.frame(2, 1.0).is_some());
         }
     }

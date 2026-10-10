@@ -358,7 +358,7 @@ mod tests {
                     .map(|(a, b)| (x[a] - x[b]).length())
                     .fold(0.0, f64::max);
             }
-            solver.step(Some(&collider));
+            solver.step(Some(collider));
         }
         assert!(
             gap_at_the_end_of_closing < 0.004,
