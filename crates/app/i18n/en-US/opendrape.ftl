@@ -251,3 +251,11 @@ workspace-texturing-blurb = Fabrics, colours and prints for your pieces.
 workspace-rendering-blurb = Pictures of your garment, from quick views to AI photos.
 workspace-animation-blurb = Turntables and short clips of your garment.
 coming-soon = Coming in a later update.
+
+## The 3D view's quality (View menu)
+menu-quality = 3D quality
+quality-auto = Auto ({ $level })
+quality-basic = Basic
+quality-medium = Medium
+quality-high = High
+quality-tip = How the 3D view looks. Lower levels stay smooth on slower computers.

@@ -17,6 +17,7 @@ pub mod smoke_test;
 pub mod startup_log;
 pub mod theme;
 mod view_picker;
+mod view_settings;
 mod viewport;
 pub mod workspace;
 

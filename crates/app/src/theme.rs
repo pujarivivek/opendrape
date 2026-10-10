@@ -41,9 +41,9 @@ pub const READOUT_TEXT: Color32 = Color32::from_gray(30);
 /// A seam's number on its coloured badge on the pattern table.
 pub const SEAM_BADGE_TEXT: Color32 = Color32::WHITE;
 
-/// The form in the 3D view (a mid-brown skin tone), the fabric (a cotton blue), and the
-/// selected piece (a warmer orange), as linear RGB.
-pub const SKIN: [f32; 3] = [0.62, 0.45, 0.36];
+/// The dress form in the 3D view: matte linen beige (sRGB).
+pub const FORM_SRGB: [u8; 3] = opendrape_render::studio::look::FORM_SRGB;
+/// The fabric (a cotton blue) and the selected piece (a warmer orange), as linear RGB.
 pub const FABRIC: [f32; 3] = [0.17, 0.36, 0.70];
 pub const SELECTED_FABRIC: [f32; 3] = [0.95, 0.55, 0.25];
 
@@ -166,7 +166,7 @@ mod tests {
             ]
         );
         assert_eq!(GIZMO_BRIGHT, Color32::from_rgb(255, 200, 0));
-        assert_eq!(SKIN, [0.62, 0.45, 0.36]);
+        assert_eq!(FORM_SRGB, [188, 168, 153]);
         assert_eq!(FABRIC, [0.17, 0.36, 0.70]);
         assert_eq!(SELECTED_FABRIC, [0.95, 0.55, 0.25]);
         assert_eq!(STATS_TEXT, Color32::from_gray(60));

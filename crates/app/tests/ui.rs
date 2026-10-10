@@ -35,6 +35,7 @@ fn harness_with(
     };
     Harness::builder()
         .with_size(egui::vec2(1000.0, 700.0))
+        .with_max_steps(MAX_STEPS)
         .wgpu()
         .build_eframe(move |cc| OpenDrapeApp::new(cc, startup, shared))
 }
@@ -121,6 +122,7 @@ fn tiny_window_does_not_crash() {
     };
     let mut h = Harness::builder()
         .with_size(egui::vec2(120.0, 40.0)) // the menu bar leaves almost no room for the 3D panel
+        .with_max_steps(MAX_STEPS)
         .wgpu()
         .build_eframe(move |cc| OpenDrapeApp::new(cc, startup, Rc::new(Shared::default())));
     h.run();
@@ -1139,6 +1141,7 @@ fn harness_recovering_with(
     };
     Harness::builder()
         .with_size(egui::vec2(1000.0, 700.0))
+        .with_max_steps(MAX_STEPS)
         .wgpu()
         .build_eframe(move |cc| OpenDrapeApp::new(cc, startup, SharedState::default()))
 }
@@ -1579,6 +1582,10 @@ fn right_clicking_the_draping_fabric_pins_it_there() {
 
 use glam::DVec2;
 use opendrape::arrange::gizmo::{ARROW_PT, AXES, GRAZING, Gizmo, Handle, RING_PT, ring_angle};
+
+/// Harness steps one `run()` may take: the 3D view finishes its still image one frame at a
+/// time (up to 32 frames) after anything changes.
+const MAX_STEPS: u64 = 48;
 
 fn screen(p: DVec2) -> egui::Pos2 {
     egui::pos2(p.x as f32, p.y as f32)

@@ -13,6 +13,10 @@ use opendrape::{FileDialogs, OpenDrapeApp, Recovery, SharedState, Startup};
 use opendrape_core::{Piece, PieceId, Point2};
 use std::path::Path;
 
+/// Harness steps one `run()` may take: the 3D view finishes its still image one frame at a
+/// time (up to 32 frames) after anything changes.
+const MAX_STEPS: u64 = 48;
+
 type App = Harness<'static, OpenDrapeApp>;
 
 const TABS: [&str; 5] = [
@@ -37,6 +41,7 @@ fn harness_sized(config_dir: &Path, size: egui::Vec2) -> App {
     };
     let mut h = Harness::builder()
         .with_size(size)
+        .with_max_steps(MAX_STEPS)
         .wgpu()
         .build_eframe(move |cc| OpenDrapeApp::new(cc, startup, SharedState::default()));
     h.run();
@@ -459,4 +464,51 @@ fn draping_shows_no_instruction_lines() {
     assert!(h.state().is_draping());
     assert!(h.query_by_label_contains("Press Reset").is_none());
     assert!(h.query_by_label_contains("Drag the fabric").is_none());
+}
+
+/// View → 3D quality switches how the 3D view is drawn, and the choice is there next launch.
+#[test]
+fn the_3d_quality_menu_switches_and_remembers() {
+    use opendrape_render::studio::quality::Quality;
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path());
+    h.get_by_label("View").click();
+    h.run();
+    // A submenu: egui adds an arrow to its name.
+    h.get_by_label_contains("3D quality").click();
+    h.run();
+    h.get_by_label("Basic").click();
+    h.run();
+    assert_eq!(h.state().viewport_quality(), Some(Quality::Basic));
+    let saved = std::fs::read_to_string(dir.path().join("view.json")).unwrap();
+    assert!(saved.contains("basic"), "{saved}");
+    drop(h);
+    let again = harness(dir.path());
+    assert_eq!(again.state().viewport_quality(), Some(Quality::Basic));
+}
+
+/// Once nothing moves, the 3D view finishes its image and stops drawing; turning it starts
+/// again.
+#[test]
+fn the_3d_view_stops_drawing_when_still() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path());
+    for _ in 0..80 {
+        h.step();
+    }
+    let settled = h.state().viewport_frames();
+    for _ in 0..5 {
+        h.step();
+    }
+    assert_eq!(
+        h.state().viewport_frames(),
+        settled,
+        "nothing drawn once still"
+    );
+    h.get_by_label("Back").click();
+    h.run();
+    assert!(
+        h.state().viewport_frames() > settled,
+        "turning the view draws again"
+    );
 }

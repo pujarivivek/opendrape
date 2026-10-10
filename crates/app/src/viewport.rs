@@ -1,16 +1,19 @@
 use crate::arrange::{ArrangedScene, ScreenCamera};
 use crate::sim_runner::SimFrame;
+use crate::theme::{FABRIC, FORM_SRGB, SELECTED_FABRIC};
+use crate::view_settings::QualityChoice;
 use glam::DVec2;
 use opendrape_core::PieceId;
 use opendrape_drape::Stage;
-use opendrape_render::{GpuMesh, MeshRenderer, OrbitCamera, RenderTarget, target_size};
+use opendrape_render::colour::srgb8_to_linear;
+use opendrape_render::studio::quality::{self, Quality};
+use opendrape_render::studio::{Material, StudioMesh, StudioRenderer};
+use opendrape_render::{OrbitCamera, RenderTarget, target_size};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::theme::{FABRIC, SELECTED_FABRIC, SKIN};
-
 struct ClothOnGpu {
-    mesh: GpuMesh,
+    mesh: StudioMesh,
     seq: u64,
     triangles: Arc<Vec<[u32; 3]>>,
 }
@@ -34,22 +37,33 @@ pub struct Drawn {
 
 /// The 3D panel: renders offscreen and shows the texture as an egui image.
 pub struct Viewport {
-    renderer: MeshRenderer,
+    renderer: StudioRenderer,
+    /// The quality level the graphics chip suggests (what Auto means here).
+    auto_quality: Quality,
     camera: OrbitCamera,
     target: Option<(RenderTarget, egui::TextureId)>,
-    body: GpuMesh,
+    body: StudioMesh,
     cloth: Option<ClothOnGpu>,
     /// The arranged pieces on the GPU, and the scene they were made from.
-    pieces: Vec<(PieceId, GpuMesh)>,
+    pieces: Vec<(PieceId, StudioMesh)>,
     pieces_of: Option<Rc<ArrangedScene>>,
     pub frames_drawn: u64,
 }
 
 impl Viewport {
-    pub fn new(rs: &egui_wgpu::RenderState, stage: &Stage) -> Self {
-        let renderer = MeshRenderer::new(&rs.device);
+    pub fn new(rs: &egui_wgpu::RenderState, stage: &Stage, choice: QualityChoice) -> Self {
+        let mut renderer = StudioRenderer::new(&rs.device, &rs.adapter, Quality::Medium);
+        let auto_quality = quality::auto(&rs.adapter.get_info(), renderer.hdr_ok());
+        renderer.set_quality(choice.resolve(auto_quality));
         let (positions, triangles) = stage.render_mesh();
-        let body = renderer.create_mesh(&rs.device, &rs.queue, positions, triangles, SKIN);
+        let body = renderer.create_mesh(
+            &rs.device,
+            &rs.queue,
+            positions,
+            triangles,
+            srgb8_to_linear(FORM_SRGB),
+            Material::Form,
+        );
         let camera = OrbitCamera {
             target: glam::Vec3::new(0.0, 0.95, 0.0),
             yaw: 0.5,
@@ -59,6 +73,7 @@ impl Viewport {
         };
         Self {
             renderer,
+            auto_quality,
             camera,
             target: None,
             body,
@@ -67,6 +82,20 @@ impl Viewport {
             pieces_of: None,
             frames_drawn: 0,
         }
+    }
+
+    /// The quality level the 3D view draws at.
+    pub fn quality(&self) -> Quality {
+        self.renderer.quality()
+    }
+
+    /// The level Auto picks on this computer.
+    pub fn auto_quality(&self) -> Quality {
+        self.auto_quality
+    }
+
+    pub fn set_quality_choice(&mut self, choice: QualityChoice) {
+        self.renderer.set_quality(choice.resolve(self.auto_quality));
     }
 
     pub fn camera(&self) -> &OrbitCamera {
@@ -95,6 +124,8 @@ impl Viewport {
         let size = ui.available_size();
         let max_dim = rs.device.limits().max_texture_dimension_2d;
         let (w, h) = target_size(size.x, size.y, ui.pixels_per_point(), max_dim)?;
+        // Drawn at no more pixels than the quality level allows, and scaled up to fill.
+        let (w, h) = self.renderer.render_size(w, h);
         match show {
             Show::Drape(f) => {
                 self.pieces.clear();
@@ -111,15 +142,17 @@ impl Viewport {
         let mut meshes = vec![&self.body];
         meshes.extend(self.cloth.as_ref().map(|c| &c.mesh));
         meshes.extend(self.pieces.iter().map(|(_, m)| m));
-        self.renderer.render(
-            &rs.device,
-            &rs.queue,
-            target,
-            self.camera.view_proj(w as f32 / h as f32),
-            &meshes,
-        );
+        let rendered = self
+            .renderer
+            .render(&rs.device, &rs.queue, target, &self.camera, &meshes);
         let texture_id = *texture_id;
-        self.frames_drawn += 1;
+        if rendered.drew {
+            self.frames_drawn += 1;
+        }
+        // Still frames build up the finished image one per frame; then it stops asking.
+        if !rendered.still_done {
+            ui.ctx().request_repaint();
+        }
         let image = egui::Image::new(egui::load::SizedTexture::new(texture_id, size));
         let response = ui.add(image.sense(egui::Sense::click_and_drag()));
         let rect = response.rect;
@@ -155,6 +188,7 @@ impl Viewport {
                         &positions,
                         &p.triangles,
                         FABRIC,
+                        Material::Cloth,
                     );
                     (p.shape, mesh)
                 })
@@ -162,7 +196,7 @@ impl Viewport {
             self.pieces_of = Some(scene.clone());
         }
         for (shape, mesh) in &mut self.pieces {
-            mesh.set_color(if Some(*shape) == selected {
+            mesh.set_colour(if Some(*shape) == selected {
                 SELECTED_FABRIC
             } else {
                 FABRIC
@@ -194,6 +228,7 @@ impl Viewport {
                     &f.positions,
                     &f.triangles,
                     FABRIC,
+                    Material::Cloth,
                 );
                 self.cloth = Some(ClothOnGpu {
                     mesh,

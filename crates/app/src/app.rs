@@ -9,6 +9,7 @@ use crate::recovery::Recovery;
 use crate::sim_runner::{DrapeNote, SimFrame, SimRunner};
 use crate::tr;
 use crate::view_picker::view_picker;
+use crate::view_settings::{QualityChoice, ViewSettings};
 use crate::viewport::{Show, Viewport};
 use crate::workspace::{self, Workspace};
 use egui::{Key, KeyboardShortcut, Modifiers, ViewportCommand};
@@ -142,6 +143,8 @@ pub struct OpenDrapeApp {
     offered: Option<(Project, Option<PathBuf>)>,
     /// The workspace tab open; screen state only, never saved or undone.
     workspace: Workspace,
+    /// How the 3D view should look (View → 3D quality), remembered between launches.
+    view_settings: ViewSettings,
 }
 
 impl OpenDrapeApp {
@@ -164,8 +167,10 @@ impl OpenDrapeApp {
         // Read before `startup` moves into the app below.
         let recovery = startup.recovery.clone();
         let offered = recovery.take();
+        let view_settings = ViewSettings::load(startup.store.dir());
         Self {
-            viewport: render_state.map(|rs| Viewport::new(rs, &stage)),
+            viewport: render_state.map(|rs| Viewport::new(rs, &stage, view_settings.quality)),
+            view_settings,
             diagnostics: Diagnostics::collect(info.as_ref(), startup.decision),
             startup,
             shared,
@@ -190,6 +195,11 @@ impl OpenDrapeApp {
             offered,
             workspace: Workspace::default(),
         }
+    }
+
+    /// The quality level the 3D view draws at; None without a 3D view.
+    pub fn viewport_quality(&self) -> Option<opendrape_render::studio::quality::Quality> {
+        self.viewport.as_ref().map(Viewport::quality)
     }
 
     /// The workspace tab open.
@@ -740,6 +750,8 @@ impl OpenDrapeApp {
                         ui.close();
                     }
                 }
+                ui.separator();
+                self.quality_menu(ui);
             });
             ui.menu_button(tr!("menu-help"), |ui| {
                 if ui.button(tr!("menu-about")).clicked() {
@@ -763,6 +775,37 @@ impl OpenDrapeApp {
             }
         });
         (action, picked)
+    }
+
+    /// View → 3D quality: Auto (saying which level it picked), Basic, Medium, High. The choice
+    /// applies at once and is remembered.
+    fn quality_menu(&mut self, ui: &mut egui::Ui) {
+        let Some(viewport) = self.viewport.as_mut() else {
+            return;
+        };
+        let response = ui.menu_button(tr!("menu-quality"), |ui| {
+            for choice in QualityChoice::ALL {
+                let label = match choice {
+                    QualityChoice::Auto => {
+                        tr!(
+                            "quality-auto",
+                            level = quality_label(viewport.auto_quality())
+                        )
+                    }
+                    QualityChoice::Basic => tr!("quality-basic"),
+                    QualityChoice::Medium => tr!("quality-medium"),
+                    QualityChoice::High => tr!("quality-high"),
+                };
+                let current = self.view_settings.quality == choice;
+                if ui.radio(current, label).clicked() && !current {
+                    self.view_settings.quality = choice;
+                    viewport.set_quality_choice(choice);
+                    self.view_settings.save(self.startup.store.dir());
+                    ui.close();
+                }
+            }
+        });
+        response.response.on_hover_text(tr!("quality-tip"));
     }
 
     /// Cmd+1…5 (Ctrl on Windows). Not while a text field or the number box has the keyboard, a
@@ -1095,6 +1138,16 @@ impl OpenDrapeApp {
     }
 }
 
+/// A quality level as the View menu names it.
+fn quality_label(q: opendrape_render::studio::quality::Quality) -> String {
+    use opendrape_render::studio::quality::Quality;
+    match q {
+        Quality::Basic => tr!("quality-basic"),
+        Quality::Medium => tr!("quality-medium"),
+        Quality::High => tr!("quality-high"),
+    }
+}
+
 /// A menu item with its shortcut shown on the right; true when it was clicked. egui reads the
 /// shortcut out as part of the item's name ("Save As… Ctrl+Shift+S"), so the name is set back to
 /// the plain label and the shortcut is announced as the item's keyboard shortcut instead.
@@ -1245,6 +1298,10 @@ mod tests {
     use super::*;
     use opendrape_core::{Piece, Point2, SeamId};
 
+    /// Harness steps one `run()` may take: the 3D view finishes its still image one frame at
+    /// a time (up to 32 frames) after anything changes.
+    const MAX_STEPS: u64 = 48;
+
     #[test]
     fn every_drape_note_reads_as_a_sentence_naming_the_piece() {
         let mut project = Project::new();
@@ -1307,6 +1364,7 @@ mod tests {
         };
         egui_kittest::Harness::builder()
             .with_size(egui::vec2(1000.0, 700.0))
+            .with_max_steps(MAX_STEPS)
             .wgpu()
             .build_eframe(move |cc| OpenDrapeApp::new(cc, startup, SharedState::default()))
     }

@@ -150,6 +150,11 @@ impl StateStore {
         self.path.as_deref()
     }
 
+    /// The config folder `gpu.json` is in, where other settings files go too.
+    pub fn dir(&self) -> Option<&Path> {
+        self.path.as_deref().and_then(Path::parent)
+    }
+
     pub fn load(&self) -> GpuState {
         self.path
             .as_ref()
