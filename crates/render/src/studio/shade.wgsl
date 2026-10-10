@@ -39,6 +39,9 @@ const FORM: u32 = 1u;
 const LINING: f32 = 0.8;
 // How dark the key light's shadow makes the floor (the soft light still reaches it).
 const KEY_ON_FLOOR: f32 = 0.35;
+// The key shadow map's square (metres) and depth range: as in shadow.rs.
+const KEY_BOX: f32 = 2.6;
+const KEY_DEPTH: f32 = 6.0;
 
 // The soft studio light reaching a surface facing `n`, divided by π.
 fn irradiance(n: vec3<f32>) -> vec3<f32> {
@@ -64,20 +67,61 @@ fn backdrop(dir: vec3<f32>) -> vec3<f32> {
     return mix(frame.horizon.rgb, frame.top.rgb, smoothstep(0.0, 0.6, dir.y));
 }
 
-// How much of the key light reaches `world` (1: all of it).
+// Interleaved gradient noise: a different rotation for neighbouring pixels.
+fn pixel_noise(pixel: vec2<f32>) -> f32 {
+    return fract(52.9829189 * fract(dot(pixel, vec2<f32>(0.06711056, 0.00583715))));
+}
+
+// How much of the key light reaches `world` (1: all of it): the shadow map sampled at
+// rotated Poisson-disc taps, so the shadow edge is soft.
 fn key_shadow(world: vec3<f32>, n: vec3<f32>, pixel: vec2<f32>) -> f32 {
     if (frame.flags.y == 0u) {
         return 1.0;
     }
-    return 1.0;
+    // Moved off the surface a little towards its normal: thin cloth doesn't shadow itself.
+    let lp = frame.key_view_proj * vec4<f32>(world + n * (1.5 * frame.extra.z), 1.0);
+    let ndc = lp.xyz / lp.w;
+    let uv = ndc.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
+    if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || ndc.z >= 1.0) {
+        return 1.0;
+    }
+    var disc = array<vec2<f32>, 12>(
+        vec2<f32>(-0.326, -0.406), vec2<f32>(-0.840, -0.074), vec2<f32>(-0.696, 0.457),
+        vec2<f32>(-0.203, 0.621), vec2<f32>(0.962, -0.195), vec2<f32>(0.473, -0.480),
+        vec2<f32>(0.519, 0.767), vec2<f32>(0.185, -0.893), vec2<f32>(0.507, 0.064),
+        vec2<f32>(0.896, 0.412), vec2<f32>(-0.322, -0.933), vec2<f32>(-0.792, -0.598)
+    );
+    let angle = (pixel_noise(pixel) + frame.params.y * 0.618034) * 6.2831853;
+    let rotate = mat2x2<f32>(cos(angle), sin(angle), -sin(angle), cos(angle));
+    // A soft studio light: the shadow edge spreads over about 2.5 cm.
+    let radius = 0.025 / KEY_BOX;
+    // A tap reaching sideways over a surface tilted to the light finds that surface itself
+    // nearer the light: allow for the tilt over the tap's reach (receiver slope bias).
+    let facing = clamp(dot(n, frame.key_dir.xyz), 0.05, 1.0);
+    let slope = min(sqrt(1.0 - facing * facing) / facing, 5.0);
+    let taps = min(i32(frame.extra.x), 12);
+    var lit = 0.0;
+    for (var i = 0; i < taps; i++) {
+        let offset = rotate * disc[i] * radius;
+        let bias = 0.0015 + length(offset) * KEY_BOX * slope / KEY_DEPTH;
+        lit += textureSampleCompareLevel(shadow_map, shadow_sampler, uv + offset, ndc.z - bias);
+    }
+    return lit / f32(max(taps, 1));
 }
 
-// How much of the soft light reaches the floor at `world` (1: all of it).
+// How much of the soft light reaches the floor at `world` (1: all of it): the blurred contact
+// map, darkest under whatever is closest above the floor.
 fn contact_shadow(world: vec3<f32>) -> f32 {
     if (frame.flags.z == 0u) {
         return 1.0;
     }
-    return 1.0;
+    let cp = frame.contact_view_proj * vec4<f32>(world.x, 0.0, world.z, 1.0);
+    let uv = cp.xy / cp.w * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
+    if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))) {
+        return 1.0;
+    }
+    let dark = textureSampleLevel(contact_map, linear_sampler, uv, 0.0).r;
+    return 1.0 - frame.extra.w * dark;
 }
 
 // Soft darkening in folds for the pixel at `pixel`, with GTAO's multi-bounce correction for

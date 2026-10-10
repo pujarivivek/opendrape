@@ -8,6 +8,7 @@ pub mod look;
 mod mesh;
 mod output;
 pub mod quality;
+mod shadow;
 mod targets;
 
 use mesh::MeshGpu;
@@ -20,7 +21,8 @@ use crate::target::RenderTarget;
 use frame::FrameUniforms;
 use glam::{Mat4, Vec2, Vec3};
 use output::OutputPass;
-use quality::Quality;
+use quality::{AoSettings, Quality, ShadowSettings};
+use shadow::Shadows;
 use targets::{DEPTH, Targets, texture};
 
 /// Test switches: force an effect on or off whatever the quality says, or the LDR path.
@@ -42,9 +44,47 @@ pub struct Rendered {
     pub still_done: bool,
 }
 
+/// How hard a frame works: what it draws, from the quality level and the test overrides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Effects {
+    ao: Option<AoSettings>,
+    shadow: Option<ShadowSettings>,
+    contact: bool,
+}
+
+/// Counts, for tests and the frame-rate overlay.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Stats {
+    /// Times the shadow maps were drawn.
+    pub shadow_redraws: u64,
+    /// Times an image was drawn.
+    pub frames_drawn: u64,
+}
+
+/// How dark the contact shadow is right under something touching the floor.
+const CONTACT_OPACITY: f32 = 0.75;
+
+/// An effect's settings as `now`, unless a test forces it on (then `fallback` if it was off)
+/// or off.
+fn forced<T>(wanted: Option<bool>, now: Option<T>, fallback: T) -> Option<T> {
+    match wanted {
+        Some(true) => now.or(Some(fallback)),
+        Some(false) => None,
+        None => now,
+    }
+}
+
 /// The format the lit scene is drawn in: half-float HDR where the GPU can draw into it.
 const HDR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const LDR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+/// 1×1 stand-ins for textures not drawn (yet): the flags tell the shader not to read them.
+struct Placeholders {
+    shadow: wgpu::TextureView,
+    contact: wgpu::TextureView,
+    ao: wgpu::TextureView,
+    prepass: wgpu::TextureView,
+}
 
 struct Pipelines {
     format: wgpu::TextureFormat,
@@ -61,7 +101,14 @@ pub struct StudioRenderer {
     pipeline_layout: wgpu::PipelineLayout,
     frame_uniforms: wgpu::Buffer,
     frame_bind_group: wgpu::BindGroup,
-    textures_bind_group: wgpu::BindGroup,
+    textures_layout: wgpu::BindGroupLayout,
+    compare_sampler: wgpu::Sampler,
+    linear_sampler: wgpu::Sampler,
+    placeholders: Placeholders,
+    /// Made again when a texture it binds is made anew.
+    textures_bind_group: Option<wgpu::BindGroup>,
+    shadows: Shadows,
+    frames_drawn: u64,
     pipelines: Option<Pipelines>,
     targets: Option<Targets>,
     output: OutputPass,
@@ -196,36 +243,6 @@ impl StudioRenderer {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let textures_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("studio textures"),
-            layout: &textures_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&shadow),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&compare),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&contact),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Sampler(&linear),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::TextureView(&ao),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: wgpu::BindingResource::TextureView(&prepass),
-                },
-            ],
-        });
         Self {
             hdr_ok,
             quality,
@@ -235,7 +252,18 @@ impl StudioRenderer {
             pipeline_layout,
             frame_uniforms,
             frame_bind_group,
-            textures_bind_group,
+            textures_layout,
+            compare_sampler: compare,
+            linear_sampler: linear,
+            placeholders: Placeholders {
+                shadow,
+                contact,
+                ao,
+                prepass,
+            },
+            textures_bind_group: None,
+            shadows: Shadows::new(device),
+            frames_drawn: 0,
             pipelines: None,
             targets: None,
             output: OutputPass::new(device),
@@ -418,12 +446,64 @@ impl StudioRenderer {
         self.targets = Some(targets);
     }
 
+    /// What this frame draws: the quality level's moving or still settings, with the test
+    /// overrides on top.
+    fn effects(&self, still: bool) -> Effects {
+        let s = self.quality.settings();
+        let (ao, shadow) = if still {
+            (Some(s.ao_still), Some(s.shadow_still))
+        } else {
+            (s.ao_moving, s.shadow_moving)
+        };
+        Effects {
+            ao: forced(self.overrides.ao, ao, s.ao_still),
+            shadow: forced(self.overrides.key_shadows, shadow, s.shadow_still),
+            contact: self.overrides.contact.unwrap_or(true),
+        }
+    }
+
+    pub fn stats(&self) -> Stats {
+        Stats {
+            shadow_redraws: self.shadows.redraws,
+            frames_drawn: self.frames_drawn,
+        }
+    }
+
+    /// Binds the textures the main pass reads, the real ones where they exist.
+    fn bind_textures(&mut self, device: &wgpu::Device) {
+        let p = &self.placeholders;
+        let shadow = self.shadows.key_view().unwrap_or(&p.shadow);
+        let contact = self.shadows.contact_view().unwrap_or(&p.contact);
+        let views = [(0, shadow), (2, contact), (4, &p.ao), (5, &p.prepass)];
+        let mut entries: Vec<wgpu::BindGroupEntry> = views
+            .iter()
+            .map(|&(binding, view)| wgpu::BindGroupEntry {
+                binding,
+                resource: wgpu::BindingResource::TextureView(view),
+            })
+            .collect();
+        entries.push(wgpu::BindGroupEntry {
+            binding: 1,
+            resource: wgpu::BindingResource::Sampler(&self.compare_sampler),
+        });
+        entries.push(wgpu::BindGroupEntry {
+            binding: 3,
+            resource: wgpu::BindingResource::Sampler(&self.linear_sampler),
+        });
+        self.textures_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("studio textures"),
+            layout: &self.textures_layout,
+            entries: &entries,
+        }));
+    }
+
     fn frame_uniforms(
         &self,
         camera: &OrbitCamera,
-        width: u32,
-        height: u32,
+        (width, height): (u32, u32),
         jitter: Vec2,
+        effects: Effects,
+        frame_index: u32,
     ) -> FrameUniforms {
         let (w, h) = (width as f32, height as f32);
         // A sub-pixel shift of the whole image (for still frames), in clip space.
@@ -440,23 +520,36 @@ impl StudioRenderer {
         let v4 = |v: Vec3| [v.x, v.y, v.z, 0.0];
         let ldr = self.colour_format() == LDR;
         let (fade_start, fade_end) = look::FLOOR_FADE;
+        let key_size = self.quality.settings().shadow_still.size;
+        let taps = effects.shadow.map_or(0, |s| s.taps);
+        let samples = effects.ao.map_or(0, |a| a.samples);
         FrameUniforms {
             view_proj: view_proj.to_cols_array_2d(),
             inv_view_proj: view_proj.inverse().to_cols_array_2d(),
             view: view.to_cols_array_2d(),
             inv_proj: proj.inverse().to_cols_array_2d(),
-            key_view_proj: Mat4::IDENTITY.to_cols_array_2d(),
-            contact_view_proj: Mat4::IDENTITY.to_cols_array_2d(),
+            key_view_proj: shadow::key_view_proj().to_cols_array_2d(),
+            contact_view_proj: shadow::contact_view_proj().to_cols_array_2d(),
             camera_pos: v4(camera.eye()),
             key_dir: v4(environment::key_dir()),
             key_colour: v4(environment::key_colour()),
             sh: environment::sh().map(|[r, g, b]| [r, g, b, 0.0]),
             horizon: displayed(look::HORIZON_SRGB),
             top: displayed(look::TOP_SRGB),
-            params: [exposure, 0.0, fade_start, fade_end],
-            flags: [0, 0, 0, u32::from(ldr)],
+            params: [exposure, frame_index as f32, fade_start, fade_end],
+            flags: [
+                u32::from(effects.ao.is_some()),
+                u32::from(effects.shadow.is_some()),
+                u32::from(effects.contact),
+                u32::from(ldr),
+            ],
             screen: [w, h, 1.0 / w, 1.0 / h],
-            extra: [0.0; 4],
+            extra: [
+                taps as f32,
+                samples as f32,
+                shadow::key_texel(key_size),
+                CONTACT_OPACITY,
+            ],
         }
     }
 
@@ -487,18 +580,37 @@ impl StudioRenderer {
                 Material::Floor,
             ));
         }
-        let uniforms = self.frame_uniforms(camera, target.width, target.height, Vec2::ZERO);
+        let effects = self.effects(false);
+        let settings = self.quality.settings();
+        let remade = self.shadows.ensure_maps(
+            device,
+            queue,
+            settings.shadow_still.size,
+            settings.contact_size,
+        );
+        if remade || self.textures_bind_group.is_none() {
+            self.bind_textures(device);
+        }
+        let size = (target.width, target.height);
+        let uniforms = self.frame_uniforms(camera, size, Vec2::ZERO, effects, 0);
         queue.write_buffer(&self.frame_uniforms, 0, bytemuck::bytes_of(&uniforms));
         let floor = self.floor.as_ref().expect("made above");
-        let all: Vec<&StudioMesh> = meshes.iter().copied().chain([floor]).collect();
-        for m in &all {
+        for m in meshes.iter().copied().chain([floor]) {
             queue.write_buffer(&m.uniforms, 0, bytemuck::bytes_of(&m.draw_uniforms()));
         }
-        let pipelines = self.pipelines.as_ref().expect("made above");
-        let targets = self.targets.as_ref().expect("made above");
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("studio"),
         });
+        self.shadows.draw_if_needed(
+            &mut encoder,
+            meshes,
+            self.geometry_epoch,
+            effects.shadow.is_some(),
+        );
+        let floor = self.floor.as_ref().expect("made above");
+        let pipelines = self.pipelines.as_ref().expect("made above");
+        let targets = self.targets.as_ref().expect("made above");
+        let textures = self.textures_bind_group.as_ref().expect("bound above");
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("studio main"),
@@ -524,9 +636,14 @@ impl StudioRenderer {
                 multiview_mask: None,
             });
             pass.set_bind_group(0, &self.frame_bind_group, &[]);
-            pass.set_bind_group(2, &self.textures_bind_group, &[]);
+            pass.set_bind_group(2, textures, &[]);
             pass.set_pipeline(&pipelines.mesh);
-            for m in all.iter().filter(|m| m.index_count > 0) {
+            for m in meshes
+                .iter()
+                .copied()
+                .chain([floor])
+                .filter(|m| m.index_count > 0)
+            {
                 pass.set_bind_group(1, &m.bind_group, &[]);
                 pass.set_vertex_buffer(0, m.vertices.slice(..));
                 pass.set_index_buffer(m.indices.slice(..), wgpu::IndexFormat::Uint32);
@@ -545,6 +662,7 @@ impl StudioRenderer {
             format == LDR,
         );
         queue.submit([encoder.finish()]);
+        self.frames_drawn += 1;
         Rendered {
             drew: true,
             still_done: false,

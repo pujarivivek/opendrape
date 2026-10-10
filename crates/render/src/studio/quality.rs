@@ -62,7 +62,7 @@ impl Quality {
                 ao_still: half(8),
                 shadow_moving: None,
                 shadow_still: shadow(1024, 8),
-                contact_size: 256,
+                contact_size: 128,
                 fxaa_moving: false,
                 cap_px: 1_000_000,
                 still_frames: 16,
@@ -72,7 +72,7 @@ impl Quality {
                 ao_still: half(8),
                 shadow_moving: Some(shadow(1024, 8)),
                 shadow_still: shadow(1024, 8),
-                contact_size: 512,
+                contact_size: 256,
                 fxaa_moving: true,
                 cap_px: 2_000_000,
                 still_frames: 16,
@@ -85,7 +85,7 @@ impl Quality {
                 },
                 shadow_moving: Some(shadow(2048, 12)),
                 shadow_still: shadow(2048, 12),
-                contact_size: 512,
+                contact_size: 256,
                 fxaa_moving: true,
                 cap_px: 4_000_000,
                 still_frames: 32,
@@ -238,7 +238,7 @@ mod tests {
         );
         assert_eq!(
             (basic.contact_size, basic.cap_px, basic.still_frames),
-            (256, 1_000_000, 16)
+            (128, 1_000_000, 16)
         );
 
         let medium = Quality::Medium.settings();
@@ -259,7 +259,7 @@ mod tests {
         assert!(medium.fxaa_moving);
         assert_eq!(
             (medium.contact_size, medium.cap_px, medium.still_frames),
-            (512, 2_000_000, 16)
+            (256, 2_000_000, 16)
         );
 
         let high = Quality::High.settings();
@@ -286,7 +286,7 @@ mod tests {
         );
         assert_eq!(
             (high.contact_size, high.cap_px, high.still_frames),
-            (512, 4_000_000, 32)
+            (256, 4_000_000, 32)
         );
     }
 }

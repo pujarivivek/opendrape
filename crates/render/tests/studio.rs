@@ -229,3 +229,205 @@ fn the_backdrop_has_no_seam_at_the_floors_edge() {
     let top = luminance(img.get_pixel(100, 5));
     assert!((150.0..235.0).contains(&top), "{top}");
 }
+
+/// A box `size` m wide spanning heights `y0`..`y1`, centred over the origin, flat-shaded
+/// (separate vertices per face), wound outwards.
+fn box_mesh(size: f32, y0: f32, y1: f32) -> (Vec<Vec3>, Vec<[u32; 3]>) {
+    let (h, cy, hy) = (size / 2.0, (y0 + y1) / 2.0, (y1 - y0) / 2.0);
+    let faces = [
+        (Vec3::X, Vec3::Y, Vec3::Z),
+        (Vec3::NEG_X, Vec3::Y, Vec3::NEG_Z),
+        (Vec3::Y, Vec3::Z, Vec3::X),
+        (Vec3::NEG_Y, Vec3::NEG_Z, Vec3::X),
+        (Vec3::Z, Vec3::Y, Vec3::NEG_X),
+        (Vec3::NEG_Z, Vec3::Y, Vec3::X),
+    ];
+    let scale = Vec3::new(h, hy, h);
+    let (mut p, mut t) = (vec![], vec![]);
+    for (n, up, side) in faces {
+        let base = p.len() as u32;
+        for (a, b) in [(-1.0, -1.0), (-1.0, 1.0), (1.0, 1.0), (1.0, -1.0)] {
+            p.push((n + up * a + side * b) * scale + Vec3::new(0.0, cy, 0.0));
+        }
+        t.extend([[base, base + 2, base + 1], [base, base + 3, base + 2]]);
+    }
+    (p, t)
+}
+
+/// Where world point `p` lands in a `w`×`h` image from `camera`, in pixels.
+fn pixel_of(camera: &OrbitCamera, (w, h): (u32, u32), p: Vec3) -> (u32, u32) {
+    let clip = camera.view_proj(w as f32 / h as f32) * p.extend(1.0);
+    let ndc = clip.truncate() / clip.w;
+    let x = (ndc.x * 0.5 + 0.5) * w as f32;
+    let y = (0.5 - ndc.y * 0.5) * h as f32;
+    (x as u32, y as u32)
+}
+
+/// Mean luminance of the 3×3 pixels round world point `p`.
+fn luminance_at(img: &image::RgbaImage, camera: &OrbitCamera, p: Vec3) -> f32 {
+    let (x, y) = pixel_of(camera, (img.width(), img.height()), p);
+    let mut sum = 0.0;
+    for dy in 0..3 {
+        for dx in 0..3 {
+            sum += luminance(img.get_pixel(x + dx - 1, y + dy - 1));
+        }
+    }
+    sum / 9.0
+}
+
+/// The floor right in front of something standing low over it is darker than open floor,
+/// and the shadow fades out softly (no hard edge).
+#[test]
+fn the_floor_under_a_low_box_is_darker_with_a_soft_edge() {
+    let g = gpu();
+    let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::Medium);
+    r.set_overrides(Overrides {
+        contact: Some(true),
+        ..plain()
+    });
+    let target = RenderTarget::new(&g.device, 400, 400);
+    let camera = OrbitCamera {
+        target: Vec3::new(0.0, 0.2, 0.0),
+        yaw: 0.0,
+        pitch: 0.5,
+        distance: 2.2,
+        fov_y: 35f32.to_radians(),
+    };
+    let b = mesh(
+        &mut r,
+        &g,
+        box_mesh(0.3, 0.05, 0.35),
+        [0.5; 3],
+        Material::Form,
+    );
+    let img = render_still(&mut r, &g, &target, &camera, &[&b]);
+    img.save(format!(
+        "{}/studio_contact.png",
+        env!("CARGO_TARGET_TMPDIR")
+    ))
+    .ok();
+    let open = luminance_at(&img, &camera, Vec3::new(0.55, 0.0, 0.16));
+    // Right at the box's base, 1 cm out (the floor under it is hidden from this camera).
+    let near = luminance_at(&img, &camera, Vec3::new(0.0, 0.0, 0.16));
+    // In light, not in display values (which are compressed): at least 20 % less.
+    let light = |display: f32| opendrape_render::colour::srgb_to_linear(display / 255.0);
+    assert!(
+        light(near) <= 0.8 * light(open),
+        "in front of the box {near}, open floor {open} (display values)"
+    );
+    // Walking out from the box: from 10 % to 90 % of the way back to open floor takes ≥ 6 px.
+    let walk: Vec<(u32, f32)> = (0..90)
+        .map(|i| {
+            let p = Vec3::new(0.0, 0.0, 0.17 + 0.005 * i as f32);
+            let (_, y) = pixel_of(&camera, (400, 400), p);
+            (y, luminance_at(&img, &camera, p))
+        })
+        .collect();
+    let darkest = walk.iter().map(|w| w.1).fold(f32::INFINITY, f32::min);
+    let reach = |share: f32| {
+        walk.iter()
+            .find(|w| w.1 >= darkest + share * (open - darkest))
+            .map(|w| w.0)
+            .expect("the floor gets back to open-floor brightness")
+    };
+    let (from, to) = (reach(0.1), reach(0.9));
+    assert!(
+        from.abs_diff(to) >= 6,
+        "the edge takes {} px",
+        from.abs_diff(to)
+    );
+}
+
+/// The key light comes from the front-right, above: the floor behind-left of a box is in its
+/// shadow, the floor on the light's side is not.
+#[test]
+fn key_shadows_fall_on_the_floor_away_from_the_light() {
+    let g = gpu();
+    let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::Medium);
+    r.set_overrides(Overrides {
+        key_shadows: Some(true),
+        ..plain()
+    });
+    let target = RenderTarget::new(&g.device, 400, 400);
+    let camera = OrbitCamera {
+        target: Vec3::ZERO,
+        yaw: 0.0,
+        pitch: 1.3,
+        distance: 2.5,
+        fov_y: 35f32.to_radians(),
+    };
+    let b = mesh(
+        &mut r,
+        &g,
+        box_mesh(0.3, 0.0, 0.35),
+        [0.5; 3],
+        Material::Form,
+    );
+    let img = render_still(&mut r, &g, &target, &camera, &[&b]);
+    img.save(format!(
+        "{}/studio_key_shadow.png",
+        env!("CARGO_TARGET_TMPDIR")
+    ))
+    .ok();
+    let towards_light = opendrape_render::studio::environment::key_dir();
+    let away = Vec3::new(-towards_light.x, 0.0, -towards_light.z).normalize() * 0.3;
+    let shadowed = luminance_at(&img, &camera, away);
+    let lit = luminance_at(&img, &camera, -away);
+    assert!(
+        shadowed < 0.9 * lit,
+        "shadow side {shadowed}, light side {lit}"
+    );
+}
+
+/// Thin cloth facing the light has no stripes of shadow on itself (shadow acne).
+#[test]
+fn cloth_facing_the_light_has_no_shadow_stripes() {
+    let g = gpu();
+    let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::High);
+    r.set_overrides(Overrides {
+        key_shadows: Some(true),
+        ..plain()
+    });
+    let target = RenderTarget::new(&g.device, 256, 256);
+    let c = mesh(&mut r, &g, card(1.0, 0.0, 0.6), [0.6; 3], Material::Cloth);
+    let img = render_still(&mut r, &g, &target, &front_camera(1.2), &[&c]);
+    img.save(format!("{}/studio_acne.png", env!("CARGO_TARGET_TMPDIR")))
+        .ok();
+    let values: Vec<f32> = (112..144)
+        .flat_map(|y| (112..144).map(move |x| (x, y)))
+        .map(|(x, y)| luminance(img.get_pixel(x, y)))
+        .collect();
+    let mean = values.iter().sum::<f32>() / values.len() as f32;
+    let spread =
+        (values.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / values.len() as f32).sqrt();
+    assert!(
+        spread < 2.0,
+        "luminance varies by {spread} over flat lit cloth"
+    );
+}
+
+/// The shadow maps are drawn again only when the geometry changes, not when the camera moves.
+#[test]
+fn shadow_maps_are_redrawn_only_when_geometry_changes() {
+    let g = gpu();
+    let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::Medium);
+    r.set_overrides(Overrides {
+        key_shadows: Some(true),
+        contact: Some(true),
+        ..plain()
+    });
+    let target = RenderTarget::new(&g.device, 64, 64);
+    let (p, t) = box_mesh(0.3, 0.0, 0.35);
+    let mut b = r.create_mesh(&g.device, &g.queue, &p, &t, [0.5; 3], Material::Form);
+    let mut camera = front_camera(2.0);
+    r.render(&g.device, &g.queue, &target, &camera, &[&b]);
+    let first = r.stats().shadow_redraws;
+    assert!(first >= 1);
+    camera.yaw += 0.3;
+    r.render(&g.device, &g.queue, &target, &camera, &[&b]);
+    assert_eq!(r.stats().shadow_redraws, first, "only the camera moved");
+    let moved: Vec<Vec3> = p.iter().map(|v| *v + Vec3::X * 0.1).collect();
+    r.update_mesh(&g.device, &g.queue, &mut b, &moved, None);
+    r.render(&g.device, &g.queue, &target, &camera, &[&b]);
+    assert_eq!(r.stats().shadow_redraws, first + 1, "the box moved");
+}
