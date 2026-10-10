@@ -326,6 +326,18 @@ fn start_drape(
     }
 }
 
+/// Carries `drape` on with `hold` done to it (its pins moved: the cloth is the same). If `hold`
+/// panics the drape went wrong, like one that panics in the making ([`start_drape`]): it is
+/// reported (see [`Status::fail`]) and there is nothing to step.
+fn carry_on(status: &Status, mut drape: Drape, hold: impl FnOnce(&mut Drape)) -> Option<Drape> {
+    if guarded(|| hold(&mut drape)).is_some() {
+        Some(drape)
+    } else {
+        status.fail(drape.number);
+        None
+    }
+}
+
 fn run(stage: &Stage, rx: &Receiver<Command>, status: &Status, on_frame: &dyn Fn()) {
     let mut drape: Option<Drape> = None;
     let mut seq = 0;
@@ -376,11 +388,10 @@ fn run(stage: &Stage, rx: &Receiver<Command>, status: &Status, on_frame: &dyn Fn
                         }
                     }
                 }
-                if let Some(mut d) = drape.take() {
+                if let Some(d) = drape.take() {
                     if d.made.same_fabric(&project) {
                         // Only pins or placements changed: the cloth carries on as it is.
-                        d.made.set_pins(project);
-                        drape = Some(d);
+                        drape = carry_on(status, d, |d| d.made.set_pins(project));
                     } else {
                         seq += 1;
                         let number = d.number;
@@ -705,6 +716,37 @@ mod tests {
         let made = start_drape(&status, 4, || None);
         assert!(made.is_none());
         assert!(status.went_wrong.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn a_panic_while_moving_the_pins_is_a_drape_gone_wrong_not_a_dead_thread() {
+        // Moving the pins is drape-crate work on the simulation thread like making the fabric,
+        // and a panic there is reported like any other failed drape.
+        let status = status();
+        status.shown.store(3, Ordering::Release); // the third Play
+        status.draping.store(true, Ordering::Relaxed);
+        status.playing.store(true, Ordering::Relaxed);
+        let drape = || Drape::new(3, Made::new(two_panels(), &Stage::shared()));
+
+        // Pins moved: the drape carries on, with what was done to it.
+        let mut moved = false;
+        let kept = carry_on(&status, drape(), |_| moved = true);
+        assert!(moved && kept.is_some_and(|d| d.number == 3));
+        assert!(!status.went_wrong.load(Ordering::Acquire));
+        assert!(status.draping.load(Ordering::Relaxed));
+
+        let held = carry_on(&status, drape(), |_| panic!("the pins gave up"));
+        assert!(held.is_none(), "there is nothing to step");
+        assert!(status.went_wrong.load(Ordering::Acquire));
+        assert!(status.latest.load().is_none());
+        assert!(!status.draping.load(Ordering::Relaxed));
+        assert!(!status.playing.load(Ordering::Relaxed));
+
+        // A drape the student has already moved on from (a newer Play) goes quietly.
+        status.went_wrong.store(false, Ordering::Release);
+        status.shown.store(4, Ordering::Release);
+        assert!(carry_on(&status, drape(), |_| panic!("late")).is_none());
+        assert!(!status.went_wrong.load(Ordering::Acquire));
     }
 
     #[test]
