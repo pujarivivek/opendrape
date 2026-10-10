@@ -21,6 +21,22 @@ pub fn tool_icon(tool: Tool) -> &'static str {
     }
 }
 
+/// Width of a strip of tools along the side of a view (screen points).
+pub const STRIP_WIDTH: f32 = 40.0;
+
+/// The frame of a strip of tools: tinted, so the 3D view's strip and the pattern table's
+/// read as two groups side by side.
+pub fn strip_frame(style: &egui::Style) -> egui::Frame {
+    egui::Frame::side_top_panel(style)
+        .fill(style.visuals.faint_bg_color)
+        .inner_margin(egui::Margin::symmetric(2, 4))
+}
+
+/// The small caption at the top of a strip ("3D", "2D").
+pub fn strip_caption(ui: &mut egui::Ui, text: String) {
+    ui.vertical_centered(|ui| ui.small(text).on_hover_cursor(egui::CursorIcon::Default));
+}
+
 /// Icon size in points; the button around it is at least [`BUTTON_PT`] square.
 const ICON_PT: f32 = 18.0;
 const BUTTON_PT: f32 = 28.0;

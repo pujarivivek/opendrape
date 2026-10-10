@@ -190,9 +190,7 @@ panel-pin-on = On { $name }
 panel-pin-held = Holds the fabric { $height } up, { $out } in front of the form's centre line.
 panel-remove-pin = Remove pin
 menu-pin-here = Pin here
-hint-pinning = Drag the fabric to pull it. Right-click it to pin it there; drag a pin to move it.
 
-hint-draping = Press Reset to move pieces.
 note-coarser = Large pattern: using coarser fabric
 note-crosses-itself = { $name } couldn't be made into fabric: its outline crosses itself.
 note-unmeshable = { $name } couldn't be made into fabric.
@@ -207,6 +205,12 @@ view-front = Front
 view-back = Back
 view-left = Left side
 view-right = Right side
+view-front-tip = Look from the front
+view-back-tip = Look from the back
+view-left-tip = Look from the left side
+view-right-tip = Look from the right side
+strip-3d = 3D
+strip-2d = 2D
 
 gizmo-up = { $distance } up
 gizmo-down = { $distance } down

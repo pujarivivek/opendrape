@@ -224,7 +224,7 @@ fn play_drapes_the_pattern_and_reset_returns_to_arranging() {
     wait_until(&mut h, "the drape to advance", |a| {
         a.sim_frame().is_some_and(|f| f.time > 0.05)
     });
-    h.get_by_label("Press Reset to move pieces.");
+    assert!(h.state().is_draping());
     h.get_by_label("Pause").click();
     h.run_steps(3);
     h.get_by_label("Play");
@@ -232,7 +232,6 @@ fn play_drapes_the_pattern_and_reset_returns_to_arranging() {
     h.run_steps(2);
     wait_until(&mut h, "arranging again", |a| a.sim_frame().is_none());
     assert!(!h.state().is_draping());
-    assert!(h.query_by_label("Press Reset to move pieces.").is_none());
 }
 
 #[test]
@@ -262,7 +261,6 @@ fn editing_the_pattern_while_draped_carries_the_drape_on() {
     let after = h.state().sim_frame().unwrap();
     assert!(h.state().is_draping(), "still draping: no Reset");
     assert_eq!(after.drape, before.drape, "the same drape, carried on");
-    h.get_by_label("Press Reset to move pieces.");
     // Undo is an edit too: the drape carries on with the shorter back again.
     h.state_mut().editor_mut().undo();
     h.run_steps(2);
@@ -320,7 +318,6 @@ fn opening_a_file_while_draping_returns_to_arranging_and_its_pieces_start_at_the
     assert_eq!(pieces(&h), 1, "the file is open");
     assert!(!h.state().is_draping(), "arranging, as after Reset");
     assert!(h.state().sim_frame().is_none(), "no cloth of the old file");
-    assert!(h.query_by_label("Press Reset to move pieces.").is_none());
     // Play makes the fabric of this file alone, from its own placement: the same piece number
     // as the old file's "Front" must not start it from there.
     h.get_by_label("Play").click();
@@ -350,7 +347,6 @@ fn new_while_draping_returns_to_arranging_with_no_cloth() {
     assert_eq!(pieces(&h), 0, "a new project");
     assert!(!h.state().is_draping(), "arranging, as after Reset");
     assert!(h.state().sim_frame().is_none(), "no cloth");
-    assert!(h.query_by_label("Press Reset to move pieces.").is_none());
     // Nothing comes back from the drape that was running.
     h.run_steps(5);
     assert!(!h.state().is_draping() && h.state().sim_frame().is_none());
@@ -1549,9 +1545,6 @@ fn right_clicking_the_draping_fabric_pins_it_there() {
     h.run_steps(2);
     wait_until(&mut h, "the drape", |a| a.sim_frame().is_some());
     h.run_steps(1);
-    h.get_by_label(
-        "Drag the fabric to pull it. Right-click it to pin it there; drag a pin to move it.",
-    );
     // Gravity waits a moment at the start: the piece is still where it was placed.
     let camera = h.state().view_camera().expect("the 3D view was drawn");
     let p = camera.project(glam::DVec3::new(0.0, 1.0, 0.5)).unwrap();
@@ -1961,15 +1954,52 @@ fn a_press_on_a_handle_let_go_beyond_its_reach_is_still_the_gizmos_click() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = harness(dir.path(), SharedState::default());
     h.run();
+    // Zoomed out a little: the gizmo keeps its size on screen while the piece gets smaller, so
+    // there is background beside the arrows whatever the 3D view's shape.
+    let play = h.get_by_label("Play").rect();
+    let distance = h.state().orbit_camera().unwrap().distance;
+    h.hover_at(egui::pos2(play.min.x - 150.0, play.max.y + 200.0));
+    for _ in 0..10 {
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -60.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.step();
+    }
+    h.run();
+    assert!(
+        h.state().orbit_camera().unwrap().distance > distance,
+        "zoomed out"
+    );
     let (cam, g) = piece_with_gizmo(&mut h);
-    // Pressed 7 points off the x arrow (it reaches 8), let go 10 points off it: less than the
-    // 6 points that make a drag of it, so it is a click.
-    let on_arrow = near_tip(&cam, &g, 0);
-    let tip = cam.project(g.arrow_tip(0)).unwrap();
-    let side = (tip - cam.project(g.centre).unwrap()).normalize().perp();
-    let (pressed, released) = (on_arrow + side * 7.0, on_arrow + side * 10.0);
-    assert_eq!(g.hit(&cam, pressed), Some(Handle::Move(0)));
-    assert_eq!(g.hit(&cam, released), None);
+    // Pressed 7 points off a move arrow (it reaches 8), let go 10 points off it: less than the
+    // 6 points that make a drag of it, so it is a click. Taken where the press is on the
+    // arrow alone and the release on the background, not on the piece or another handle
+    // (where that is depends on the 3D view's shape).
+    let scene = h.state_mut().arranged_scene();
+    let off_piece = |at: DVec2| {
+        let (origin, dir) = cam.ray(at);
+        scene.pick(origin, dir).is_none()
+    };
+    let centre = cam.project(g.centre).unwrap();
+    let (pressed, released) = (0..3)
+        .flat_map(|axis| [0.1, 0.2, 0.3].map(|back| (axis, back)))
+        .flat_map(|(axis, back)| {
+            let on_arrow = cam
+                .project(g.arrow_tip(axis) - AXES[axis] * g.size * back)
+                .unwrap();
+            let across = (on_arrow - centre).normalize().perp();
+            [across, -across].map(|side| (axis, on_arrow + side * 7.0, on_arrow + side * 10.0))
+        })
+        .find(|&(axis, pressed, released)| {
+            g.hit(&cam, pressed) == Some(Handle::Move(axis))
+                && g.hit(&cam, released).is_none()
+                && off_piece(released)
+        })
+        .map(|(_, pressed, released)| (pressed, released))
+        .expect("a press on an arrow with a release on the background");
 
     // A click that begins and ends there is a click on the background.
     click_at(&mut h, released);

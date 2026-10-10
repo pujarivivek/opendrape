@@ -8,13 +8,13 @@ use crate::icons::{self, ph};
 use crate::recovery::Recovery;
 use crate::sim_runner::{DrapeNote, SimFrame, SimRunner};
 use crate::tr;
+use crate::view_picker::view_picker;
 use crate::viewport::{Show, Viewport};
 use crate::workspace::{self, Workspace};
 use egui::{Key, KeyboardShortcut, Modifiers, ViewportCommand};
 use opendrape_core::{PieceId, Project};
 use opendrape_drape::Stage;
 use opendrape_mesh::MeshNote;
-use opendrape_mesh::place::PlaceAt;
 use opendrape_render::OrbitCamera;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -295,7 +295,8 @@ impl OpenDrapeApp {
         let Some(runner) = &self.runner else { return };
         let (draping, playing) = (runner.is_draping(), runner.is_playing());
         let mut clicked = None;
-        ui.horizontal_wrapped(|ui| {
+        icons::strip_caption(ui, tr!("strip-3d"));
+        ui.vertical_centered(|ui| {
             let (icon, label, tip) = if draping && playing {
                 (ph::PAUSE, tr!("toolbar-pause"), tr!("toolbar-pause-tip"))
             } else {
@@ -313,17 +314,6 @@ impl OpenDrapeApp {
             if icons::icon_button(ui, reset, &label, &tip, false, draping).clicked() {
                 clicked = Some(Toolbar::Reset);
             }
-            ui.separator();
-            for (side, label) in [
-                (PlaceAt::Front, tr!("view-front")),
-                (PlaceAt::Back, tr!("view-back")),
-                (PlaceAt::LeftSide, tr!("view-left")),
-                (PlaceAt::RightSide, tr!("view-right")),
-            ] {
-                if ui.button(label).clicked() {
-                    clicked = Some(Toolbar::Look(side));
-                }
-            }
         });
         match clicked {
             Some(Toolbar::Play) => {
@@ -336,11 +326,6 @@ impl OpenDrapeApp {
             Some(Toolbar::Reset) => {
                 runner.reset();
                 self.draped = None;
-            }
-            Some(Toolbar::Look(side)) => {
-                if let Some(v) = &mut self.viewport {
-                    v.look_from(side.angle());
-                }
             }
             None => {}
         }
@@ -372,10 +357,6 @@ impl OpenDrapeApp {
         if runner.went_wrong() {
             ui.colored_label(warn, tr!("note-went-wrong"));
         }
-        if runner.is_draping() {
-            ui.label(tr!("hint-draping"));
-            ui.label(tr!("hint-pinning"));
-        }
         if let Some(frame) = runner.latest() {
             for note in frame.notes.iter().take(MAX_NOTES_SHOWN) {
                 ui.colored_label(warn, note_text(note, self.editor.doc.project()));
@@ -404,9 +385,13 @@ impl OpenDrapeApp {
             self.arranged
                 .scene(self.editor.doc.project(), self.stage.shoulder_y())
         });
-        self.toolbar(ui);
+        // Play and Reset down the right edge, beside the pattern table's tools.
+        egui::Panel::right("view_3d_tools")
+            .resizable(false)
+            .exact_size(icons::STRIP_WIDTH)
+            .frame(icons::strip_frame(ui.style()))
+            .show(ui, |ui| self.toolbar(ui));
         self.notes(ui);
-        ui.separator();
         // From the moment Play is pressed, not from the first frame of the drape: the drape is
         // made from the pieces as they are then.
         let draping = self.is_draping();
@@ -466,6 +451,11 @@ impl OpenDrapeApp {
                     if scroll != 0.0 {
                         viewport.camera_mut().zoom(scroll);
                     }
+                }
+                // Drawn over the image, so they take the clicks there.
+                let yaw = viewport.camera().yaw;
+                if let Some(side) = view_picker(ui, drawn.response.rect, yaw) {
+                    viewport.look_from(side.angle());
                 }
             }
         }
@@ -1140,8 +1130,6 @@ enum Toolbar {
     Pause,
     Resume,
     Reset,
-    /// Turn the camera to look from this side of the form.
-    Look(PlaceAt),
 }
 
 /// Most drape notes the 3D view lists; the rest are counted ("…and 3 more").

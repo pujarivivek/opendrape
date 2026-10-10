@@ -2,7 +2,10 @@
 //! that must not switch them while something else owns the keyboard or the mouse.
 
 use egui::{Event, Key, Modifiers, PointerButton, accesskit::Role};
-use egui_kittest::{Harness, kittest::Queryable};
+use egui_kittest::{
+    Harness,
+    kittest::{NodeT, Queryable},
+};
 use opendrape::editor::{Selection, Tool};
 use opendrape::gpu::{Decision, GpuChoice, GpuState, Reason, StateStore};
 use opendrape::workspace::Workspace;
@@ -351,4 +354,109 @@ fn the_number_box_closes_when_a_tab_is_clicked() {
     );
     cmd(&mut h, Key::Num1);
     assert_eq!(h.state().workspace(), Workspace::Modeling);
+}
+
+/// Play and Reset sit in a strip down the 3D view's right edge, next to the pattern tools'
+/// strip: together, yet each under its own caption.
+#[test]
+fn the_3d_tools_sit_beside_the_pattern_tools() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = harness(dir.path());
+    let play = h.get_by_label("Play").rect();
+    let reset = h.get_by_label("Reset").rect();
+    let pen = h.get_by_label("Pen (H)").rect();
+    assert!(
+        play.max.x <= pen.min.x && pen.min.x - play.max.x < 40.0,
+        "Play {play:?} next to Pen {pen:?}"
+    );
+    assert!(
+        reset.min.y > play.max.y,
+        "Reset under Play: {play:?} {reset:?}"
+    );
+    assert!(
+        (reset.center().x - play.center().x).abs() < 1.0,
+        "one column"
+    );
+    let (caption_3d, caption_2d) = (h.get_by_label("3D").rect(), h.get_by_label("2D").rect());
+    assert!(caption_3d.max.y <= play.min.y && caption_2d.max.y <= pen.min.y);
+}
+
+const VIEWS: [&str; 4] = ["Front", "Back", "Left side", "Right side"];
+
+/// The camera views are four small pictures in the 3D view's top-right corner.
+#[test]
+fn camera_views_are_compact_picture_buttons_in_the_3d_views_top_right() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = harness(dir.path());
+    let play = h.get_by_label("Play").rect();
+    let rects = VIEWS.map(|v| h.get_by_label(v).rect());
+    for (v, r) in VIEWS.iter().zip(&rects) {
+        assert!(r.max.x < play.min.x, "{v} is inside the 3D view: {r:?}");
+        assert!(r.min.y < 90.0, "{v} is at the top: {r:?}");
+        assert!(
+            r.width() <= 24.0 && r.height() <= 26.0,
+            "{v} is small: {r:?}"
+        );
+    }
+    assert!(
+        rects[3].max.x - rects[0].min.x < 100.0,
+        "a compact row: {rects:?}"
+    );
+    assert!(
+        play.min.x - rects[3].max.x < 30.0,
+        "in the top-right corner"
+    );
+    assert!(h.query_by_label("Left side").is_some());
+}
+
+#[test]
+fn a_camera_view_button_turns_the_camera_and_shows_it_is_current() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path());
+    h.get_by_label("Back").click();
+    h.run();
+    let yaw = h.state().orbit_camera().unwrap().yaw;
+    assert!((yaw - std::f32::consts::PI).abs() < 1e-4, "{yaw}");
+    let selected = |h: &App, v: &str| h.get_by_label(v).accesskit_node().is_selected();
+    assert_eq!(selected(&h, "Back"), Some(true));
+    assert_ne!(selected(&h, "Front"), Some(true));
+    h.get_by_label("Right side").click();
+    h.run();
+    assert_eq!(selected(&h, "Right side"), Some(true));
+    assert_ne!(selected(&h, "Back"), Some(true));
+    // Hovering says what it does, without repeating the name alone.
+    h.get_by_label("Front").hover();
+    h.run_steps(30);
+    h.get_by_label("Look from the front");
+    h.get_by_label("Front");
+}
+
+/// While draping, the 3D view shows no instruction lines (only warnings, when there are any).
+#[test]
+fn draping_shows_no_instruction_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path());
+    h.state_mut().editor_mut().doc.edit(|p| {
+        let id = p.add_piece(Piece::rectangle(
+            PieceId(0),
+            "Front",
+            Point2::new(0.0, 0.0),
+            300.0,
+            400.0,
+        ));
+        p.set_placement(id, Some(opendrape_core::Placement::at([0.0, 1.0, 0.5])));
+    });
+    h.run();
+    h.get_by_label("Play").click();
+    h.run_steps(2);
+    let start = std::time::Instant::now();
+    while h.state().sim_frame().is_none() {
+        assert!(start.elapsed().as_secs() < 20, "the drape never started");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        h.step();
+    }
+    h.run_steps(2);
+    assert!(h.state().is_draping());
+    assert!(h.query_by_label_contains("Press Reset").is_none());
+    assert!(h.query_by_label_contains("Drag the fabric").is_none());
 }

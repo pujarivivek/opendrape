@@ -43,8 +43,6 @@ pub const REDO_Y: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, K
 /// Show every piece: Cmd+0 (Ctrl+0 on Windows). F is the Free Sew tool's.
 pub const FIT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Num0);
 
-/// Width of the tool strip down the left of the pattern table (screen points).
-const TOOL_STRIP_WIDTH: f32 = 40.0;
 /// Pointer distance (screen points) that counts as touching a point, handle or edge.
 const HIT_PX: f64 = 8.0;
 /// What an empty pattern table shows: 80 × 60 cm.
@@ -374,7 +372,8 @@ impl PatternEditor {
         egui::Panel::bottom("pattern_status").show(ui, |ui| self.status_bar(ui));
         egui::Panel::left("pattern_tools")
             .resizable(false)
-            .exact_size(TOOL_STRIP_WIDTH)
+            .exact_size(icons::STRIP_WIDTH)
+            .frame(icons::strip_frame(ui.style()))
             .show(ui, |ui| self.tool_strip(ui));
         egui::Panel::right("pattern_properties")
             .resizable(false)
@@ -412,7 +411,7 @@ impl PatternEditor {
 
     /// The tools, as icons down the left of the pattern table.
     fn tool_strip(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(4.0);
+        icons::strip_caption(ui, tr!("strip-2d"));
         ui.vertical_centered(|ui| {
             for tool in Tool::ALL {
                 let label = format!("{} ({})", tool.label(), tool.key().name());

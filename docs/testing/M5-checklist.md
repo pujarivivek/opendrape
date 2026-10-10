@@ -19,7 +19,15 @@ updates. Nothing you draft, sew or drape behaves differently.
       with a line about what it does. Click one, or press its letter: it lights up.
 - [ ] **Above the table:** cm / inch, Show lengths, Show seam allowance and Fit (Cmd+0) are in
       a slim bar.
-- [ ] **3D buttons.** Play and Reset are icons now. Hover them: each says what it does.
+- [ ] **3D tools.** Play and Reset are icons in a slim strip down the right edge of the 3D
+      view, labelled "3D", right beside the pattern tools' strip labelled "2D". Hover them:
+      each says what it does.
+- [ ] **Camera views.** Four small pictures of the form sit in the 3D view's top-right
+      corner: front, back, left side, right side. Hover one to see its name; click it and the
+      view turns to look from there, and that picture stays highlighted until you turn the
+      view yourself.
+- [ ] **No instruction lines.** Press Play: the 3D view shows no "Press Reset…" or "Drag the
+      fabric…" text above it (warnings about real problems still show).
 - [ ] **Undo everywhere.** Draw a piece in Modeling. Open Texturing (Cmd+3) and press **Cmd+Z**:
       the piece goes from the 3D view. **Shift+Cmd+Z** brings it back.
 - [ ] **Letters only in Modeling.** In Texturing, press **H**, then go back to Modeling: the
