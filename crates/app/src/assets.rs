@@ -8,7 +8,7 @@ use egui::{Align2, FontId, Id, Rect, Sense, StrokeKind, Vec2, WidgetInfo, Widget
 use egui_phosphor::regular::{DRESS, T_SHIRT, X};
 use opendrape_body::form::{Form, Measurements};
 use opendrape_core::{FormChoice, FormSize, Units};
-use opendrape_drape::choice;
+use opendrape_drape::choice::{self, FormProblem};
 use std::collections::{BTreeMap, HashMap};
 
 /// A form's card: its picture and name.
@@ -275,6 +275,20 @@ fn card(
         );
     }
     response
+}
+
+/// Why a form can't be built, in plain words and the project's units: "Waist can be 50.0–130.0
+/// cm on this form".
+pub fn form_problem_text(problem: &FormProblem, units: Units) -> String {
+    match problem {
+        FormProblem::Size(e) => tr!(
+            "form-out-of-range",
+            name = measure_name(&e.measurement),
+            min = units.format_number(e.min_mm),
+            max = units.format(e.max_mm)
+        ),
+        FormProblem::Unknown(id) => tr!("form-unknown", id = id.as_str()),
+    }
 }
 
 /// A form's name, from its id; an unknown id shows itself.

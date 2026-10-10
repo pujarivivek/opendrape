@@ -2590,3 +2590,57 @@ fn opening_a_file_puts_its_form_in_the_3d_view_and_one_that_cannot_be_built_is_r
     );
     assert_eq!(h.state().stage().choice(), Some(&men));
 }
+
+#[test]
+fn opening_a_file_with_a_size_the_form_cannot_take_says_so_in_plain_words() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut too_big = Project::new();
+    too_big.form.size = opendrape_core::FormSize::Custom;
+    too_big.form.measurements.insert("waist".into(), 2000.0);
+    let file = dir.path().join("big.odp");
+    opendrape_io::save(&too_big, &file).unwrap();
+    let mut h = harness_with(
+        dir.path(),
+        SharedState::default(),
+        FileDialogs::scripted(vec![Some(file)]),
+    );
+    h.run();
+    file_menu(&mut h, "Open…");
+    h.run();
+    h.get_by_label_contains("Waist can be");
+    assert!(h.query_by_label_contains("mm on this form").is_none());
+    assert_eq!(
+        h.state().editor().doc.project().form,
+        opendrape_core::FormChoice::default()
+    );
+}
+
+#[test]
+fn unsaved_work_whose_form_cannot_be_built_is_restored_on_the_default_form_and_says_so() {
+    let (config, rescue) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut work = Project::new();
+    work.add_piece(Piece::rectangle(
+        PieceId(0),
+        "Front",
+        Point2::new(0.0, 0.0),
+        300.0,
+        500.0,
+    ));
+    work.form.id = "child-torso".into();
+    Recovery::new(Some(rescue.path())).write(&work, None);
+    let mut h = harness_recovering(config.path(), rescue.path());
+    h.run();
+    h.get_by_label("Restore").click();
+    h.run();
+    assert_eq!(pieces(&h), 1, "the work is back");
+    assert_eq!(
+        h.state().editor().doc.project().form,
+        opendrape_core::FormChoice::default()
+    );
+    assert_eq!(
+        h.state().stage().choice(),
+        Some(&opendrape_core::FormChoice::default())
+    );
+    h.get_by_label_contains("child-torso");
+    h.get_by_label_contains("default dress form");
+}

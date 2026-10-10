@@ -358,16 +358,8 @@ impl OpenDrapeApp {
         match action {
             Some(assets::FormAction::Pick(choice)) => {
                 if let Err(e) = self.apply_form(choice) {
-                    let text = match &e {
-                        FormProblem::Size(e) => tr!(
-                            "form-out-of-range",
-                            name = assets::measure_name(&e.measurement),
-                            min = units.format_number(e.min_mm),
-                            max = units.format(e.max_mm)
-                        ),
-                        FormProblem::Unknown(_) => e.to_string(),
-                    };
-                    self.forms.refused(now, text);
+                    self.forms
+                        .refused(now, assets::form_problem_text(&e, units));
                 }
             }
             Some(assets::FormAction::ShowTapes(on)) => {
@@ -1216,7 +1208,10 @@ impl OpenDrapeApp {
                         self.next_stage = Some(Arc::new(stage));
                         self.replace_project(project, Some(path), false);
                     }
-                    Err(e) => self.error = Some(tr!("error-open", error = e.to_string())),
+                    Err(e) => {
+                        let why = assets::form_problem_text(&e, project.units);
+                        self.error = Some(tr!("error-open", error = why));
+                    }
                 },
                 Err(e) => self.error = Some(tr!("error-open", error = e.to_string())),
             },
@@ -1316,7 +1311,14 @@ impl OpenDrapeApp {
             });
         });
         let Some(restore) = answer else { return };
-        if let (true, Some((project, from))) = (restore, self.offered.take()) {
+        if let (true, Some((mut project, from))) = (restore, self.offered.take()) {
+            // The work matters more than the form it was on: one that can't be built (a later
+            // version renamed it, say) gives way to the default, and the student is told.
+            if let Err(e) = Stage::for_choice(&project.form) {
+                let why = assets::form_problem_text(&e, project.units);
+                self.error = Some(tr!("recovery-form-replaced", error = why));
+                project.form = FormChoice::default();
+            }
             self.replace_project(project, from, true);
         }
         // `take` above cleared the offer, whichever the answer was.
