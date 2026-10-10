@@ -68,6 +68,27 @@ pub fn paint(painter: &Painter, cam: &ScreenCamera, gizmo: &Gizmo, lit: Option<H
     );
 }
 
+/// Draws each pin's marker where it holds the fabric (the selected pin bright).
+pub fn paint_pins(
+    painter: &Painter,
+    cam: &ScreenCamera,
+    project: &opendrape_core::Project,
+    selected: Option<usize>,
+) {
+    for (k, pin) in project.pins.iter().enumerate() {
+        let Some(at) = cam.project(glam::DVec3::from_array(pin.target)) else {
+            continue;
+        };
+        let colour = if selected == Some(k) {
+            BRIGHT
+        } else {
+            crate::editor::PIN_COLOUR
+        };
+        painter.circle_filled(screen(at), 3.0, colour);
+        painter.circle_stroke(screen(at), 7.0, Stroke::new(2.0, colour));
+    }
+}
+
 /// Draws the drag's readout beside the pointer.
 pub fn paint_readout(painter: &Painter, at: Pos2, text: String) {
     painter.text(

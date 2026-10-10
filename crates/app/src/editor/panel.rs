@@ -49,6 +49,7 @@ impl PatternEditor {
             Selection::Notch(id, k) => self.notch_properties(ui, id, k),
             Selection::Line(id, l) => self.line_properties(ui, id, l),
             Selection::Seam(id) => self.seam_properties(ui, id),
+            Selection::Pin(k) => self.pin_properties(ui, k),
         }
         let shown = &self.panel.shown;
         self.panel.editing.retain(|id, _| shown.contains(id));

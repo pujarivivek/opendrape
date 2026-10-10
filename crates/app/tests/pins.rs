@@ -3,6 +3,9 @@
 
 mod common;
 use common::*;
+use egui::Key;
+use egui_kittest::kittest::Queryable;
+use opendrape::editor::Selection;
 use opendrape_core::{Half, Piece, PieceId, Pin, Point2};
 
 fn pin(shape: PieceId, x: f64, y: f64) -> Pin {
@@ -74,4 +77,36 @@ fn moving_a_piece_takes_its_pins_and_its_twins_pins_along() {
         Point2::new(200.0, 200.0),
         "one step"
     );
+}
+
+#[test]
+fn pins_show_where_their_shapes_are_and_are_selected_and_removed_there() {
+    let mut h = harness();
+    let front = with_rectangle(&mut h); // (100,100)–(400,500)
+    let twin = h
+        .state_mut()
+        .doc
+        .edit(|p| p.add_twin(front, "Front (mirror)".into(), Point2::new(1000.0, 0.0)))
+        .unwrap();
+    h.state_mut().doc.edit(|p| {
+        p.pins = vec![pin(front, 200.0, 200.0), pin(twin, 300.0, 400.0)];
+    });
+    h.state_mut().fit();
+    h.run();
+    // The twin shows its pin at (1000 - 300, 400).
+    click(&mut h, 700.0, 400.0);
+    assert_eq!(h.state().selection, Selection::Pin(1));
+    h.get_by_label("Pin");
+    h.get_by_label("On Front (mirror)");
+    h.get_by_label("Remove pin").click();
+    h.run();
+    assert_eq!(h.state().doc.project().pins.len(), 1);
+    assert_eq!(h.state().selection, Selection::None);
+    cmd(&mut h, Key::Z);
+    assert_eq!(h.state().doc.project().pins.len(), 2, "one undo step");
+    // A pin on the piece itself, inside it: its marker comes before the piece.
+    click(&mut h, 200.0, 200.0);
+    assert_eq!(h.state().selection, Selection::Pin(0));
+    key(&mut h, Key::Delete);
+    assert_eq!(h.state().doc.project().pins, vec![pin(twin, 300.0, 400.0)]);
 }

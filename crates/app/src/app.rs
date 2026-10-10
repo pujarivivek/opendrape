@@ -1,5 +1,6 @@
 use crate::arrange::{ArrangedScene, Arranger, SceneCache, ScreenCamera};
 use crate::diagnostics::Diagnostics;
+use crate::draping::{Draper, MenuAt, Pull};
 use crate::editor::{self, PatternEditor};
 use crate::file_dialogs::{DialogKind, FileDialogs};
 use crate::gpu::{Decision, GpuChoice, GpuState, Os, StateStore, confirmed_state};
@@ -117,6 +118,8 @@ pub struct OpenDrapeApp {
     arranged: SceneCache,
     /// What the pointer does in the 3D view while arranging.
     arranger: Arranger,
+    /// What the pointer does in the 3D view while draping.
+    draper: Draper,
     /// The 3D view's camera as last drawn.
     view_camera: Option<ScreenCamera>,
     /// The piece the 3D view's Place at… menu was opened on.
@@ -170,6 +173,7 @@ impl OpenDrapeApp {
             draped: None,
             arranged: SceneCache::default(),
             arranger: Arranger::default(),
+            draper: Draper::default(),
             view_camera: None,
             menu_for: None,
             pending: None,
@@ -351,6 +355,7 @@ impl OpenDrapeApp {
         }
         if runner.is_draping() {
             ui.label(tr!("hint-draping"));
+            ui.label(tr!("hint-pinning"));
         }
         if let Some(frame) = runner.latest() {
             for note in frame.notes.iter().take(MAX_NOTES_SHOWN) {
@@ -403,14 +408,19 @@ impl OpenDrapeApp {
             },
         };
         let drawn = viewport.ui(ui, rs, show);
-        match &drawn {
-            Some(drawn) if !draping => self.arrange(ui, &drawn.response, &drawn.camera, &scene),
+        match (&drawn, &sim) {
+            (Some(drawn), _) if !draping => {
+                self.arrange(ui, &drawn.response, &drawn.camera, &scene)
+            }
+            (Some(drawn), Some(frame)) => {
+                self.stop_arranging();
+                self.drape_input(ui, &drawn.response, &drawn.camera, frame);
+            }
             _ => {
-                // No arranging now (a drape, or no view to arrange in): a gizmo drag still held
-                // ends where it is, and nothing is lit.
-                self.arranger.release(&mut self.editor.doc);
-                self.arranger.released();
-                self.arranger.hovered = None;
+                // Nothing to arrange or pull (no view, or the drape's fabric is being made): a
+                // drag still held ends where it is.
+                self.stop_arranging();
+                self.stop_pulling();
             }
         }
         if let Some(drawn) = &drawn {
@@ -418,7 +428,7 @@ impl OpenDrapeApp {
             if let Some(viewport) = self.viewport.as_mut() {
                 // A drag that didn't grab the gizmo turns the camera; while one has, the camera
                 // stays put (the handle is held at a screen point), scroll-zoom included.
-                let grabbed = self.arranger.is_dragging();
+                let grabbed = self.arranger.is_dragging() || self.draper.is_dragging();
                 let drag = drawn.response.drag_delta();
                 if drag != egui::Vec2::ZERO && !grabbed {
                     viewport.camera_mut().drag(drag.x, drag.y);
@@ -440,6 +450,99 @@ impl OpenDrapeApp {
                 egui::Color32::from_gray(60),
             );
         }
+    }
+
+    /// No arranging now: a gizmo drag still held ends where it is, and nothing is lit.
+    fn stop_arranging(&mut self) {
+        self.arranger.release(&mut self.editor.doc);
+        self.arranger.released();
+        self.arranger.hovered = None;
+    }
+
+    /// No pulling now: a grab lets go, and a pin being moved stays where it is (one step).
+    fn stop_pulling(&mut self) {
+        let pull = self.draper.release(&mut self.editor.doc);
+        self.send(pull.into_iter().collect());
+        self.draper.menu = None;
+    }
+
+    /// Passes what a grab asks for on to the simulation.
+    fn send(&self, pulls: Vec<Pull>) {
+        let Some(runner) = &self.runner else { return };
+        for pull in pulls {
+            match pull {
+                Pull::Grab {
+                    fabric,
+                    triangle,
+                    bary,
+                    target,
+                } => runner.grab(fabric, triangle, bary, target),
+                Pull::To(target) => runner.pull(target),
+                Pull::Release => runner.release(),
+            }
+        }
+    }
+
+    /// The pointer in the 3D view while draping: a press on the fabric pulls it, a pin's marker
+    /// is dragged to move it, right-clicks offer Pin here and Remove pin, and the pins are drawn.
+    fn drape_input(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        cam: &ScreenCamera,
+        frame: &SimFrame,
+    ) {
+        let at = |p: egui::Pos2| glam::DVec2::new(f64::from(p.x), f64::from(p.y));
+        let editor = &mut self.editor;
+        let mut pulls = Vec::new();
+        if response.drag_started_by(egui::PointerButton::Primary)
+            && let Some(p) = ui.input(|i| i.pointer.press_origin())
+        {
+            pulls.extend(self.draper.press(cam, frame, &mut editor.doc, at(p)));
+        }
+        if self.draper.is_dragging()
+            && let Some(p) = response.interact_pointer_pos()
+        {
+            pulls.extend(self.draper.drag_to(cam, &mut editor.doc, at(p)));
+        }
+        if response.drag_stopped() {
+            pulls.extend(self.draper.release(&mut editor.doc));
+        }
+        if response.clicked()
+            && let Some(p) = response.interact_pointer_pos()
+        {
+            self.draper
+                .click(cam, editor.doc.project(), &mut editor.selection, at(p));
+        }
+        if response.secondary_clicked()
+            && let Some(p) = response.interact_pointer_pos()
+        {
+            self.draper
+                .secondary_click(cam, frame, editor.doc.project(), at(p));
+        }
+        if let Some(menu) = self.draper.menu {
+            response.context_menu(|ui| match menu {
+                MenuAt::Fabric(pin) => {
+                    if ui.button(tr!("menu-pin-here")).clicked() {
+                        editor.add_pin(pin);
+                        ui.close();
+                    }
+                }
+                MenuAt::Pin(k) => {
+                    if ui.button(tr!("panel-remove-pin")).clicked() {
+                        editor.remove_pin(k);
+                        ui.close();
+                    }
+                }
+            });
+        }
+        let selected = match editor.selection {
+            editor::Selection::Pin(k) => Some(k),
+            _ => None,
+        };
+        let painter = ui.painter_at(response.rect);
+        crate::arrange::overlay::paint_pins(&painter, cam, editor.doc.project(), selected);
+        self.send(pulls);
     }
 
     /// The pointer in the 3D view while arranging: clicks pick pieces, the selected piece's

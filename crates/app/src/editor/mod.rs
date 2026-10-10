@@ -9,6 +9,7 @@ mod line_tool;
 mod notch_tool;
 mod paint;
 mod panel;
+mod pins;
 mod placing;
 mod seams;
 mod sew_tool;
@@ -16,6 +17,7 @@ mod view;
 
 pub use canvas::PenPoint;
 pub use document::{Document, UNDO_LIMIT};
+pub(crate) use paint::PIN_COLOUR;
 pub use placing::DEFAULT_SHOULDER_M;
 pub use view::View;
 
@@ -129,12 +131,14 @@ pub enum Selection {
     Line(PieceId, usize),
     /// A stored seam (clicking a seam's mirror image selects the seam).
     Seam(SeamId),
+    /// A pin: its index in the project's pins.
+    Pin(usize),
 }
 
 impl Selection {
     pub fn piece(self) -> Option<PieceId> {
         match self {
-            Self::None | Self::Seam(_) => None,
+            Self::None | Self::Seam(_) | Self::Pin(_) => None,
             Self::Piece(id)
             | Self::Vertex(id, _)
             | Self::Edge(id, _)
@@ -148,6 +152,13 @@ impl Selection {
     pub fn validated(self, project: &Project) -> Self {
         if let Self::Seam(id) = self {
             return if project.seam(id).is_some() {
+                self
+            } else {
+                Self::None
+            };
+        }
+        if let Self::Pin(k) = self {
+            return if k < project.pins.len() {
                 self
             } else {
                 Self::None

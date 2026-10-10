@@ -182,6 +182,12 @@ panel-seam-differ = Lengths differ by { $difference }
 panel-seam-notches = Notches don't match: { $one } on one side, { $other } on the other.
 panel-seam-flip = Flip
 panel-delete-seam = Delete seam
+panel-pin = Pin
+panel-pin-on = On { $name }
+panel-pin-held = Holds the fabric { $height } up, { $out } in front of the form's centre line.
+panel-remove-pin = Remove pin
+menu-pin-here = Pin here
+hint-pinning = Drag the fabric to pull it. Right-click it to pin it there; drag a pin to move it.
 
 hint-draping = Press Reset to move pieces.
 note-coarser = Large pattern: using coarser fabric

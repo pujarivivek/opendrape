@@ -15,6 +15,9 @@ use std::rc::Rc;
 /// so a dash cut off at the edge of the canvas still reaches it.
 const CLIP_MARGIN: f32 = 20.0;
 
+/// A pin's marker, on the pattern table and in the 3D view.
+pub(crate) const PIN_COLOUR: Color32 = Color32::from_rgb(200, 30, 60);
+
 struct Palette {
     table: Color32,
     minor: Color32,
@@ -84,6 +87,7 @@ impl PatternEditor {
             self.paint_selection(painter, rect, d, &c);
         }
         self.paint_seams(painter, rect);
+        self.paint_pins(painter, rect, &c);
         self.paint_drafts(painter, rect, &c);
     }
 
@@ -122,6 +126,21 @@ impl PatternEditor {
                     }
                 }
             }
+        }
+    }
+
+    /// Every pin, where its shape shows it: a ring with a dot, the selected one in the
+    /// selection's colour.
+    fn paint_pins(&self, painter: &Painter, rect: Rect, c: &Palette) {
+        for (k, at) in self.pin_spots() {
+            let colour = if self.selection == Selection::Pin(k) {
+                c.selected
+            } else {
+                PIN_COLOUR
+            };
+            let p = self.view.to_screen(rect, at);
+            painter.circle_filled(p, 2.5, colour);
+            painter.circle_stroke(p, 6.0, Stroke::new(2.0, colour));
         }
     }
 
@@ -404,7 +423,7 @@ impl PatternEditor {
                     }
                 }
             }
-            Selection::Piece(_) | Selection::Seam(_) | Selection::None => {}
+            Selection::Piece(_) | Selection::Seam(_) | Selection::Pin(_) | Selection::None => {}
         }
     }
 

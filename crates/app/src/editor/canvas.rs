@@ -519,8 +519,11 @@ impl PatternEditor {
                     self.canvas.sew = None;
                     self.canvas.free = None;
                 }
-                // Only a seam: a piece or point selected earlier is the Edit tool's to delete.
-                if matches!(self.selection, Selection::Seam(_)) && delete_pressed() {
+                // Only a seam or a pin: a piece or point selected earlier is the Edit tool's to
+                // delete.
+                if matches!(self.selection, Selection::Seam(_) | Selection::Pin(_))
+                    && delete_pressed()
+                {
                     self.delete_selection();
                 }
             }
@@ -704,8 +707,10 @@ impl PatternEditor {
                         | Hit::LineHandle(..)
                 )
             );
-            self.selection = match self.seam_at(at, tol) {
-                Some(seam) if !on_a_point => Selection::Seam(seam),
+            // A pin's marker comes before everything.
+            self.selection = match (self.pin_at(at, tol), self.seam_at(at, tol)) {
+                (Some(k), _) => Selection::Pin(k),
+                (None, Some(seam)) if !on_a_point => Selection::Seam(seam),
                 _ => hit.map_or(Selection::None, Hit::selection),
             };
         }
@@ -936,6 +941,7 @@ impl PatternEditor {
                     self.selection = Selection::None;
                 }
             }
+            Selection::Pin(k) => self.remove_pin(k),
             Selection::Edge(..) | Selection::None => {}
         }
     }

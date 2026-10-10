@@ -1436,6 +1436,58 @@ fn right_clicking_a_piece_in_3d_offers_place_at() {
     assert!(placed.is_some_and(|p| p.curve.is_some()), "{placed:?}");
 }
 
+#[test]
+fn right_clicking_the_draping_fabric_pins_it_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    // A piece hanging upright in front of the form, facing the camera.
+    h.state_mut().editor_mut().doc.edit(|p| {
+        let id = p.add_piece(Piece::rectangle(
+            PieceId(0),
+            "Front",
+            Point2::new(0.0, 0.0),
+            300.0,
+            400.0,
+        ));
+        p.set_placement(id, Some(opendrape_core::Placement::at([0.0, 1.0, 0.5])));
+    });
+    h.run();
+    h.get_by_label("Play").click();
+    h.run_steps(2);
+    wait_until(&mut h, "the drape", |a| a.sim_frame().is_some());
+    h.run_steps(1);
+    h.get_by_label(
+        "Drag the fabric to pull it. Right-click it to pin it there; drag a pin to move it.",
+    );
+    // Gravity waits a moment at the start: the piece is still where it was placed.
+    let camera = h.state().view_camera().expect("the 3D view was drawn");
+    let p = camera.project(glam::DVec3::new(0.0, 1.0, 0.5)).unwrap();
+    let p = egui::pos2(p.x as f32, p.y as f32);
+    h.hover_at(p);
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    h.run_steps(2);
+    h.get_by_label("Pin here").click();
+    h.run_steps(2);
+    let pins = h.state().editor().doc.project().pins.clone();
+    assert_eq!(pins.len(), 1, "pinned");
+    assert_eq!(pins[0].shape, PieceId(1));
+    assert!(
+        pins[0].at.distance(Point2::new(150.0, 200.0)) < 10.0,
+        "{:?}",
+        pins[0].at
+    );
+    assert_eq!(h.state().editor().selection, Selection::Pin(0));
+    assert!(h.state().is_draping(), "pinning carries the drape on");
+}
+
 // The gizmo in the 3D view of the real app (drawn off-screen): who gets a press, when it is
 // live, and what the camera does while a handle is held. The maths and the undo steps are
 // tested without a window in `tests/arrange.rs`.

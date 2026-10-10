@@ -4,6 +4,7 @@ mod app;
 pub mod arrange;
 pub mod cli;
 pub mod diagnostics;
+pub mod draping;
 pub mod editor;
 pub mod file_dialogs;
 pub mod gpu;
