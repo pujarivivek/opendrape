@@ -1,5 +1,6 @@
 use crate::Stage;
 use crate::live;
+use crate::quality::DrapeQuality;
 use glam::{DVec2, DVec3};
 use opendrape_core::{PieceId, Point2, Project};
 use opendrape_geom as geom;
@@ -118,23 +119,25 @@ pub struct Drape {
     /// The seam each of the solver's stitch groups sews (a mirror image shares its original's
     /// id).
     seams: Vec<opendrape_core::SeamId>,
+    /// How the fabric was made and how it is simulated at Play, kept for a rebuild.
+    mesh_params: MeshParams,
+    params: Params,
 }
 
 impl Drape {
-    /// The drape of `project` on `stage`: every shape that could be meshed, at its placement,
-    /// sewn by its seams, its pins held at their targets.
+    /// The drape of `project` on `stage` at Normal detail: every shape that could be meshed,
+    /// at its placement, sewn by its seams, its pins held at their targets.
     pub fn new(project: Arc<Project>, stage: &Stage) -> Self {
-        Self::make(
-            project,
-            stage,
-            None,
-            &MeshParams::default(),
-            Params::default(),
-        )
+        Self::at_quality(project, stage, DrapeQuality::default())
+    }
+
+    /// As [`Drape::new`], at the detail of `quality`.
+    pub fn at_quality(project: Arc<Project>, stage: &Stage, quality: DrapeQuality) -> Self {
+        Self::with(project, stage, &quality.mesh_params(), quality.params())
     }
 
     /// As [`Drape::new`], with the fabric meshed by `mesh` and simulated with `params` (for
-    /// benchmarks and quality presets).
+    /// benchmarks).
     pub fn with(project: Arc<Project>, stage: &Stage, mesh: &MeshParams, params: Params) -> Self {
         Self::make(project, stage, None, mesh, params)
     }
@@ -159,13 +162,7 @@ impl Drape {
     /// has got to (see `live`): a shape that was already draped starts where it was, a new one
     /// at its placement.
     pub fn rebuilt(&self, project: Arc<Project>, stage: &Stage) -> Self {
-        Self::make(
-            project,
-            stage,
-            Some(self),
-            &MeshParams::default(),
-            Params::default(),
-        )
+        Self::make(project, stage, Some(self), &self.mesh_params, self.params)
     }
 
     fn make(
@@ -235,7 +232,7 @@ impl Drape {
         let cloth = builder.build();
         let params = match from {
             None => params,
-            Some(_) => live::warm_params(),
+            Some(_) => live::warm_params(params),
         };
         let mut drape = Self {
             solver: Solver::new(cloth, params),
@@ -244,6 +241,8 @@ impl Drape {
             project,
             pins: Vec::new(),
             seams: seams.into_iter().map(|(id, _)| id).collect(),
+            mesh_params: *mesh_params,
+            params,
         };
         drape.hold_pins();
         drape
@@ -320,6 +319,25 @@ mod tests {
 
     /// Two 200 × 300 mm panels on the pattern table, 100 mm apart, sewn along the side between
     /// them: A's right edge to B's left edge, both starting at the bottom.
+    #[test]
+    fn draft_makes_fewer_particles_and_a_rebuild_keeps_the_detail() {
+        let stage = Stage::shared();
+        let pr = Arc::new(two_panels());
+        let normal = Drape::new(pr.clone(), &stage);
+        let draft = Drape::at_quality(pr.clone(), &stage, DrapeQuality::Draft);
+        assert!(
+            draft.solver.cloth().len() * 2 < normal.solver.cloth().len(),
+            "{} draft vs {} normal",
+            draft.solver.cloth().len(),
+            normal.solver.cloth().len()
+        );
+        assert_eq!(draft.solver.params(), &DrapeQuality::Draft.params());
+        let again = draft.rebuilt(pr, &stage);
+        assert_eq!(again.solver.cloth().len(), draft.solver.cloth().len());
+        assert_eq!(again.solver.params().self_collision_every, 2);
+        assert_eq!(again.solver.params().gravity_delay, 0.0, "warm");
+    }
+
     fn two_panels() -> Project {
         let mut pr = Project::new();
         let a = pr.add_piece(Piece::rectangle(

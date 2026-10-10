@@ -11,6 +11,22 @@ pub struct Plane {
 /// the particle is farther than `margin` from it (and outside).
 pub trait Collider: Sync {
     fn contact_planes(&self, x: &[DVec3], margin: f64) -> Vec<Option<Plane>>;
+
+    /// The contact planes of the particles `which` (indices into `x`), each with how far that
+    /// particle is from the surface (negative inside): the solver asks again about a particle
+    /// only once it has moved far enough to reach the surface. A collider that can't say how
+    /// far a particle outside the margin is reports the margin, and is asked every frame.
+    fn contacts(&self, x: &[DVec3], which: &[u32], margin: f64) -> Vec<(Option<Plane>, f64)> {
+        let planes = self.contact_planes(x, margin);
+        which
+            .iter()
+            .map(|&i| {
+                let plane = planes[i as usize];
+                let clearance = plane.map_or(margin, |p| (x[i as usize] - p.point).dot(p.normal));
+                (plane, clearance)
+            })
+            .collect()
+    }
 }
 
 /// A collider that can also say how far a point is from its surface (negative inside),
@@ -53,30 +69,42 @@ impl BodyCollider {
     }
 }
 
+impl BodyCollider {
+    /// The contact plane for a particle at `p` (None beyond `margin`), and how far it is
+    /// from the surface (negative inside).
+    fn contact(&self, p: DVec3, margin: f64) -> (Option<Plane>, f64) {
+        let (proj, (tri, _)) = self
+            .mesh
+            .project_local_point_and_get_location(p.as_vec3(), false);
+        let point = proj.point.as_dvec3();
+        let d = p - point;
+        let dist = d.length();
+        if !proj.is_inside && dist > margin {
+            return (None, dist);
+        }
+        let normal = if dist > 1e-7 {
+            if proj.is_inside { -d / dist } else { d / dist }
+        } else {
+            self.mesh
+                .triangle(tri)
+                .normal()
+                .unwrap_or(glam::Vec3::Y)
+                .as_dvec3()
+        };
+        let signed = if proj.is_inside { -dist } else { dist };
+        (Some(Plane { normal, point }), signed)
+    }
+}
+
 impl Collider for BodyCollider {
     fn contact_planes(&self, x: &[DVec3], margin: f64) -> Vec<Option<Plane>> {
-        x.par_iter()
-            .map(|p| {
-                let (proj, (tri, _)) = self
-                    .mesh
-                    .project_local_point_and_get_location(p.as_vec3(), false);
-                let point = proj.point.as_dvec3();
-                let d = *p - point;
-                let dist = d.length();
-                if !proj.is_inside && dist > margin {
-                    return None;
-                }
-                let normal = if dist > 1e-7 {
-                    if proj.is_inside { -d / dist } else { d / dist }
-                } else {
-                    self.mesh
-                        .triangle(tri)
-                        .normal()
-                        .unwrap_or(glam::Vec3::Y)
-                        .as_dvec3()
-                };
-                Some(Plane { normal, point })
-            })
+        x.par_iter().map(|p| self.contact(*p, margin).0).collect()
+    }
+
+    fn contacts(&self, x: &[DVec3], which: &[u32], margin: f64) -> Vec<(Option<Plane>, f64)> {
+        which
+            .par_iter()
+            .map(|&i| self.contact(x[i as usize], margin))
             .collect()
     }
 }
@@ -108,33 +136,63 @@ impl CompoundCollider {
     }
 }
 
+impl CompoundCollider {
+    /// The plane to use for a particle at `p` among its parts' and the floor's, with how far
+    /// it is from the nearest surface: inside anything, the nearest way out; otherwise the
+    /// nearest surface.
+    fn pick(
+        &self,
+        p: DVec3,
+        margin: f64,
+        parts: impl Iterator<Item = (Option<Plane>, f64)>,
+    ) -> (Option<Plane>, f64) {
+        let floor = self.floor.map(|f| {
+            let d = p.y - f;
+            let plane = (d < margin).then_some(Plane {
+                normal: DVec3::Y,
+                point: DVec3::new(p.x, f, p.z),
+            });
+            (plane, d)
+        });
+        let mut clearance = f64::INFINITY;
+        let mut best: Option<(f64, Plane)> = None;
+        for (plane, d) in parts.chain(floor) {
+            clearance = clearance.min(d);
+            if let Some(plane) = plane {
+                let better = best.is_none_or(|(bd, _)| {
+                    (d >= 0.0)
+                        .cmp(&(bd >= 0.0))
+                        .then(d.abs().total_cmp(&bd.abs()))
+                        .is_lt()
+                });
+                if better {
+                    best = Some((d, plane));
+                }
+            }
+        }
+        (best.map(|(_, plane)| plane), clearance)
+    }
+}
+
 impl Collider for CompoundCollider {
     fn contact_planes(&self, x: &[DVec3], margin: f64) -> Vec<Option<Plane>> {
-        let per_part: Vec<Vec<Option<Plane>>> = self
+        let all: Vec<u32> = (0..x.len() as u32).collect();
+        self.contacts(x, &all, margin)
+            .into_iter()
+            .map(|(plane, _)| plane)
+            .collect()
+    }
+
+    fn contacts(&self, x: &[DVec3], which: &[u32], margin: f64) -> Vec<(Option<Plane>, f64)> {
+        let per_part: Vec<Vec<(Option<Plane>, f64)>> = self
             .parts
             .iter()
-            .map(|c| c.contact_planes(x, margin))
+            .map(|c| c.contacts(x, which, margin))
             .collect();
-        (0..x.len())
-            .into_par_iter()
-            .map(|i| {
-                let floor = self.floor.filter(|f| x[i].y - f < margin).map(|f| Plane {
-                    normal: DVec3::Y,
-                    point: DVec3::new(x[i].x, f, x[i].z),
-                });
-                per_part
-                    .iter()
-                    .filter_map(|planes| planes[i])
-                    .chain(floor)
-                    .map(|p| ((x[i] - p.point).dot(p.normal), p))
-                    // Inside anything: the nearest way out. Otherwise: the nearest surface.
-                    .min_by(|(a, _), (b, _)| {
-                        (*a >= 0.0)
-                            .cmp(&(*b >= 0.0))
-                            .then(a.abs().total_cmp(&b.abs()))
-                    })
-                    .map(|(_, p)| p)
-            })
+        which
+            .par_iter()
+            .enumerate()
+            .map(|(k, &i)| self.pick(x[i as usize], margin, per_part.iter().map(|found| found[k])))
             .collect()
     }
 }
@@ -336,6 +394,38 @@ mod tests {
         let x = [DVec3::ZERO, DVec3::new(0.0, -5.0, 0.0)];
         assert_eq!(c.contact_planes(&x, 0.05), vec![None, None]);
         assert_eq!(c.signed_distance(DVec3::ZERO), f64::INFINITY);
+    }
+
+    #[test]
+    fn contacts_say_how_far_each_asked_particle_is() {
+        let c = CompoundCollider::new(vec![cube()], Some(-1.0));
+        let x = [
+            DVec3::new(0.0, 0.0, 0.3),   // inside the cube, 0.2 from its +Z face
+            DVec3::new(0.0, 0.0, 0.52),  // 0.02 outside
+            DVec3::new(0.0, 3.0, 0.0),   // far from everything: 2.5 above the cube
+            DVec3::new(5.0, -0.98, 0.0), // 0.02 above the floor
+        ];
+        let found = c.contacts(&x, &[3, 0, 2], 0.05);
+        assert_eq!(found.len(), 3);
+        assert!(
+            found[0].0.is_some() && (found[0].1 - 0.02).abs() < 1e-6,
+            "{:?}",
+            found[0]
+        );
+        assert!(
+            found[1].0.is_some() && (found[1].1 + 0.2).abs() < 1e-6,
+            "{:?}",
+            found[1]
+        );
+        assert!(
+            found[2].0.is_none() && (found[2].1 - 2.5).abs() < 1e-6,
+            "{:?}",
+            found[2]
+        );
+        // A single body says the same.
+        let one = cube().contacts(&x, &[1, 2], 0.05);
+        assert!(one[0].0.is_some() && (one[0].1 - 0.02).abs() < 1e-6);
+        assert!(one[1].0.is_none() && (one[1].1 - 2.5).abs() < 1e-6);
     }
 
     #[test]

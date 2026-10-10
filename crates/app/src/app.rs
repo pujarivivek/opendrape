@@ -9,11 +9,14 @@ use crate::recovery::Recovery;
 use crate::sim_runner::{DrapeNote, SimFrame, SimRunner};
 use crate::tr;
 use crate::view_picker::view_picker;
-use crate::view_settings::{LightingChoice, QualityChoice, ViewSettings};
+use crate::view_settings::{
+    DrapeQualityChoice, LightingChoice, QualityChoice, ViewSettings, cores,
+};
 use crate::viewport::{Show, Viewport};
 use crate::workspace::{self, Workspace};
 use egui::{Key, KeyboardShortcut, Modifiers, ViewportCommand};
 use opendrape_core::{PieceId, Project};
+use opendrape_drape::DrapeQuality;
 use opendrape_drape::Stage;
 use opendrape_mesh::MeshNote;
 use opendrape_render::OrbitCamera;
@@ -333,7 +336,7 @@ impl OpenDrapeApp {
         match clicked {
             Some(Toolbar::Play) => {
                 let snapshot = Arc::new(self.editor.doc.project().clone());
-                runner.play(snapshot.clone());
+                runner.play_at(snapshot.clone(), self.view_settings.drape.resolve(cores()));
                 self.draped = Some(snapshot);
             }
             Some(Toolbar::Pause) => runner.set_playing(false),
@@ -761,6 +764,7 @@ impl OpenDrapeApp {
                 ui.separator();
                 self.quality_menu(ui);
                 self.lighting_menu(ui);
+                self.drape_quality_menu(ui);
             });
             ui.menu_button(tr!("menu-help"), |ui| {
                 if ui.button(tr!("menu-about")).clicked() {
@@ -815,6 +819,31 @@ impl OpenDrapeApp {
             }
         });
         response.response.on_hover_text(tr!("quality-tip"));
+    }
+
+    /// View → Fabric detail: Auto (saying which preset this computer gets), Draft, Normal,
+    /// Fine. Remembered; takes effect at the next Play.
+    fn drape_quality_menu(&mut self, ui: &mut egui::Ui) {
+        let response = ui.menu_button(tr!("menu-drape-quality"), |ui| {
+            for choice in DrapeQualityChoice::ALL {
+                let label = match choice {
+                    DrapeQualityChoice::Auto => tr!(
+                        "drape-quality-auto",
+                        level = drape_quality_label(DrapeQuality::for_cores(cores()))
+                    ),
+                    DrapeQualityChoice::Draft => drape_quality_label(DrapeQuality::Draft),
+                    DrapeQualityChoice::Normal => drape_quality_label(DrapeQuality::Normal),
+                    DrapeQualityChoice::Fine => drape_quality_label(DrapeQuality::Fine),
+                };
+                let current = self.view_settings.drape == choice;
+                if ui.radio(current, label).clicked() && !current {
+                    self.view_settings.drape = choice;
+                    self.view_settings.save(self.startup.store.dir());
+                    ui.close();
+                }
+            }
+        });
+        response.response.on_hover_text(tr!("drape-quality-tip"));
     }
 
     /// View → Lighting: Soft, Balanced, Sculpted. Applies at once and is remembered.
@@ -1168,6 +1197,15 @@ impl OpenDrapeApp {
                 }
             });
         self.show_about = open;
+    }
+}
+
+/// A fabric detail preset as the View menu names it.
+fn drape_quality_label(q: DrapeQuality) -> String {
+    match q {
+        DrapeQuality::Draft => tr!("drape-quality-draft"),
+        DrapeQuality::Normal => tr!("drape-quality-normal"),
+        DrapeQuality::Fine => tr!("drape-quality-fine"),
     }
 }
 

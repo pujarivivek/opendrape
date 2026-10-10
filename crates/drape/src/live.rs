@@ -395,14 +395,14 @@ pub(crate) fn warm_positions(
         .collect()
 }
 
-/// How a drape made again while draping runs: gravity at once (it was already hanging). Its
-/// seams weld as at Play, each by its gap: one that starts closed welds on the first frame,
-/// one sewn since closes first.
-pub(crate) fn warm_params() -> Params {
+/// How a drape made again while draping runs: as at Play (`play`), but with gravity at once
+/// (it was already hanging). Its seams weld as at Play, each by its gap: one that starts
+/// closed welds on the first frame, one sewn since closes first.
+pub(crate) fn warm_params(play: Params) -> Params {
     Params {
         gravity_delay: 0.0,
         gravity_ramp: 0.0,
-        ..Params::default()
+        ..play
     }
 }
 

@@ -1,6 +1,7 @@
 //! How the 3D view should look, remembered between launches in `view.json` beside the GPU
 //! state. Like that file, it is read and written quietly: a locked-down lab PC still starts.
 
+use opendrape_drape::DrapeQuality;
 use opendrape_render::studio::Lighting;
 use opendrape_render::studio::quality::Quality;
 use serde::{Deserialize, Serialize};
@@ -55,12 +56,45 @@ impl LightingChoice {
     }
 }
 
+/// How finely the fabric is simulated (View → Fabric detail): Auto follows the number of
+/// cores.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DrapeQualityChoice {
+    #[default]
+    Auto,
+    Draft,
+    Normal,
+    Fine,
+}
+
+impl DrapeQualityChoice {
+    pub const ALL: [Self; 4] = [Self::Auto, Self::Draft, Self::Normal, Self::Fine];
+
+    /// The preset to drape at on a computer with `cores` logical cores.
+    pub fn resolve(self, cores: usize) -> DrapeQuality {
+        match self {
+            Self::Auto => DrapeQuality::for_cores(cores),
+            Self::Draft => DrapeQuality::Draft,
+            Self::Normal => DrapeQuality::Normal,
+            Self::Fine => DrapeQuality::Fine,
+        }
+    }
+}
+
+/// This computer's logical cores (1 when unknown).
+pub fn cores() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get())
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ViewSettings {
     #[serde(default)]
     pub quality: QualityChoice,
     #[serde(default)]
     pub lighting: LightingChoice,
+    #[serde(default)]
+    pub drape: DrapeQualityChoice,
 }
 
 impl ViewSettings {
@@ -94,6 +128,7 @@ mod tests {
         let s = ViewSettings {
             quality: QualityChoice::Basic,
             lighting: LightingChoice::Soft,
+            drape: DrapeQualityChoice::Auto,
         };
         assert!(s.save(Some(dir.path())));
         assert_eq!(ViewSettings::load(Some(dir.path())), s);
@@ -129,6 +164,32 @@ mod tests {
         let s = ViewSettings::load(Some(dir.path()));
         assert_eq!(s.quality, QualityChoice::Basic);
         assert_eq!(s.lighting, LightingChoice::Sculpted);
+    }
+
+    #[test]
+    fn fabric_detail_is_auto_unless_chosen_and_auto_follows_the_cores() {
+        assert_eq!(ViewSettings::default().drape, DrapeQualityChoice::Auto);
+        assert_eq!(DrapeQualityChoice::Auto.resolve(2), DrapeQuality::Draft);
+        assert_eq!(DrapeQualityChoice::Auto.resolve(8), DrapeQuality::Normal);
+        assert_eq!(DrapeQualityChoice::Fine.resolve(2), DrapeQuality::Fine);
+        assert_eq!(DrapeQualityChoice::Draft.resolve(8), DrapeQuality::Draft);
+        assert!(cores() >= 1);
+        let dir = tempfile::tempdir().unwrap();
+        let s = ViewSettings {
+            drape: DrapeQualityChoice::Fine,
+            ..Default::default()
+        };
+        assert!(s.save(Some(dir.path())));
+        assert_eq!(
+            ViewSettings::load(Some(dir.path())).drape,
+            DrapeQualityChoice::Fine
+        );
+        // Saved before fabric detail was a setting.
+        std::fs::write(dir.path().join("view.json"), r#"{ "quality": "basic" }"#).unwrap();
+        assert_eq!(
+            ViewSettings::load(Some(dir.path())).drape,
+            DrapeQualityChoice::Auto
+        );
     }
 
     #[test]

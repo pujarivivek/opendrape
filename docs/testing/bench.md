@@ -121,3 +121,44 @@ is put back. Across a seam, each stitched pair and the neighbours of its ends ar
   the other panel cannot reach the stitch, and all of them shut only at the 3 s timeout, with
   a note each. So seams close first. An arrangement that keeps the pieces from needing to pass
   through each other on the way shut would get both.
+
+## Phase 4 — fabric detail presets, the step budget, and a body that is asked less (2026-10-11)
+
+`View → Fabric detail`: Draft (20 mm cells, 20 substeps of one pass, cloth against cloth
+every other substep), Normal (12 mm, 30 × 1) and Fine (8 mm, 30 × 1); Auto is Draft on two
+cores or fewer. The body is asked about a particle only once it has moved far enough to reach
+the surface since it was last asked (or half a millimetre, in contact), so a settled drape asks
+about nothing. The demo grids keep the solver's default 20 × 2 (with no bias to give, they
+over-stretch at 30 × 1). `drape_bench --quality normal|draft|fine`.
+
+The step sweep on the drafted scenes (Normal cells, 14 threads) that chose 30 × 1:
+
+| substeps × passes | T-shirt ms | T-shirt strain p99 | skirt ms | skirt strain p99 |
+|---|---|---|---|---|
+| 20 × 2 (the default) | 11.7 | 3.4 % | 10.6 | 4.8 % |
+| 30 × 1 | 10.0 | 2.7 % | 9.1 | 4.3 % |
+| 40 × 1 | 12.3 | 2.1 % | 11.8 | 3.7 % |
+| 24 × 1 | 9.0 | 3.4 % | 7.8 | 4.8 % |
+| 15 × 2 | 9.5 | 4.0 % | 8.1 | 5.0 % |
+| 12 × 2 | 7.2 | 5.1 % | 7.1 | 5.5 % |
+
+The presets, on one thread (the slow-laptop stand-in):
+
+| Scene | Preset | Particles | ms/frame | body query | self-collision | Strain p99 | Crossings |
+|---|---|---|---|---|---|---|---|
+| drafted-skirt | Draft | 1,460 | 2.1 | 0.3 | 0.5 | 3.8 % | 0 |
+| drafted-skirt | Normal | 3,868 | 8.5 (was 13.0) | 0.7 (was 3.0) | 2.3 | 4.3 % | 0 |
+| drafted-tshirt | Draft | 1,910 | 2.6 | 0.4 | 0.5 | 3.3 % | 2 |
+| drafted-tshirt | Normal | 5,050 | 10.4 (was 15.4) | 1.1 (was 4.5) | 2.5 | 2.8 % | 17 |
+| drafted-tshirt | Fine | 11,321 | 29.7 | 3.1 | 11.5 | 4.0 % | 66 |
+
+Against the Phase 0 baseline on one thread, with seams that weld flat and cloth that keeps off
+cloth added since: the drafted skirt 20.1 → 8.5 ms at Normal and 2.1 ms at Draft; the T-shirt
+27.7 → 10.4 ms and 2.6 ms. A 2-core laptop at a third of this machine's single-thread speed
+should drape the T-shirt at about 60 frames a second on Draft and 30 on Normal.
+
+- Fine's cost is mostly self-collision: smaller cells mean a smaller margin, so the pairs are
+  found again more often, and over more particles. Finding them again only for what moved is
+  the next saving there.
+- The T-shirt's crossings vary from run to run (17 here, 24 before, 0 at 24 × 1): the fold at
+  the top of a cap forms, or not, as the seams pull shut.

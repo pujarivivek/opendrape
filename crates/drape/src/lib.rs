@@ -7,9 +7,11 @@
 mod build;
 pub mod choice;
 mod live;
+pub mod quality;
 pub mod stage;
 
 pub use build::{
     DENSITY_KG_M2, Drape, DrapeNote, Fabric, FabricPanel, PIN_COMPLIANCE, build_drape,
 };
+pub use quality::DrapeQuality;
 pub use stage::{Arm, FORM_ARM_LEAN_DEG, FORM_ARM_LENGTH_M, FORM_ARM_OUT_M, Stage};

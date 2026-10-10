@@ -4,13 +4,15 @@
 //!
 //! - `--scene skirt|tube|drafted-skirt|drafted-tshirt|all` (default all)
 //! - `--seconds 4` simulated seconds per scene
+//! - `--quality draft|normal|fine` a fabric detail preset for the drafted scenes (what the
+//!   app drapes at); without it, the solver's defaults and the flags below
 //! - `--edge-mm 12` fabric edge length for the drafted scenes
 //! - `--substeps 20`, `--iterations 2` for the drafted scenes
 //! - `--threads 1` the rayon pool's size (1 stands in for a slow laptop)
 //!
 //! Each scene prints a human line, its phases, and one `BENCH` line for scripts.
 
-use opendrape_drape::{Drape, Stage};
+use opendrape_drape::{Drape, DrapeQuality, Stage};
 use opendrape_mesh::MeshParams;
 use opendrape_sim::{FRAME_DT, Params, PhaseTimes, Solid, Solver};
 use opendrape_testkit::drafted;
@@ -22,6 +24,7 @@ use std::time::Instant;
 struct Opts {
     scenes: Vec<String>,
     seconds: f64,
+    quality: Option<DrapeQuality>,
     edge_mm: Option<f64>,
     substeps: Option<usize>,
     iterations: Option<usize>,
@@ -32,6 +35,7 @@ fn parse() -> Opts {
     let mut o = Opts {
         scenes: vec!["all".into()],
         seconds: 4.0,
+        quality: None,
         edge_mm: None,
         substeps: None,
         iterations: None,
@@ -46,6 +50,14 @@ fn parse() -> Opts {
         match flag.as_str() {
             "--scene" => o.scenes = vec![value()],
             "--seconds" => o.seconds = value().parse().expect("seconds"),
+            "--quality" => {
+                o.quality = Some(match value().as_str() {
+                    "draft" => DrapeQuality::Draft,
+                    "normal" => DrapeQuality::Normal,
+                    "fine" => DrapeQuality::Fine,
+                    other => panic!("unknown quality {other}"),
+                })
+            }
             "--edge-mm" => o.edge_mm = Some(value().parse().expect("edge mm")),
             "--substeps" => o.substeps = Some(value().parse().expect("substeps")),
             "--iterations" => o.iterations = Some(value().parse().expect("iterations")),
@@ -150,7 +162,10 @@ fn main() {
                 } else {
                     drafted::t_shirt(&stage).project
                 };
-                let mut drape = Drape::with(Arc::new(project), &stage, &mesh, params);
+                let mut drape = match o.quality {
+                    Some(q) => Drape::at_quality(Arc::new(project), &stage, q),
+                    None => Drape::with(Arc::new(project), &stage, &mesh, params),
+                };
                 let collider = stage.drape_collider();
                 let (ms, avg) = drive(o.seconds, || {
                     drape.solver.step(Some(collider));

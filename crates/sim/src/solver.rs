@@ -55,6 +55,9 @@ pub struct Params {
 impl Default for Params {
     fn default() -> Self {
         Self {
+            // Validated on the demo grids, whose every edge is rigid. Fabric on the grain,
+            // whose bias gives, does better with more substeps and one pass each (see
+            // `opendrape_drape::DrapeQuality` and the sweep in docs/testing/bench.md).
             substeps: 20,
             iterations: 2,
             gravity: -9.81,
@@ -93,6 +96,34 @@ pub enum SolverNote {
     SeamForcedShut { group: u32, gap_mm: f64 },
 }
 
+/// A particle's last answer from the body: its contact plane (None beyond the margin), how far
+/// it was from the surface, and where it was when asked.
+#[derive(Clone, Copy, Debug)]
+struct Contact {
+    plane: Option<Plane>,
+    clearance: f64,
+    at: DVec3,
+}
+
+/// A particle in contact is asked again once it has moved this far (m): its plane still holds
+/// over less, the body being still.
+const REASK_M: f64 = 0.0005;
+
+impl Contact {
+    const NEVER: Self = Self {
+        plane: None,
+        clearance: f64::NEG_INFINITY,
+        at: DVec3::INFINITY,
+    };
+
+    /// Whether the particle, now at `x`, may have reached the surface since it was asked: it
+    /// has moved further than its clearance beyond the margin allows, or, in contact, further
+    /// than its plane holds for.
+    fn stale(&self, x: DVec3, margin: f64) -> bool {
+        x.distance_squared(self.at) > (self.clearance - margin).max(REASK_M).powi(2)
+    }
+}
+
 pub struct Solver {
     cloth: Cloth,
     params: Params,
@@ -101,6 +132,10 @@ pub struct Solver {
     notes: Vec<SolverNote>,
     /// Cloth-against-cloth pairs, made on the first step that needs them.
     self_contacts: Option<SelfContacts>,
+    /// Each particle's last answer from the body (empty without a body).
+    contacts: Vec<Contact>,
+    /// How many particles the body has been asked about so far.
+    body_queries: u64,
 }
 
 impl Solver {
@@ -112,7 +147,14 @@ impl Solver {
             phases: PhaseTimes::default(),
             notes: Vec::new(),
             self_contacts: None,
+            contacts: Vec::new(),
+            body_queries: 0,
         }
+    }
+    /// How many particles the body has been asked about so far: a settled drape asks about
+    /// none.
+    pub fn body_queries(&self) -> u64 {
+        self.body_queries
     }
     /// How many cloth-against-cloth pairs are being watched, and how many times they have
     /// been found (0, 0 without self-collision).
@@ -182,12 +224,39 @@ impl Solver {
         } else {
             0.0
         };
-        let planes = collider.map(|c| c.contact_planes(&self.cloth.x, p.collision_margin));
+        // The body is asked about a particle only once it may have reached the surface since
+        // it was last asked (the body being still), so a settled drape asks about nothing.
+        if let Some(col) = collider {
+            let n = self.cloth.x.len();
+            if self.contacts.len() != n {
+                self.contacts = vec![Contact::NEVER; n];
+            }
+            let which: Vec<u32> = (0..n)
+                .filter(|&i| {
+                    self.cloth.alive[i]
+                        && self.cloth.inv_mass[i] > 0.0
+                        && self.contacts[i].stale(self.cloth.x[i], p.collision_margin)
+                })
+                .map(|i| i as u32)
+                .collect();
+            let found = col.contacts(&self.cloth.x, &which, p.collision_margin);
+            for (&i, (plane, clearance)) in which.iter().zip(found) {
+                self.contacts[i as usize] = Contact {
+                    plane,
+                    clearance,
+                    at: self.cloth.x[i as usize],
+                };
+            }
+            self.body_queries += which.len() as u64;
+        } else {
+            self.contacts.clear();
+        }
         lap.lap(&mut ph.body_query);
         let sdt = FRAME_DT / p.substeps as f64;
         let Solver {
             cloth: c,
             self_contacts,
+            contacts,
             ..
         } = self;
         // Cloth keeps off cloth once the garment is sewn. Seams pull pieces through each other
@@ -255,9 +324,7 @@ impl Solver {
                 sc.solve(c, p.cloth_friction);
             }
             lap.lap(&mut ph.self_collide);
-            if let Some(planes) = &planes {
-                collide(c, planes, p.thickness, p.friction);
-            }
+            collide(c, contacts, p.thickness, p.friction);
             lap.lap(&mut ph.collide);
             for i in 0..c.x.len() {
                 if c.inv_mass[i] > 0.0 {
@@ -301,9 +368,9 @@ fn solve_links(
 
 /// Pushes particles out to `thickness` above their contact plane, then applies Coulomb-style
 /// friction to this substep's sliding (static when the slide is small).
-fn collide(c: &mut Cloth, planes: &[Option<Plane>], thickness: f64, friction: f64) {
-    for (i, plane) in planes.iter().enumerate() {
-        let Some(pl) = plane else { continue };
+fn collide(c: &mut Cloth, contacts: &[Contact], thickness: f64, friction: f64) {
+    for (i, contact) in contacts.iter().enumerate() {
+        let Some(pl) = &contact.plane else { continue };
         if c.inv_mass[i] == 0.0 {
             continue;
         }
@@ -506,6 +573,41 @@ mod tests {
             "live cloth fell: {}",
             s.cloth().positions()[3]
         );
+    }
+
+    #[test]
+    fn a_particle_at_rest_on_the_body_is_not_asked_about_again() {
+        let floor = crate::CompoundCollider::new(vec![], Some(0.0));
+        let params = Params {
+            gravity_delay: 0.0,
+            gravity_ramp: 0.0,
+            ..Params::default()
+        };
+        let mut s = Solver::new(single(1.0, DVec3::new(0.0, 0.2, 0.0), None), params);
+        for _ in 0..180 {
+            s.step(Some(&floor));
+        }
+        let asked = s.body_queries();
+        assert!(asked >= 3, "asked while falling: {asked}");
+        for _ in 0..60 {
+            s.step(Some(&floor));
+        }
+        let again = s.body_queries() - asked;
+        assert!(again <= 3, "asked {again} times about a triangle at rest");
+        // Standing on its bottom edge (nothing tips it out of its plane).
+        let ys: Vec<f64> = s.cloth().positions().iter().map(|p| p.y).collect();
+        assert!(
+            ys.iter().all(|&y| y >= 0.003 - 1e-4) && ys.iter().filter(|&&y| y < 0.004).count() == 2,
+            "resting on the floor: {ys:?}"
+        );
+        // Lifted clear of the floor, it is asked about again once it comes back down.
+        for p in s.cloth_mut().x.iter_mut() {
+            p.y += 0.3;
+        }
+        for _ in 0..120 {
+            s.step(Some(&floor));
+        }
+        assert!(s.body_queries() > asked + 3);
     }
 
     #[test]

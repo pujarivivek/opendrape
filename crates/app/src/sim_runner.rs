@@ -11,6 +11,7 @@ use crossbeam_channel::{Receiver, Sender, unbounded};
 use glam::{DVec3, Vec3};
 use opendrape_core::Project;
 use opendrape_drape::Drape as Made;
+use opendrape_drape::DrapeQuality;
 use opendrape_drape::Stage;
 pub use opendrape_drape::{DENSITY_KG_M2, DrapeNote, Fabric, build_drape};
 use opendrape_sim::AttachmentId;
@@ -45,8 +46,8 @@ pub struct SimFrame {
 pub const GRAB_COMPLIANCE: f64 = 1e-4;
 
 enum Command {
-    /// Drape this project; its frames are numbered `drape`.
-    Play(Arc<Project>, u64),
+    /// Drape this project at this detail; its frames are numbered `drape`.
+    Play(Arc<Project>, u64, DrapeQuality),
     /// The project changed while draping: carry the drape on with this one.
     Update(Arc<Project>),
     /// Pull the point at `bary` in triangle `triangle` of the cloth made from `fabric` (when
@@ -152,13 +153,18 @@ impl SimRunner {
             thread: Some(thread),
         }
     }
-    /// Drapes `project`: the fabric is made on the simulation thread, then it runs.
+    /// Drapes `project` at Normal detail: the fabric is made on the simulation thread, then
+    /// it runs.
     pub fn play(&self, project: Arc<Project>) {
+        self.play_at(project, DrapeQuality::default());
+    }
+    /// As [`Self::play`], at the detail of `quality`.
+    pub fn play_at(&self, project: Arc<Project>, quality: DrapeQuality) {
         let drape = self.shown.fetch_add(1, Ordering::AcqRel) + 1;
         self.went_wrong.store(false, Ordering::Release);
         self.draping.store(true, Ordering::Relaxed);
         self.playing.store(true, Ordering::Relaxed);
-        let _ = self.tx.send(Command::Play(project, drape));
+        let _ = self.tx.send(Command::Play(project, drape, quality));
     }
     /// The project changed while draping: the drape carries on with `project` (its fabric made
     /// again from where the drape has got to, or only its pins moved when that is all that
@@ -374,13 +380,13 @@ fn run(stage: &Stage, rx: &Receiver<Command>, status: &Status, on_frame: &dyn Fn
         };
         match cmd {
             Some(Command::Shutdown) => return,
-            Some(Command::Play(project, number)) => {
+            Some(Command::Play(project, number, quality)) => {
                 // The old drape goes first, so its memory is free for the new one.
                 drop(drape.take());
                 seq += 1;
                 // Making the fabric, and the first frame, are checked like every later frame.
                 drape = start_drape(status, number, || {
-                    let mut d = Drape::new(number, Made::new(project, stage));
+                    let mut d = Drape::new(number, Made::at_quality(project, stage, quality));
                     let first = d.frame(seq, 0.0);
                     first.map(|f| (d, f))
                 });
