@@ -106,8 +106,10 @@ mod tests {
 
     #[test]
     fn a_choice_round_trips_through_json_with_its_size_kind() {
-        let mut c = FormChoice::default();
-        c.size = FormSize::Custom;
+        let mut c = FormChoice {
+            size: FormSize::Custom,
+            ..FormChoice::default()
+        };
         c.measurements.insert("waist".into(), 712.5);
         let json = serde_json::to_string(&c).unwrap();
         assert!(json.contains(r#""kind":"custom""#), "{json}");
