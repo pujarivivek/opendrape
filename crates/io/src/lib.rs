@@ -114,7 +114,17 @@ fn read_from<R: Read + Seek>(r: R) -> Result<Project, OdpError> {
     // Version 2 (M2b) had no seams or 3D placements; serde's defaults give an older file none.
     // Whatever version it was, it is the current one now.
     project.schema_version = SCHEMA_VERSION;
-    project.check().map_err(OdpError::Invalid)?;
+    let mut checked = project.check();
+    if found <= 3 && matches!(checked, Err(ModelError::BadSeam(_))) {
+        // The seam rules grew a minimum length in version 4: a whole-edge seam on a 1 mm edge
+        // (or shorter) was fine before. As when a student's edit leaves a seam that short, it
+        // is dropped, and the rest of the file opens. This runs only once every piece has
+        // checked out (`check` tests the seams after the pieces), because measuring a side
+        // needs well-formed pieces; a seam that is bad in any other way is still refused.
+        project.drop_broken();
+        checked = project.check();
+    }
+    checked.map_err(OdpError::Invalid)?;
     Ok(project)
 }
 

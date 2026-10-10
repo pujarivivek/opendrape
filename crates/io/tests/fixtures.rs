@@ -409,6 +409,49 @@ fn refuses_invalid_v3_details() {
     }
 }
 
+#[test]
+fn format_v3_with_a_whole_edge_seam_on_a_sub_millimetre_edge_opens_without_that_seam() {
+    // M4a had no minimum length for a seam, so a student could sew a 0.5 mm edge with W. The
+    // new rules refuse such a side; the file must still open, with only that seam dropped.
+    let good = include_str!("fixtures/v3/project.json");
+    // The pocket's top edge (edge 2) made 0.5 mm long.
+    let (from_right, from_left) = (r#""x": 150.0, "y": 850.0"#, r#""x": 0.0, "y": 850.0"#);
+    assert!(good.contains(from_right) && good.contains(from_left));
+    let short_top = good
+        .replacen(from_right, r#""x": 75.25, "y": 850.0"#, 1)
+        .replacen(from_left, r#""x": 74.75, "y": 850.0"#, 1);
+    let kept = r#"{ "id": 1, "a": { "shape": 1, "half": "drawn", "first_edge": 1, "edges": 1, "forward": true }, "b": { "shape": 2, "half": "drawn", "first_edge": 3, "edges": 1, "forward": false } },
+    { "id": 2, "a": { "shape": 2, "half": "drawn", "first_edge": 1, "edges": 1, "forward": true }, "b": { "shape": 3, "half": "drawn", "first_edge": 1, "edges": 1, "forward": true } },
+    { "id": 5, "a": { "shape": 4, "half": "drawn", "first_edge": 3, "edges": 2, "forward": true }, "b": { "shape": 1, "half": "pale", "first_edge": 2, "edges": 1, "forward": false } }"#;
+    let probe = r#", { "id": 6, "a": { "shape": 4, "half": "drawn", "first_edge": 2, "edges": 1, "forward": true }, "b": { "shape": 2, "half": "drawn", "first_edge": 0, "edges": 1, "forward": true } }"#;
+    let with = |seams: &str| {
+        let (head, rest) = short_top.split_once(r#""seams": ["#).unwrap();
+        let (_, tail) = rest.split_once(r#""next_piece_id""#).unwrap();
+        format!(r#"{head}"seams": [{seams}], "next_piece_id"{tail}"#)
+    };
+
+    let without_the_probe = opendrape_io::from_bytes(&odp(&with(kept)))
+        .expect("the file without the short seam opens, so the pocket is a good piece");
+    assert_eq!(without_the_probe.seams.len(), 3);
+    let opened = opendrape_io::from_bytes(&odp(&with(&format!("{kept}{probe}"))))
+        .expect("the file with the short seam opens too");
+    let ids: Vec<u32> = opened.seams.iter().map(|s| s.id.0).collect();
+    assert_eq!(ids, [1, 2, 5], "only the 0.5 mm seam is gone");
+    assert_eq!(opened, without_the_probe, "and nothing else changed");
+    assert_eq!(opened.schema_version, 4);
+
+    // A seam that is wrong in another way is still refused, short seam or not: the repair is
+    // for the new length rule only.
+    let also_bad = format!(
+        "{kept}{probe}, {}",
+        r#"{ "id": 7, "a": { "shape": 4, "half": "pale", "first_edge": 0, "edges": 1, "forward": true }, "b": { "shape": 2, "half": "drawn", "first_edge": 2, "edges": 1, "forward": true } }"#
+    );
+    assert!(matches!(
+        opendrape_io::from_bytes(&odp(&with(&also_bad))),
+        Err(opendrape_io::OdpError::Invalid(_))
+    ));
+}
+
 /// The frozen v3 project with its seams replaced by `seams` (the inside of the JSON array).
 fn v3_with_seams(seams: &str) -> String {
     let good = include_str!("fixtures/v3/project.json");
