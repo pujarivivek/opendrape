@@ -30,6 +30,8 @@ egui-wgpu = "=0.36.2"
 egui-phosphor = { version = "=0.14.0", default-features = false, features = ["regular"] }
 egui_kittest = { version = "=0.36.2", features = ["wgpu", "eframe"] }
 wgpu = "=30.0.1"
+# The shader translator wgpu uses (same version), for checking shaders against every backend.
+naga = { version = "=30.0.1", features = ["wgsl-in", "glsl-out"] }
 glam = { version = "0.33", features = ["bytemuck"] }
 bytemuck = { version = "1", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png", "ico"] }

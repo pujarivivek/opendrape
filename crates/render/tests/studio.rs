@@ -674,3 +674,27 @@ fn resizing_restarts_cleanly() {
     }
     assert!(pollster::block_on(scope.pop()).is_none());
 }
+
+/// The OpenGL fallback (Linux without Vulkan, Windows' third choice) draws the studio at every
+/// level without errors. Linux only: that is where CI has an OpenGL driver (llvmpipe).
+#[cfg(target_os = "linux")]
+#[test]
+fn the_studio_draws_on_opengl() {
+    let Some(g) = opendrape_render::headless_device_with(wgpu::Backends::GL) else {
+        panic!("no OpenGL adapter (llvmpipe should be there in CI)");
+    };
+    for quality in Quality::ALL {
+        let mut r = StudioRenderer::new(&g.device, &g.adapter, quality);
+        r.set_overrides(Overrides {
+            ao: Some(true),
+            key_shadows: Some(true),
+            ..Overrides::default()
+        });
+        let m = mesh(&mut r, &g, crease(), [0.5; 3], Material::Cloth);
+        let scope = g.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let target = RenderTarget::new(&g.device, 96, 64);
+        render_still(&mut r, &g, &target, &front_camera(1.5), &[&m]);
+        let error = pollster::block_on(scope.pop());
+        assert!(error.is_none(), "{quality:?} on GL: {error:?}");
+    }
+}

@@ -11,9 +11,11 @@ pub(crate) struct Targets {
     /// The lit scene: half-float HDR, or 8-bit already tone-mapped (the LDR path).
     pub colour_view: wgpu::TextureView,
     pub depth_view: wgpu::TextureView,
-    /// The AO prepass: depth (read by the AO search and the main pass) and view normals.
+    /// The AO prepass: its depth buffer, view normals, and distance from the camera (read by
+    /// the AO search and the main pass).
     pub prepass_depth: wgpu::TextureView,
     pub normals: wgpu::TextureView,
+    pub distance: wgpu::TextureView,
     /// The running average of still frames, kept in turn in one and then the other.
     pub averages: [wgpu::TextureView; 2],
 }
@@ -81,6 +83,13 @@ impl Targets {
                 "studio normals",
                 size,
                 super::ao::NORMALS,
+                U::RENDER_ATTACHMENT | U::TEXTURE_BINDING,
+            )),
+            distance: view(texture(
+                device,
+                "studio distance",
+                size,
+                super::ao::DISTANCE,
                 U::RENDER_ATTACHMENT | U::TEXTURE_BINDING,
             )),
             averages: [0, 1].map(|_| {

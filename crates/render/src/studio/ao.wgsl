@@ -32,6 +32,7 @@ const DEPTH_RANGE: f32 = 20.0;
 struct PrepassOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) normal: vec3<f32>,
+    @location(1) distance: f32,
 };
 
 @vertex
@@ -39,32 +40,61 @@ fn vs_prepass(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>) 
     var out: PrepassOut;
     out.clip = frame.view_proj * vec4<f32>(position, 1.0);
     out.normal = (frame.view * vec4<f32>(normal, 0.0)).xyz;
+    out.distance = -(frame.view * vec4<f32>(position, 1.0)).z;
     return out;
 }
 
+// Distance from the camera (metres) in 24 bits of an 8-bit RGB texture: OpenGL can't read a
+// depth texture as numbers, so the prepass keeps its own copy.
+fn pack_distance(d: f32) -> vec3<f32> {
+    let x = clamp(d / DEPTH_RANGE, 0.0, 1.0) * 255.0;
+    let r = floor(x);
+    let y = fract(x) * 255.0;
+    let g = floor(y);
+    let b = round(fract(y) * 255.0);
+    return vec3<f32>(r, g, b) / 255.0;
+}
+
+fn unpack_distance(c: vec3<f32>) -> f32 {
+    let v = round(c * 255.0);
+    return (v.r + (v.g + v.b / 255.0) / 255.0) / 255.0 * DEPTH_RANGE;
+}
+
+struct PrepassTargets {
+    @location(0) normal: vec4<f32>,
+    @location(1) distance: vec4<f32>,
+};
+
 @fragment
-fn fs_prepass(v: PrepassOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+fn fs_prepass(v: PrepassOut, @builtin(front_facing) front: bool) -> PrepassTargets {
     var n = normalize(v.normal);
     if (!front) {
         n = -n;
     }
-    return vec4<f32>(n * 0.5 + 0.5, 1.0);
+    var out: PrepassTargets;
+    out.normal = vec4<f32>(n * 0.5 + 0.5, 1.0);
+    out.distance = vec4<f32>(pack_distance(v.distance), 1.0);
+    return out;
 }
 
 struct AoParams {
     // x: full-resolution pixels per AO pixel along each side (1 or 2).
     scale: vec4<i32>,
 };
-@group(1) @binding(0) var scene_depth: texture_depth_2d;
+@group(1) @binding(0) var scene_distance: texture_2d<f32>;
 @group(1) @binding(1) var scene_normals: texture_2d<f32>;
 @group(1) @binding(2) var<uniform> ao_params: AoParams;
 
-// View-space position of full-resolution pixel `p` at depth `d`.
-fn view_position(p: vec2<i32>, d: f32) -> vec3<f32> {
+// View-space position of full-resolution pixel `p`, `distance` metres in front of the camera.
+fn view_position(p: vec2<i32>, distance: f32) -> vec3<f32> {
     let uv = (vec2<f32>(p) + 0.5) * frame.screen.zw;
-    let ndc = vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, d, 1.0);
-    let v = frame.inv_proj * ndc;
-    return v.xyz / v.w;
+    let far = frame.inv_proj * vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 1.0, 1.0);
+    let ray = far.xyz / far.w;
+    return ray * (distance / -ray.z);
+}
+
+fn distance_at(p: vec2<i32>) -> f32 {
+    return unpack_distance(textureLoad(scene_distance, p, 0).rgb);
 }
 
 fn pack_depth(linear: f32) -> vec2<f32> {
@@ -83,11 +113,11 @@ fn vs_fullscreen(@builtin(vertex_index) i: u32) -> Fullscreen {
 
 @fragment
 fn fs_ao(v: Fullscreen) -> @location(0) vec4<f32> {
-    let full = vec2<i32>(textureDimensions(scene_depth));
+    let full = vec2<i32>(textureDimensions(scene_distance));
     let here = vec2<i32>(floor(v.clip.xy));
     let p = min(here * ao_params.scale.x, full - 1);
-    let d = textureLoad(scene_depth, p, 0);
-    if (d >= 1.0) {
+    let d = distance_at(p);
+    if (d >= DEPTH_RANGE * 0.999) {
         return vec4<f32>(1.0, pack_depth(DEPTH_RANGE), 1.0);
     }
     let centre = view_position(p, d);
@@ -115,7 +145,7 @@ fn fs_ao(v: Fullscreen) -> @location(0) vec4<f32> {
         if (any(at < vec2<i32>(0)) || any(at >= full)) {
             continue;
         }
-        let scene = view_position(at, textureLoad(scene_depth, at, 0)).z;
+        let scene = view_position(at, distance_at(at)).z;
         // Something in front of the sample point (nearer the camera), close enough to count.
         let close = smoothstep(0.0, 1.0, RADIUS / max(abs(centre.z - scene), 1e-4));
         if (scene >= s.z + BIAS) {

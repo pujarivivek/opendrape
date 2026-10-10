@@ -5,8 +5,10 @@ use super::mesh::StudioMesh;
 use super::targets::{DEPTH, texture};
 use crate::mesh::Vertex;
 
-/// The prepass's normals and the AO result: 8-bit, drawable and readable everywhere.
+/// The prepass's normals and distance from the camera (24 bits packed in RGB), and the AO
+/// result: 8-bit, drawable and readable everywhere, OpenGL included.
 pub(crate) const NORMALS: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+pub(crate) const DISTANCE: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const AO: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// The AO textures at one resolution, and the bind groups that read them.
@@ -102,11 +104,7 @@ impl AoPass {
         let unfiltered = wgpu::TextureSampleType::Float { filterable: false };
         let input_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("studio ao input layout"),
-            entries: &[
-                texture(0, wgpu::TextureSampleType::Depth),
-                texture(1, unfiltered),
-                uniform(2),
-            ],
+            entries: &[texture(0, unfiltered), texture(1, unfiltered), uniform(2)],
         });
         let blur_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("studio ao blur layout"),
@@ -168,7 +166,7 @@ impl AoPass {
                 module: &shader,
                 entry_point: Some("fs_prepass"),
                 compilation_options: Default::default(),
-                targets: &[Some(NORMALS.into())],
+                targets: &[Some(NORMALS.into()), Some(DISTANCE.into())],
             }),
             primitive: wgpu::PrimitiveState {
                 cull_mode: None,
@@ -199,11 +197,11 @@ impl AoPass {
     }
 
     /// AO textures for a `full`-sized image, at half its resolution or full, reading the
-    /// prepass's `depth` and `normals`.
+    /// prepass's `distance` and `normals`.
     pub fn target(
         &self,
         device: &wgpu::Device,
-        depth: &wgpu::TextureView,
+        distance: &wgpu::TextureView,
         normals: &wgpu::TextureView,
         (w, h): (u32, u32),
         half: bool,
@@ -224,7 +222,7 @@ impl AoPass {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(depth),
+                    resource: wgpu::BindingResource::TextureView(distance),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -268,16 +266,42 @@ impl AoPass {
         }
     }
 
-    /// Draws depth and view-space normals of `meshes` (the floor included).
+    /// Draws view-space normals and distance from the camera of `meshes` (the floor
+    /// included), depth-tested against `depth`.
     pub fn prepass(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         frame: &wgpu::BindGroup,
         depth: &wgpu::TextureView,
-        normals: &wgpu::TextureView,
+        [normals, distance]: [&wgpu::TextureView; 2],
         meshes: &[&StudioMesh],
     ) {
-        let mut pass = colour_pass(encoder, "studio prepass", normals, Some(depth));
+        let attachment = |view| {
+            Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                    store: wgpu::StoreOp::Store,
+                },
+            })
+        };
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("studio prepass"),
+            color_attachments: &[attachment(normals), attachment(distance)],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
         pass.set_pipeline(&self.prepass);
         pass.set_bind_group(0, frame, &[]);
         for m in meshes.iter().filter(|m| m.index_count > 0) {

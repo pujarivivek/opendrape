@@ -208,7 +208,7 @@ impl StudioRenderer {
                 texture_entry(2, T::Float { filterable: true }),
                 sampler_entry(3, wgpu::SamplerBindingType::Filtering),
                 texture_entry(4, T::Float { filterable: false }),
-                texture_entry(5, T::Depth),
+                texture_entry(5, T::Float { filterable: false }),
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -247,13 +247,7 @@ impl StudioRenderer {
             U::TEXTURE_BINDING,
         ));
         let ao = view(texture(device, "no ao", one, LDR, U::TEXTURE_BINDING));
-        let prepass = view(texture(
-            device,
-            "no prepass",
-            one,
-            DEPTH,
-            U::TEXTURE_BINDING,
-        ));
+        let prepass = view(texture(device, "no prepass", one, LDR, U::TEXTURE_BINDING));
         let compare = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("studio shadow compare"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -488,7 +482,7 @@ impl StudioRenderer {
             .map(|half| {
                 self.ao.target(
                     device,
-                    &targets.prepass_depth,
+                    &targets.distance,
                     &targets.normals,
                     (width, height),
                     half,
@@ -553,10 +547,7 @@ impl StudioRenderer {
         let p = &self.placeholders;
         let shadow = self.shadows.key_view().unwrap_or(&p.shadow);
         let contact = self.shadows.contact_view().unwrap_or(&p.contact);
-        let prepass = self
-            .targets
-            .as_ref()
-            .map_or(&p.prepass, |t| &t.prepass_depth);
+        let prepass = self.targets.as_ref().map_or(&p.prepass, |t| &t.distance);
         let mut sets: Vec<(bool, &wgpu::TextureView)> =
             self.ao_targets.iter().map(|t| (t.half, &t.a)).collect();
         if sets.is_empty() {
@@ -733,7 +724,7 @@ impl StudioRenderer {
                 &mut encoder,
                 &self.frame_bind_group,
                 &targets.prepass_depth,
-                &targets.normals,
+                [&targets.normals, &targets.distance],
                 &all,
             );
             if let Some(target) = self.ao_targets.iter().find(|t| t.half == half) {

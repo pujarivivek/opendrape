@@ -33,7 +33,7 @@ struct Draw {
 @group(2) @binding(2) var contact_map: texture_2d<f32>;
 @group(2) @binding(3) var linear_sampler: sampler;
 @group(2) @binding(4) var ao_map: texture_2d<f32>;
-@group(2) @binding(5) var prepass_depth: texture_depth_2d;
+@group(2) @binding(5) var prepass_distance: texture_2d<f32>;
 
 const CLOTH: u32 = 0u;
 const FORM: u32 = 1u;
@@ -127,12 +127,11 @@ fn contact_shadow(world: vec3<f32>) -> f32 {
     return 1.0 - frame.extra.w * dark;
 }
 
-// Distance (metres) from the camera of what the prepass drew at full-resolution pixel `p`.
+// Distance (metres) from the camera of what the prepass drew at full-resolution pixel `p`
+// (24 bits in an 8-bit RGB texture, as ao.wgsl packs it).
 fn depth_at(p: vec2<i32>) -> f32 {
-    let d = textureLoad(prepass_depth, p, 0);
-    let uv = (vec2<f32>(p) + 0.5) * frame.screen.zw;
-    let v = frame.inv_proj * vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, d, 1.0);
-    return -v.z / v.w;
+    let v = round(textureLoad(prepass_distance, p, 0).rgb * 255.0);
+    return (v.r + (v.g + v.b / 255.0) / 255.0) / 255.0 * 20.0;
 }
 
 fn unpack_depth(gb: vec2<f32>) -> f32 {
@@ -146,7 +145,7 @@ fn occlusion_at(pixel: vec2<f32>) -> f32 {
     if (frame.flags.x == 0u) {
         return 1.0;
     }
-    let full = vec2<i32>(textureDimensions(prepass_depth));
+    let full = vec2<i32>(textureDimensions(prepass_distance));
     let small = vec2<i32>(textureDimensions(ao_map));
     let depth = depth_at(min(vec2<i32>(floor(pixel)), full - 1));
     let at = pixel * vec2<f32>(small) / vec2<f32>(full) - 0.5;
