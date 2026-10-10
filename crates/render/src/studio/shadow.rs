@@ -37,16 +37,21 @@ pub(crate) struct KeyFit {
 }
 
 impl KeyFit {
-    /// Round `bounds` (min, max), or round the form's usual place when there is nothing.
+    /// Round `bounds` (min, max), or round the form's usual place when there is nothing. The
+    /// box reaches deep enough to take in the floor where the highest point's shadow falls.
     pub fn around(bounds: Option<(Vec3, Vec3)>) -> Self {
-        let (centre, radius) = match bounds {
-            Some((lo, hi)) => ((lo + hi) / 2.0, (hi - lo).length() / 2.0 + KEY_MARGIN),
-            None => (KEY_CENTRE, KEY_RADIUS),
+        let (centre, radius, top) = match bounds {
+            Some((lo, hi)) => ((lo + hi) / 2.0, (hi - lo).length() / 2.0 + KEY_MARGIN, hi.y),
+            None => (KEY_CENTRE, KEY_RADIUS, KEY_CENTRE.y + KEY_RADIUS),
         };
         let radius = radius.max(0.1);
-        let eye = centre + environment::key_dir() * (radius + 0.5);
+        let light = environment::key_dir();
+        let eye = centre + light * (radius + 0.5);
         let view = glam::camera::rh::view::look_at_mat4(eye, centre, Vec3::Y);
-        let depth = 2.0 * radius + 1.0;
+        // From the eye past the far side of the sphere, then on down to the floor along the
+        // light (a shadow from the top lands top / sin(elevation) further on).
+        let to_floor = top.max(0.0) / light.y.max(0.1);
+        let depth = 2.0 * radius + 1.0 + to_floor;
         let ortho = glam::camera::rh::proj::directx::orthographic;
         Self {
             view_proj: ortho(-radius, radius, -radius, radius, 0.0, depth) * view,

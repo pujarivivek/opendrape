@@ -1063,3 +1063,48 @@ fn floor_shadows_soften_with_distance_and_stay_gentle() {
         "the shadow is gentle: {near_dark} vs open floor {open}"
     );
 }
+
+/// A tall figure's shadow reaches all the way along the floor: the far end, well beyond the
+/// figure along the light, is still in shadow (it was cut off by the shadow map's depth range).
+#[test]
+fn a_tall_figures_shadow_is_not_cut_off() {
+    let g = gpu();
+    let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::Medium);
+    r.set_overrides(Overrides {
+        key_shadows: Some(true),
+        ..plain()
+    });
+    let target = RenderTarget::new(&g.device, 500, 500);
+    let key = opendrape_render::studio::environment::key_dir();
+    let away = Vec3::new(-key.x, 0.0, -key.z).normalize();
+    let camera = OrbitCamera {
+        target: away * 0.9,
+        yaw: 0.0,
+        pitch: 1.45,
+        distance: 4.0,
+        fov_y: 35f32.to_radians(),
+    };
+    // 1.9 m tall: its shadow is about 1.9 / tan(50°) ≈ 1.6 m long.
+    let figure = mesh(
+        &mut r,
+        &g,
+        box_mesh(0.3, 0.0, 1.9),
+        [0.5; 3],
+        Material::Form,
+    );
+    let img = render_still(&mut r, &g, &target, &camera, &[&figure]);
+    img.save(format!(
+        "{}/studio_tall_shadow.png",
+        env!("CARGO_TARGET_TMPDIR")
+    ))
+    .ok();
+    let across = Vec3::new(-away.z, 0.0, away.x);
+    let open = luminance_at(&img, &camera, away * 1.4 + across * 0.6);
+    for along in [0.5, 1.0, 1.4] {
+        let shadowed = luminance_at(&img, &camera, away * along);
+        assert!(
+            shadowed < 0.97 * open,
+            "{along} m along: {shadowed} vs open floor {open}"
+        );
+    }
+}

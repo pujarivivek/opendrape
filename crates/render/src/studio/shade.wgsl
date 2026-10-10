@@ -109,9 +109,12 @@ fn key_shadow(world: vec3<f32>, n: vec3<f32>, pixel: vec2<f32>) -> f32 {
     let lp = frame.key_view_proj * vec4<f32>(world + n * (1.5 * frame.extra.z), 1.0);
     let ndc = lp.xyz / lp.w;
     let uv = ndc.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
-    if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || ndc.z >= 1.0) {
+    if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))) {
         return 1.0;
     }
+    // Beyond the map's far side counts as at it: still shaded where something stands between
+    // it and the light (never suddenly lit, which drew a straight edge across the floor).
+    let depth = min(ndc.z, 0.99999);
     var disc = array<vec2<f32>, 12>(
         vec2<f32>(-0.326, -0.406), vec2<f32>(-0.840, -0.074), vec2<f32>(-0.696, 0.457),
         vec2<f32>(-0.203, 0.621), vec2<f32>(0.962, -0.195), vec2<f32>(0.473, -0.480),
@@ -137,7 +140,7 @@ fn key_shadow(world: vec3<f32>, n: vec3<f32>, pixel: vec2<f32>) -> f32 {
         let texel = clamp(vec2<i32>((uv + offset) * vec2<f32>(size)), vec2<i32>(0), size - 1);
         let d = unpack_unit(textureLoad(key_depths, texel, 0).rgb);
         let bias = 0.0015 + length(offset) * frame.key_box.x * slope / frame.key_box.y;
-        if (d < ndc.z - bias) {
+        if (d < depth - bias) {
             blockers += 1.0;
             blocker_depth += d;
         }
@@ -145,7 +148,7 @@ fn key_shadow(world: vec3<f32>, n: vec3<f32>, pixel: vec2<f32>) -> f32 {
     if (blockers == 0.0) {
         return 1.0;
     }
-    let gap = (ndc.z - blocker_depth / blockers) * frame.key_box.y;
+    let gap = (depth - blocker_depth / blockers) * frame.key_box.y;
     let penumbra = clamp(MIN_PENUMBRA + gap * SOFTBOX_SPREAD, MIN_PENUMBRA, BLOCKER_SEARCH);
     let radius = penumbra / frame.key_box.x;
     let taps = min(i32(frame.extra.x), 12);
@@ -153,7 +156,7 @@ fn key_shadow(world: vec3<f32>, n: vec3<f32>, pixel: vec2<f32>) -> f32 {
     for (var i = 0; i < taps; i++) {
         let offset = rotate * disc[i] * radius;
         let bias = 0.0015 + length(offset) * frame.key_box.x * slope / frame.key_box.y;
-        lit += textureSampleCompareLevel(shadow_map, shadow_sampler, uv + offset, ndc.z - bias);
+        lit += textureSampleCompareLevel(shadow_map, shadow_sampler, uv + offset, depth - bias);
     }
     return lit / f32(max(taps, 1));
 }
