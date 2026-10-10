@@ -90,6 +90,9 @@ impl Solid for BodyCollider {
 
 /// Several closed bodies (a dress form's torso, and later its arms or legs) and an optional
 /// floor at height `floor`, as one collider.
+///
+/// Where parts overlap, the "nearest way out" of one part can land inside another, so cloth
+/// should start outside every part.
 pub struct CompoundCollider {
     parts: Vec<BodyCollider>,
     floor: Option<f64>,
@@ -300,6 +303,39 @@ mod tests {
             p.normal.abs_diff_eq(DVec3::X, 1e-6) && (p.point.x - 0.5).abs() < 1e-6,
             "nearest way out, not the far side: {p:?}"
         );
+    }
+
+    #[test]
+    fn inside_any_part_beats_a_nearer_surface_outside_another() {
+        // Cubes overlap between x = 0.3 and 0.5. At x = 0.29 the point is inside the first
+        // cube (0.21 from its +X face) and only 0.01 outside the second (its -X face).
+        let c = CompoundCollider::new(vec![cube_at(0.0), cube_at(0.8)], None);
+        let p = c.contact_planes(&[DVec3::new(0.29, 0.0, 0.0)], 0.05)[0]
+            .expect("inside the first cube");
+        assert!(
+            p.normal.abs_diff_eq(DVec3::X, 1e-6) && (p.point.x - 0.5).abs() < 1e-6,
+            "out through the first cube, not onto the second's near face: {p:?}"
+        );
+    }
+
+    #[test]
+    fn inside_a_part_beats_a_nearer_floor() {
+        // The floor is only 0.02 below the particle, the cube's +Z face is 0.2 away.
+        let c = CompoundCollider::new(vec![cube()], Some(-0.02));
+        let p = c.contact_planes(&[DVec3::new(0.0, 0.0, 0.3)], 0.05)[0].expect("inside the cube");
+        assert!(
+            p.normal.abs_diff_eq(DVec3::Z, 1e-6) && (p.point.z - 0.5).abs() < 1e-6,
+            "out of the cube, not up from the floor: {p:?}"
+        );
+    }
+
+    #[test]
+    fn an_empty_compound_collides_with_nothing() {
+        let c = CompoundCollider::new(vec![], None);
+        assert!(c.parts().is_empty());
+        let x = [DVec3::ZERO, DVec3::new(0.0, -5.0, 0.0)];
+        assert_eq!(c.contact_planes(&x, 0.05), vec![None, None]);
+        assert_eq!(c.signed_distance(DVec3::ZERO), f64::INFINITY);
     }
 
     #[test]
