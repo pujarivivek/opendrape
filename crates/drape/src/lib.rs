@@ -7,4 +7,4 @@ mod build;
 pub mod stage;
 
 pub use build::{DENSITY_KG_M2, DrapeNote, build_drape};
-pub use stage::{BodyAndFloor, Stage};
+pub use stage::{Arm, BodyAndFloor, Stage};
