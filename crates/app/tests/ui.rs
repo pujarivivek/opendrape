@@ -236,21 +236,41 @@ fn play_drapes_the_pattern_and_reset_returns_to_arranging() {
 }
 
 #[test]
-fn editing_the_pattern_while_draped_returns_to_arranging() {
+fn editing_the_pattern_while_draped_carries_the_drape_on() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = harness(dir.path(), SharedState::default());
     h.run();
     add_sewn_pieces(&mut h);
     h.get_by_label("Play").click();
     h.run_steps(2);
-    wait_until(&mut h, "the drape", |a| a.sim_frame().is_some());
-    h.state_mut()
-        .editor_mut()
-        .doc
-        .edit(|p| p.pieces[0].name = "Front left".into());
+    wait_until(&mut h, "the drape", |a| {
+        a.sim_frame().is_some_and(|f| f.time > 0.2)
+    });
+    let before = h.state().sim_frame().unwrap();
+    // The back made 60 mm longer at its hem, as in the pattern window.
+    h.state_mut().editor_mut().doc.edit(|p| {
+        for v in 0..2 {
+            let at = p.pieces[1].vertices[v].pos;
+            p.pieces[1].move_vertex(v, at - Point2::new(0.0, 60.0));
+        }
+    });
     h.run_steps(2);
-    wait_until(&mut h, "arranging again", |a| a.sim_frame().is_none());
-    assert!(!h.state().is_draping());
+    wait_until(&mut h, "the longer drape", |a| {
+        a.sim_frame()
+            .is_some_and(|f| f.positions.len() > before.positions.len())
+    });
+    let after = h.state().sim_frame().unwrap();
+    assert!(h.state().is_draping(), "still draping: no Reset");
+    assert_eq!(after.drape, before.drape, "the same drape, carried on");
+    h.get_by_label("Press Reset to move pieces.");
+    // Undo is an edit too: the drape carries on with the shorter back again.
+    h.state_mut().editor_mut().undo();
+    h.run_steps(2);
+    wait_until(&mut h, "the shorter drape", |a| {
+        a.sim_frame()
+            .is_some_and(|f| f.positions.len() == before.positions.len())
+    });
+    assert!(h.state().is_draping());
 }
 
 #[test]

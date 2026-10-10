@@ -67,6 +67,10 @@ opt-level = 2
 [profile.dev.package.opendrape-mesh]
 opt-level = 2
 
+# The drape is made again on every edit while it drapes (the warm start).
+[profile.dev.package.opendrape-drape]
+opt-level = 2
+
 # Physics and its tests are unusably slow unoptimised.
 [profile.dev.package.opendrape-body]
 opt-level = 3

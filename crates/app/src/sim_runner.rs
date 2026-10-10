@@ -1,15 +1,19 @@
 //! Drapes the student's garment on its own thread, so the window stays responsive even when a
 //! slow computer simulates slower than real time. Play hands the thread a snapshot of the
 //! project; the thread builds the fabric (meshing takes a moment) and the cloth, then steps
-//! the solver. Reset drops the drape. The UI only reads the latest frame.
+//! the solver. An edit while draping hands it the edited project: it makes the fabric again,
+//! carrying on from where the drape had got to (the last frame keeps showing meanwhile, and
+//! edits that arrive while it works are made once, the newest). A grab pulls a point of the
+//! cloth after the pointer. Reset drops the drape. The UI only reads the latest frame.
 
 use arc_swap::ArcSwapOption;
 use crossbeam_channel::{Receiver, Sender, unbounded};
-use glam::Vec3;
+use glam::{DVec3, Vec3};
 use opendrape_core::Project;
+use opendrape_drape::Drape as Made;
 use opendrape_drape::Stage;
-pub use opendrape_drape::{DENSITY_KG_M2, DrapeNote, build_drape};
-use opendrape_sim::Solver;
+pub use opendrape_drape::{DENSITY_KG_M2, DrapeNote, Fabric, build_drape};
+use opendrape_sim::AttachmentId;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
@@ -31,11 +35,32 @@ pub struct SimFrame {
     pub step_ms: f64,
     /// What making this drape found.
     pub notes: Arc<Vec<DrapeNote>>,
+    /// Where this frame's cloth came from on the pattern: its triangles, to grab and pin it
+    /// by. A new one each time an edit makes the fabric again.
+    pub fabric: Arc<Fabric>,
 }
+
+/// A grabbed point of the cloth follows the pointer as a spring this stiff (XPBD compliance,
+/// m/N): firmly, but the fabric round it still has its say.
+pub const GRAB_COMPLIANCE: f64 = 1e-4;
 
 enum Command {
     /// Drape this project; its frames are numbered `drape`.
     Play(Arc<Project>, u64),
+    /// The project changed while draping: carry the drape on with this one.
+    Update(Arc<Project>),
+    /// Pull the point at `bary` in triangle `triangle` of the cloth made from `fabric` (when
+    /// that is still the cloth) towards `target`.
+    Grab {
+        fabric: Arc<Fabric>,
+        triangle: usize,
+        bary: [f64; 3],
+        target: DVec3,
+    },
+    /// The grabbed point's target moves.
+    Pull(DVec3),
+    /// Let go of the grabbed point.
+    Release,
     Reset,
     Wake,
     Shutdown,
@@ -53,6 +78,8 @@ pub struct SimRunner {
     /// a frame an earlier drape publishes after Reset (the thread may be in the middle of a
     /// step) is never shown.
     shown: Arc<AtomicU64>,
+    /// How many times an edit has made the fabric again (the tests count them).
+    remade: Arc<AtomicU64>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -68,6 +95,7 @@ struct Status {
     idle: Arc<AtomicBool>,
     went_wrong: Arc<AtomicBool>,
     shown: Arc<AtomicU64>,
+    remade: Arc<AtomicU64>,
 }
 
 impl Status {
@@ -97,14 +125,16 @@ impl SimRunner {
             idle: Arc::new(AtomicBool::new(false)),
             went_wrong: Arc::new(AtomicBool::new(false)),
             shown: Arc::new(AtomicU64::new(0)),
+            remade: Arc::new(AtomicU64::new(0)),
         };
-        let (latest, draping, playing, idle, went_wrong, shown) = (
+        let (latest, draping, playing, idle, went_wrong, shown, remade) = (
             status.latest.clone(),
             status.draping.clone(),
             status.playing.clone(),
             status.idle.clone(),
             status.went_wrong.clone(),
             status.shown.clone(),
+            status.remade.clone(),
         );
         let thread = std::thread::Builder::new()
             .name("opendrape-sim".into())
@@ -118,6 +148,7 @@ impl SimRunner {
             idle,
             went_wrong,
             shown,
+            remade,
             thread: Some(thread),
         }
     }
@@ -128,6 +159,41 @@ impl SimRunner {
         self.draping.store(true, Ordering::Relaxed);
         self.playing.store(true, Ordering::Relaxed);
         let _ = self.tx.send(Command::Play(project, drape));
+    }
+    /// The project changed while draping: the drape carries on with `project` (its fabric made
+    /// again from where the drape has got to, or only its pins moved when that is all that
+    /// changed), and plays on if it had paused. Nothing happens while arranging.
+    pub fn update(&self, project: Arc<Project>) {
+        if !self.is_draping() {
+            return;
+        }
+        self.playing.store(true, Ordering::Relaxed);
+        let _ = self.tx.send(Command::Update(project));
+    }
+    /// Pulls the point at `bary` in triangle `triangle` of `fabric`'s cloth (as a frame showed
+    /// it) towards `target`, and plays on if the drape had paused. A cloth made again since
+    /// that frame is not grabbed.
+    pub fn grab(&self, fabric: Arc<Fabric>, triangle: usize, bary: [f64; 3], target: DVec3) {
+        self.playing.store(true, Ordering::Relaxed);
+        let _ = self.tx.send(Command::Grab {
+            fabric,
+            triangle,
+            bary,
+            target,
+        });
+    }
+    /// Moves the grabbed point's target (and plays on, if the drape had paused).
+    pub fn pull(&self, target: DVec3) {
+        self.playing.store(true, Ordering::Relaxed);
+        let _ = self.tx.send(Command::Pull(target));
+    }
+    /// Lets go of the grabbed point.
+    pub fn release(&self) {
+        let _ = self.tx.send(Command::Release);
+    }
+    /// How many times an edit has made the fabric again.
+    pub fn remade(&self) -> u64 {
+        self.remade.load(Ordering::Acquire)
     }
     /// Back to arranging: the drape is dropped, and its last frame is gone at once.
     pub fn reset(&self) {
@@ -180,21 +246,24 @@ impl Drop for SimRunner {
 struct Drape {
     /// The Play it came from.
     number: u64,
-    solver: Solver,
+    made: Made,
     notes: Arc<Vec<DrapeNote>>,
     topology: u64,
     triangles: Arc<Vec<[u32; 3]>>,
+    /// The point being grabbed, if any.
+    grab: Option<AttachmentId>,
 }
 
 impl Drape {
-    fn new(number: u64, solver: Solver, notes: Vec<DrapeNote>) -> Self {
-        let c = solver.cloth();
+    fn new(number: u64, made: Made) -> Self {
+        let c = made.solver.cloth();
         Self {
             number,
             topology: c.topology_version(),
             triangles: Arc::new(c.triangles().to_vec()),
-            solver,
-            notes: Arc::new(notes),
+            notes: Arc::new(made.notes.clone()),
+            made,
+            grab: None,
         }
     }
 
@@ -202,7 +271,7 @@ impl Drape {
     /// renderer will get it (single precision: a double too big for one counts too). Every
     /// frame, the first included, goes through here before anyone sees it.
     fn frame(&mut self, seq: u64, step_ms: f64) -> Option<SimFrame> {
-        let c = self.solver.cloth();
+        let c = self.made.solver.cloth();
         let positions: Vec<Vec3> = c.positions().iter().map(|p| p.as_vec3()).collect();
         if positions
             .iter()
@@ -218,11 +287,12 @@ impl Drape {
         Some(SimFrame {
             drape: self.number,
             seq,
-            time: self.solver.time(),
+            time: self.made.solver.time(),
             positions,
             triangles: self.triangles.clone(),
             step_ms,
             notes: self.notes.clone(),
+            fabric: self.made.fabric.clone(),
         })
     }
 }
@@ -261,10 +331,14 @@ fn run(stage: &Stage, rx: &Receiver<Command>, status: &Status, on_frame: &dyn Fn
     let mut seq = 0;
     let mut next = Instant::now();
     let mut settled_frames = 0;
+    // A command read while gathering edits together, handled next.
+    let mut pending: Option<Command> = None;
     loop {
         // Draping and playing: just look for a command. Otherwise sleep until one arrives.
         let busy = drape.is_some() && status.playing.load(Ordering::Relaxed);
-        let cmd = if busy {
+        let cmd = if pending.is_some() {
+            pending.take()
+        } else if busy {
             rx.try_recv().ok()
         } else {
             status.idle.store(true, Ordering::Release);
@@ -280,14 +354,83 @@ fn run(stage: &Stage, rx: &Receiver<Command>, status: &Status, on_frame: &dyn Fn
                 seq += 1;
                 // Making the fabric, and the first frame, are checked like every later frame.
                 drape = start_drape(status, number, || {
-                    let (solver, notes) = build_drape(&project, stage);
-                    let mut d = Drape::new(number, solver, notes);
+                    let mut d = Drape::new(number, Made::new(project, stage));
                     let first = d.frame(seq, 0.0);
                     first.map(|f| (d, f))
                 });
                 settled_frames = 0;
                 on_frame();
                 next = Instant::now();
+                continue;
+            }
+            Some(Command::Update(project)) => {
+                // Edits that arrived while the last one was being made wait in the channel:
+                // only the newest is made. A command after them is handled next.
+                let mut project = project;
+                while let Ok(next) = rx.try_recv() {
+                    match next {
+                        Command::Update(newer) => project = newer,
+                        other => {
+                            pending = Some(other);
+                            break;
+                        }
+                    }
+                }
+                if let Some(mut d) = drape.take() {
+                    if d.made.same_fabric(&project) {
+                        // Only pins or placements changed: the cloth carries on as it is.
+                        d.made.set_pins(project);
+                        drape = Some(d);
+                    } else {
+                        seq += 1;
+                        let number = d.number;
+                        drape = start_drape(status, number, || {
+                            let mut remade = Drape::new(number, d.made.rebuilt(project, stage));
+                            let first = remade.frame(seq, 0.0);
+                            first.map(|f| (remade, f))
+                        });
+                        status.remade.fetch_add(1, Ordering::AcqRel);
+                    }
+                }
+                settled_frames = 0;
+                on_frame();
+                next = Instant::now();
+                continue;
+            }
+            Some(Command::Grab {
+                fabric,
+                triangle,
+                bary,
+                target,
+            }) => {
+                if let Some(d) = &mut drape
+                    && Arc::ptr_eq(&fabric, &d.made.fabric)
+                {
+                    let cloth = d.made.solver.cloth_mut();
+                    if let Some(old) = d.grab.take() {
+                        cloth.detach(old);
+                    }
+                    d.grab = cloth.attach(triangle, bary, target, GRAB_COMPLIANCE);
+                }
+                settled_frames = 0;
+                next = Instant::now();
+                continue;
+            }
+            Some(Command::Pull(target)) => {
+                if let Some(d) = &mut drape
+                    && let Some(id) = d.grab
+                {
+                    d.made.solver.cloth_mut().move_attachment(id, target);
+                }
+                settled_frames = 0;
+                continue;
+            }
+            Some(Command::Release) => {
+                if let Some(d) = &mut drape
+                    && let Some(id) = d.grab.take()
+                {
+                    d.made.solver.cloth_mut().detach(id);
+                }
                 continue;
             }
             Some(Command::Reset) => {
@@ -305,7 +448,7 @@ fn run(stage: &Stage, rx: &Receiver<Command>, status: &Status, on_frame: &dyn Fn
         let Some(d) = &mut drape else { continue };
         let started = Instant::now();
         let collider = stage.drape_collider();
-        let stepped = guarded(|| d.solver.step(Some(&collider))).is_some();
+        let stepped = guarded(|| d.made.solver.step(Some(&collider))).is_some();
         seq += 1;
         let ms = started.elapsed().as_secs_f64() * 1000.0;
         let frame = if stepped { d.frame(seq, ms) } else { None };
@@ -316,8 +459,12 @@ fn run(stage: &Stage, rx: &Receiver<Command>, status: &Status, on_frame: &dyn Fn
             on_frame();
             continue;
         };
-        let cloth = d.solver.cloth();
-        settled_frames = if !cloth.has_open_stitches() && cloth.kinetic_energy() < SETTLED_ENERGY {
+        let cloth = d.made.solver.cloth();
+        // A point held by the pointer is never settled: the pointer may pull it again.
+        settled_frames = if d.grab.is_none()
+            && !cloth.has_open_stitches()
+            && cloth.kinetic_energy() < SETTLED_ENERGY
+        {
             settled_frames + 1
         } else {
             0
@@ -342,6 +489,7 @@ fn run(stage: &Stage, rx: &Receiver<Command>, status: &Status, on_frame: &dyn Fn
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::DVec3;
     use opendrape_core::{Half, Piece, PieceId, Placement, Point2, SeamSide};
     use opendrape_mesh::MeshParams;
 
@@ -469,19 +617,17 @@ mod tests {
     fn a_frame_is_only_made_from_numbers_the_renderer_can_take() {
         let stage = Stage::shared();
         for project in unusable_placements() {
-            let (solver, notes) = build_drape(&project, &stage);
-            let mut drape = Drape::new(1, solver, notes);
+            let mut drape = Drape::new(1, Made::new(project, &stage));
             assert!(drape.frame(1, 0.0).is_none(), "the first frame");
         }
-        let (solver, notes) = build_drape(&two_panels(), &stage);
-        let mut drape = Drape::new(7, solver, notes);
+        let mut drape = Drape::new(7, Made::new(two_panels(), &stage));
         let frame = drape.frame(1, 0.0).expect("an ordinary drape");
         assert_eq!(frame.drape, 7);
         assert!(frame.positions.iter().all(|p| p.is_finite()));
         // Later frames go through the same check.
         let collider = stage.drape_collider();
         for _ in 0..3 {
-            drape.solver.step(Some(&collider));
+            drape.made.solver.step(Some(&collider));
             assert!(drape.frame(2, 1.0).is_some());
         }
     }
@@ -514,6 +660,7 @@ mod tests {
             idle: Arc::new(AtomicBool::new(false)),
             went_wrong: Arc::new(AtomicBool::new(false)),
             shown: Arc::new(AtomicU64::new(0)),
+            remade: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -547,8 +694,7 @@ mod tests {
         );
 
         // A drape that is made is kept, and its first frame is published.
-        let (solver, notes) = build_drape(&two_panels(), &Stage::shared());
-        let mut drape = Drape::new(4, solver, notes);
+        let mut drape = Drape::new(4, Made::new(two_panels(), &Stage::shared()));
         let first = drape.frame(1, 0.0).expect("an ordinary first frame");
         let made = start_drape(&status, 4, move || Some((drape, first)));
         assert!(made.is_some());
@@ -641,6 +787,143 @@ mod tests {
         assert!(
             start.elapsed() < Duration::from_secs(2),
             "thread joined promptly"
+        );
+    }
+
+    /// `two_panels` with B made `longer` mm longer at its hem.
+    fn lengthened(longer: f64) -> Arc<Project> {
+        let mut pr = (*two_panels()).clone();
+        for v in 0..2 {
+            let at = pr.pieces[1].vertices[v].pos;
+            pr.pieces[1].move_vertex(v, at - Point2::new(0.0, longer));
+        }
+        Arc::new(pr)
+    }
+
+    #[test]
+    fn an_edit_while_draping_carries_the_drape_on_with_the_new_pattern() {
+        let r = SimRunner::start(Stage::shared(), || {});
+        r.play(two_panels());
+        wait_for("the drape to run", || {
+            r.latest().is_some_and(|f| f.time > 0.2)
+        });
+        let before = r.latest().unwrap();
+        r.update(lengthened(60.0));
+        wait_for("the longer fabric", || {
+            r.latest()
+                .is_some_and(|f| f.positions.len() > before.positions.len())
+        });
+        let after = r.latest().unwrap();
+        assert_eq!(after.drape, before.drape, "the same drape: no Reset");
+        assert!(!Arc::ptr_eq(&after.fabric, &before.fabric));
+        assert!(r.is_draping() && r.is_playing() && !r.went_wrong());
+        assert_eq!(r.remade(), 1);
+    }
+
+    #[test]
+    fn edits_that_arrive_while_the_fabric_is_made_again_are_made_once_the_newest() {
+        let r = SimRunner::start(Stage::shared(), || {});
+        r.play(two_panels());
+        wait_for("the drape to run", || {
+            r.latest().is_some_and(|f| f.time > 0.1)
+        });
+        for k in 1..=6 {
+            r.update(lengthened(10.0 * f64::from(k)));
+        }
+        let newest = opendrape_mesh::build(&lengthened(60.0), &MeshParams::default());
+        wait_for("the newest pattern", || {
+            r.latest()
+                .is_some_and(|f| f.positions.len() == newest.particles())
+        });
+        assert!(r.remade() <= 2, "made {} times", r.remade());
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(r.latest().unwrap().positions.len(), newest.particles());
+    }
+
+    #[test]
+    fn moving_a_pin_while_draping_carries_the_same_cloth_on() {
+        let mut pr = (*two_panels()).clone();
+        let a = pr.pieces[0].id;
+        let pin = opendrape_core::Pin {
+            shape: a,
+            half: Half::Drawn,
+            at: Point2::new(0.0, 300.0),
+            target: [-0.25, 1.4, 0.4],
+        };
+        pr.pins = vec![pin];
+        let r = SimRunner::start(Stage::shared(), || {});
+        r.play(Arc::new(pr.clone()));
+        wait_for("the drape to run", || {
+            r.latest().is_some_and(|f| f.time > 0.2)
+        });
+        let before = r.latest().unwrap();
+        pr.pins[0].target = [-0.3, 1.45, 0.4];
+        r.update(Arc::new(pr));
+        wait_for("more drape", || {
+            r.latest().is_some_and(|f| f.time > before.time + 0.2)
+        });
+        assert!(Arc::ptr_eq(&r.latest().unwrap().fabric, &before.fabric));
+        assert_eq!(r.remade(), 0, "pins alone don't make the fabric again");
+    }
+
+    /// Where the point at `bary` of triangle `t` of `frame`'s cloth is.
+    fn point(frame: &SimFrame, t: usize, bary: [f64; 3]) -> DVec3 {
+        let tri = frame.triangles[t];
+        (0..3)
+            .map(|k| frame.positions[tri[k] as usize].as_dvec3() * bary[k])
+            .sum()
+    }
+
+    #[test]
+    fn a_grabbed_point_follows_the_pointer_and_letting_go_lets_it_fall() {
+        let r = SimRunner::start(Stage::shared(), || {});
+        r.play(on_the_floor());
+        wait_for("it to settle", || !r.is_playing() && r.is_idle());
+        let frame = r.latest().unwrap();
+        let held = [1.0 / 3.0; 3];
+        let start = point(&frame, 0, held);
+        let up = start + DVec3::new(0.0, 0.25, 0.0);
+        r.grab(frame.fabric.clone(), 0, held, start);
+        assert!(r.is_playing(), "grabbing wakes the drape");
+        r.pull(up);
+        wait_for("the point to follow", || {
+            r.latest()
+                .is_some_and(|f| (point(&f, 0, held) - up).length() < 0.02)
+        });
+        r.release();
+        wait_for("it to fall back", || {
+            r.latest().is_some_and(|f| point(&f, 0, held).y < 0.05)
+        });
+    }
+
+    #[test]
+    fn a_grab_of_cloth_made_again_since_is_not_taken() {
+        let r = SimRunner::start(Stage::shared(), || {});
+        r.play(two_panels());
+        wait_for("the drape to run", || {
+            r.latest().is_some_and(|f| f.time > 0.1)
+        });
+        let old = r.latest().unwrap();
+        r.update(lengthened(60.0));
+        wait_for("the new fabric", || {
+            r.latest()
+                .is_some_and(|f| !Arc::ptr_eq(&f.fabric, &old.fabric))
+        });
+        let held = [1.0 / 3.0; 3];
+        let start = point(&r.latest().unwrap(), 0, held);
+        r.grab(
+            old.fabric.clone(),
+            0,
+            held,
+            start + DVec3::new(0.0, 1.0, 0.0),
+        );
+        let t = r.latest().unwrap().time;
+        wait_for("time to pass", || {
+            r.latest().is_some_and(|f| f.time > t + 0.3)
+        });
+        assert!(
+            point(&r.latest().unwrap(), 0, held).y < start.y + 0.05,
+            "not pulled"
         );
     }
 }

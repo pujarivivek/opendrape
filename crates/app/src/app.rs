@@ -111,7 +111,7 @@ pub struct OpenDrapeApp {
     editor: PatternEditor,
     /// The form, shared with the simulation thread.
     stage: Arc<Stage>,
-    /// The project as it was when Play was pressed: any change to it returns to arranging.
+    /// The project the drape was last given (at Play, or since by an edit while draping).
     draped: Option<Arc<Project>>,
     /// The pieces as the 3D view shows them while arranging.
     arranged: SceneCache,
@@ -323,18 +323,19 @@ impl OpenDrapeApp {
         }
     }
 
-    /// A pattern edit while draped returns to arranging (live updates come later).
-    fn reset_if_edited(&mut self) {
+    /// A change to the project while draping (a pattern edit, a seam, a pin, an undo or a
+    /// redo) carries the drape on with it: see [`SimRunner::update`].
+    fn update_if_edited(&mut self) {
         let Some(runner) = &self.runner else { return };
-        let edited = self
-            .draped
-            .as_ref()
-            .is_some_and(|d| **d != *self.editor.doc.project());
-        if edited {
-            runner.reset();
-        }
-        if edited || !runner.is_draping() {
+        if !runner.is_draping() {
             self.draped = None;
+            return;
+        }
+        let project = self.editor.doc.project();
+        if self.draped.as_ref().is_some_and(|d| **d != *project) {
+            let snapshot = Arc::new(project.clone());
+            runner.update(snapshot.clone());
+            self.draped = Some(snapshot);
         }
     }
 
@@ -366,7 +367,7 @@ impl OpenDrapeApp {
     /// The 3D view: its toolbar and notes, the form with the pieces being arranged or the
     /// drape, and the speed overlay.
     fn view_3d(&mut self, ui: &mut egui::Ui, frame: &eframe::Frame) {
-        self.reset_if_edited();
+        self.update_if_edited();
         // Kept up to date while draping too: the project doesn't change then, so it costs
         // nothing, and Reset shows the pieces at once. Made before the notes are shown, so that
         // a view that couldn't be made says so on the frame the pattern changed.
