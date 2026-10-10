@@ -1,0 +1,19 @@
+{
+ "format": 1,
+ "id": "women-torso-classic",
+ "form": "women-torso",
+ "name": "chart-classic",
+ "source": "OpenDrape grading, checked within 2 cm against published professional dress form size tables (theshopcompany.com, moodfabrics.com) and Kennett & Lindsell UK forms",
+ "sizes": [
+  {"label": "US 0", "alt": "UK 4", "mm": {"bust": 815, "under_bust": 665, "waist": 610, "hip": 865, "neck": 310, "shoulder_length": 115, "back_waist_length": 395, "waist_to_hip": 195}},
+  {"label": "US 2", "alt": "UK 6", "mm": {"bust": 825, "under_bust": 675, "waist": 625, "hip": 880, "neck": 320, "shoulder_length": 120, "back_waist_length": 400, "waist_to_hip": 195}},
+  {"label": "US 4", "alt": "UK 8", "mm": {"bust": 850, "under_bust": 700, "waist": 640, "hip": 895, "neck": 325, "shoulder_length": 125, "back_waist_length": 405, "waist_to_hip": 200}},
+  {"label": "US 6", "alt": "UK 10", "mm": {"bust": 875, "under_bust": 725, "waist": 655, "hip": 910, "neck": 330, "shoulder_length": 125, "back_waist_length": 410, "waist_to_hip": 200}},
+  {"label": "US 8", "alt": "UK 12", "mm": {"bust": 900, "under_bust": 750, "waist": 675, "hip": 930, "neck": 340, "shoulder_length": 130, "back_waist_length": 420, "waist_to_hip": 205}},
+  {"label": "US 10", "alt": "UK 14", "mm": {"bust": 925, "under_bust": 775, "waist": 700, "hip": 955, "neck": 350, "shoulder_length": 135, "back_waist_length": 425, "waist_to_hip": 205}},
+  {"label": "US 12", "alt": "UK 16", "mm": {"bust": 965, "under_bust": 815, "waist": 735, "hip": 995, "neck": 365, "shoulder_length": 140, "back_waist_length": 430, "waist_to_hip": 210}},
+  {"label": "US 14", "alt": "UK 18", "mm": {"bust": 1005, "under_bust": 855, "waist": 775, "hip": 1035, "neck": 380, "shoulder_length": 145, "back_waist_length": 440, "waist_to_hip": 210}},
+  {"label": "US 16", "alt": "UK 20", "mm": {"bust": 1045, "under_bust": 895, "waist": 815, "hip": 1075, "neck": 395, "shoulder_length": 150, "back_waist_length": 445, "waist_to_hip": 215}},
+  {"label": "US 18", "alt": "UK 22", "mm": {"bust": 1105, "under_bust": 955, "waist": 875, "hip": 1145, "neck": 415, "shoulder_length": 155, "back_waist_length": 450, "waist_to_hip": 215}}
+ ]
+}

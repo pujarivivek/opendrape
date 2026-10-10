@@ -243,6 +243,17 @@ impl FormFile {
                 "needs landmark back_neck (the resizing finds the neck's height from it)".into(),
             );
         }
+        // The resizing stretches the form between the waist and the back neck (that is how it
+        // sets the back waist length), which needs the back neck to lie above the waist.
+        let [_, back_neck_v] = self.landmarks["back_neck"];
+        let waist = self.stations["waist"];
+        let waist_v = waist as f64 / (self.rings.len() - 1) as f64;
+        if back_neck_v <= waist_v {
+            return bad(format!(
+                "landmark back_neck (at v {back_neck_v:.4}) must lie above the waist station \
+                 (ring {waist}, at v {waist_v:.4})"
+            ));
+        }
         for (m, tape, from, to) in self.lengths() {
             let Some(TapeDef::Samples { uv, closed, .. }) = self.tapes.get(*tape) else {
                 return bad(format!("{m} needs tape {tape} to be a sampled tape"));
@@ -636,6 +647,11 @@ mod tests {
                 }),
                 "needs landmark back_neck",
             ),
+            // The back of the neck is above the waist.
+            (
+                Box::new(|f| f.landmarks.get_mut("back_neck").unwrap()[1] = 0.3),
+                "back_neck (at v 0.3000) must lie above the waist station (ring 33, at v 0.4125)",
+            ),
             // Sampled tapes: too short, not finite, phi or v off the form.
             (
                 Box::new(|f| samples(f, "armhole").truncate(2)),
@@ -705,6 +721,29 @@ mod tests {
             break_it(&mut f);
             let err = f.check().unwrap_err().0;
             assert!(err.contains(needle), "{err:?} should mention {needle:?}");
+        }
+    }
+
+    /// The resizing finds the neck from `back_neck` and the waist from its station, so a form
+    /// whose back neck is level with, or below, its waist is refused, naming both.
+    #[test]
+    fn a_back_neck_at_or_below_the_waist_is_refused() {
+        let mut f = fixture::torso();
+        let waist = f.stations["waist"];
+        let v = waist as f64 / (f.rings.len() - 1) as f64;
+        for back_neck in [0.0, v / 2.0, v] {
+            f.landmarks.get_mut("back_neck").unwrap()[1] = back_neck;
+            let err = f.check().unwrap_err().0;
+            assert!(
+                err.contains("back_neck") && err.contains(&format!("waist station (ring {waist}")),
+                "{err:?}"
+            );
+        }
+        // Just above the waist is fine, and so are the shipped forms.
+        f.landmarks.get_mut("back_neck").unwrap()[1] = v + 0.01;
+        f.check().unwrap();
+        for json in [WOMEN, MEN] {
+            FormFile::from_json(json).unwrap();
         }
     }
 

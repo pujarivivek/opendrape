@@ -1,6 +1,7 @@
 //! Dress forms: shapes stored as horizontal rings (see `file`), resized to a size chart or to
 //! custom measurements, and built into closed meshes for collision and drawing.
 
+pub mod chart;
 mod cut;
 mod file;
 #[cfg(test)]
@@ -17,6 +18,7 @@ use glam::DVec3;
 use std::collections::BTreeMap;
 use std::f64::consts::{PI, TAU};
 
+pub use chart::{Chart, ChartSize};
 pub use file::{
     ADJUSTABLE_LENGTHS, ANGLES, Collision, FORMAT, FormError, FormFile, Kind, NeckCut, Ring, Stand,
     TORSO_LENGTHS, TORSO_STATIONS, TapeDef,
@@ -83,6 +85,18 @@ pub struct BuiltForm {
     pub collision: Collision,
 }
 
+/// The bundled form files by id.
+const FORMS: [(&str, &str); 2] = [
+    (
+        "women-torso",
+        include_str!("../../../../assets/forms/women-torso.form.json"),
+    ),
+    (
+        "men-torso",
+        include_str!("../../../../assets/forms/men-torso.form.json"),
+    ),
+];
+
 /// A torso form that can be built at any size it takes.
 #[derive(Clone, Debug)]
 pub struct Form {
@@ -90,6 +104,16 @@ pub struct Form {
 }
 
 impl Form {
+    /// The bundled torso forms, in picker order.
+    pub const IDS: [&'static str; 2] = ["women-torso", "men-torso"];
+
+    /// A bundled torso form, or `None` for an id that isn't one of `Form::IDS`.
+    pub fn bundled(id: &str) -> Option<Form> {
+        let (_, json) = FORMS.iter().find(|f| f.0 == id)?;
+        let file = FormFile::from_json(json).expect("bundled form files are valid");
+        (file.kind == Kind::Torso).then(|| Form::new(file).expect("bundled forms are valid"))
+    }
+
     /// Takes a form file once it passes `FormFile::check`.
     pub fn new(torso: FormFile) -> Result<Self, FormError> {
         torso.check()?;

@@ -129,8 +129,12 @@ pub(super) fn recut(file: &FormFile, base: &Rings, rings: &Rings) -> Trim {
             {
                 r = wall_distance(&wall, DVec2::new(0.0, centre.z), DVec2::new(dir.x, dir.z))
                     .unwrap_or(rings.r[neck][k]);
-                if slope > 0.0 {
-                    r = r.min(meets.unwrap_or(0.0)).max(MIN_RADIUS);
+                // A ray that never meets the plane (it runs along it, at the side angle) leaves
+                // the wall as it is.
+                if slope > 0.0
+                    && let Some(meets) = meets
+                {
+                    r = r.min(meets).max(MIN_RADIUS);
                 }
             }
             if new.height(centre + dir * r) > 0.0 {
@@ -384,6 +388,49 @@ mod tests {
                 assert!((0.3..0.5).contains(&share), "{id}: {share}");
             }
         }
+    }
+
+    /// A ray that runs along the plane (the side angle, where its slope is 1.8e-17 and not 0)
+    /// never meets it. Clipping the wall at "the plane's distance" then took 0, and the trimmed
+    /// radius collapsed to `MIN_RADIUS`; the wall's own radius must stay.
+    #[test]
+    fn a_trim_where_the_ray_never_meets_the_plane_keeps_the_wall() {
+        let mut file = fixture::torso();
+        let top = file.rings.len() - 1;
+        let [_, pole_z] = file.stand.pole_xz;
+        let (sin, cos) = file.stand.neck_cut.tilt_deg.to_radians().sin_cos();
+        // Cut through the top ring, so that its side vertex (k = 24 of 49, where the plane's
+        // height depends on y and zc alone) is 50 µm under the plane: within `ON_PLANE` of it,
+        // but not above it. The ring below is the neck's last true ring.
+        let (y, zc) = (file.rings[top].y, file.rings[top].zc);
+        file.stand.neck_cut.y = y + (zc - pole_z) * sin / cos + 5e-5 / cos;
+        let base = Rings::from_file(&file);
+        let side = (base.half() - 1) / 2;
+        assert_eq!(side, 24);
+        let plane = base_plane(&file);
+        let h = plane.height(base.vertex(top, side));
+        assert!(
+            (-ON_PLANE..0.0).contains(&h),
+            "the top ring is {h} from the plane"
+        );
+        let neck = top - 1;
+        let h = plane.height(base.vertex(neck, side));
+        assert!(h < -ON_PLANE, "the ring below is {h} from the plane");
+        // At the side angle the ray's slope is a rounding error, not zero.
+        let dir = DVec3::new(1.0, 0.0, (PI / 2.0).cos());
+        assert!(
+            (0.0..1e-9).contains(&plane.n.dot(dir)),
+            "{}",
+            plane.n.dot(dir)
+        );
+
+        let trim = recut(&file, &base, &base);
+        let (r, wall) = (trim.rings.r[top][side], base.r[neck][side]);
+        assert!(r > 100.0 * MIN_RADIUS, "the top ring collapsed to {r} m");
+        assert!(
+            (r - wall).abs() < 0.1 * wall,
+            "radius {r} m, the wall's {wall} m"
+        );
     }
 
     #[test]

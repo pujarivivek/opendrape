@@ -515,6 +515,30 @@ mod tests {
         }
     }
 
+    /// The approved cap is 4 mm above the cut and its collar foot 22 mm below it. Measured on a
+    /// built stand, in numbers written out here and not the constants' names, so that changing a
+    /// constant fails a test.
+    #[test]
+    fn the_built_cap_stands_4_mm_above_the_cut_and_22_mm_below_it() {
+        assert_eq!((CAP_ABOVE, COLLAR_BELOW), (0.004, 0.022));
+        for (json, extreme) in both_real_forms() {
+            for (case, s) in real_cases(json, extreme) {
+                let id = format!("{} {case}", s.file.id);
+                let plane = sized_plane(&s.file, &s.base, &s.rings);
+                let all = stand(&s.file, &s.base, &s.rings, &s.wall);
+                // The cap comes first; four round pieces (rod, knob, pole, base) follow it.
+                let round = 2 * SIDES as usize + 2;
+                let cap = all.positions.len() - 4 * round;
+                let (top, foot) = (all.positions[cap - 2], all.positions[cap - 1]);
+                // The centre of the cap: the cut seen from above, wherever the centre is.
+                assert_eq!((top.x, top.z), (foot.x, foot.z), "{id}");
+                let cut = plane.y_at(f64::from(top.x), f64::from(top.z));
+                assert!((f64::from(top.y) - cut - 0.004).abs() < 1e-6, "{id}: top");
+                assert!((cut - f64::from(foot.y) - 0.022).abs() < 1e-6, "{id}: foot");
+            }
+        }
+    }
+
     #[test]
     fn the_rod_and_knob_stand_on_the_pole_axis_above_the_cap() {
         for (json, extreme) in both_real_forms() {
