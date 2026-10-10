@@ -208,3 +208,18 @@ It then drapes the shirt through `crates/drape`, the same code the app runs. The
 - Add no new dependencies, and don't use the name "CLO". Every string goes through Fluent.
 - Leave the dress-forms files untouched: `crates/body`, `crates/testkit/src/{garments,metrics}.rs`, `scripts/forms`, `assets/forms`, `ASSETS.md`. `crates/sim` gets only the small additive attachment API.
 - Schema: v4. If dress-forms Track B merges first and takes v4, renumber to v5 when merging.
+
+## Corrections from the planning probe (2026-10-10)
+
+The planning probe built every task in a scratch copy. It found the following, and the plan follows these corrections where they differ from the sections above.
+
+1. **No `Placement.axis`.** A placement already wraps a piece around its own axis, and Place at → arm turns the piece so that axis is the arm. Format v4 has no axis field.
+2. **Sleeves are centred on the arm's outer side**, not its front. Centring on the front put the underarm corner in the chest.
+3. **The arm curve radius is measured only where the arm hangs free** (new `Arm.free`). Measuring over the whole span counted rays that hit the body near the shoulder.
+4. **Place at → arm steps the sleeve down the arm** in 1 cm steps, up to 20 cm, until no point starts inside the body. The cap seams pull it back up.
+5. **Arm lines are found by horizontal cross-sections of the body.** Clustering the body's points tilted the line out of the arm on this low-poly body.
+6. **F is Free Sew. Fit moves to Cmd+0 (Ctrl+0).**
+7. **Welding after a warm start is all or nothing.** If every stitch starts within 1 mm, all stitches weld at once. Otherwise they weld at the usual time. The simulator can only weld every stitch together.
+8. **An edit that leaves a pin off its piece deletes that pin** in the same undo step, as short seams are deleted. Refusing the edit would stop a student shortening a sleeve past a pin.
+9. **Notches within 1 mm of a side's ends don't count** for notch matching. Otherwise the two cap seams would each count the shared cap notch.
+10. **Removing a point at a side's end keeps the end on the joined edge.** M4a shortened the side by an edge instead.
