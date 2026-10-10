@@ -144,12 +144,12 @@ impl Drape {
                 .find(|s| s.id == panel.shape)
                 .expect("every panel comes from a shape");
             // A piece dragged across the pattern table since: its fabric goes with it.
-            let moved = was
+            let steps = was
                 .iter()
                 .flatten()
                 .find(|s| s.id == panel.shape)
-                .map_or(DVec2::ZERO, |was| live::moved(was, shape));
-            let warm = from.and_then(|old| live::warm_positions(old, panel, moved));
+                .map_or_else(|| vec![DVec2::ZERO], |was| live::steps(was, shape));
+            let warm = from.and_then(|old| live::warm_positions(old, panel, &steps));
             let positions = warm.unwrap_or_else(|| {
                 let placement = place::effective(&project, shape, &layout, stage.shoulder_y());
                 let positions: Vec<DVec3> = panel

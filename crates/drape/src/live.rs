@@ -7,7 +7,7 @@
 //!
 //! A spot of a piece is named by where it is on the piece, not on the pattern table: a piece
 //! dragged across the table keeps its fabric, even when it is reshaped in the same rebuild (see
-//! [`moved`]).
+//! [`steps`]).
 
 use crate::{Drape, FabricPanel};
 use glam::{DVec2, DVec3};
@@ -161,8 +161,9 @@ impl<'a> Index<'a> {
         }
     }
 
-    /// The triangle `p` is in (from its cell), or else the nearest triangle of the panel.
-    fn find(&self, p: DVec2) -> Option<(usize, [f64; 3])> {
+    /// The triangle `p` is in (from its cell), and `p`'s barycentric coordinates in it; None
+    /// when it is in none.
+    fn contains(&self, p: DVec2) -> Option<(usize, [f64; 3])> {
         let c = ((p - self.min) / self.cell).floor();
         if c.x >= 0.0 && c.y >= 0.0 && (c.x as usize) < self.cols && (c.y as usize) < self.rows {
             let cell = &self.cells[c.y as usize * self.cols + c.x as usize];
@@ -173,8 +174,15 @@ impl<'a> Index<'a> {
                 }
             }
         }
-        let j = self.nearest(p)?;
-        Some((j, bary(flat_triangle(self.panel, j), p)))
+        None
+    }
+
+    /// The triangle `p` is in (from its cell), or else the nearest triangle of the panel.
+    fn find(&self, p: DVec2) -> Option<(usize, [f64; 3])> {
+        self.contains(p).or_else(|| {
+            let j = self.nearest(p)?;
+            Some((j, bary(flat_triangle(self.panel, j), p)))
+        })
     }
 
     /// Looks at the triangles of cell (`c`, `r`), keeping the nearest to `p` so far in `best`.
@@ -237,63 +245,146 @@ impl<'a> Index<'a> {
     }
 }
 
-/// How far `now` has been moved on the pattern table (m) from `was`, the same piece as it was
-/// before: the step most of its points took, over the corners and curve handles that kept their
-/// index. A piece dragged across the table is that step for every point; one dragged and also
-/// reshaped before the fabric is made again (edits made in quick succession are made once) has
-/// the step for most of its points, and the rest are the reshaping. Zero when no step is shared
-/// by at least two points, and when as many points stayed as moved: a hem made longer is not a
-/// piece moved halfway, and a point it can't place is carried on from the nearest triangle.
-pub(crate) fn moved(was: &Shape, now: &Shape) -> DVec2 {
+/// The most steps tried for one piece besides none at all: the biggest groups of corners that
+/// took the same step.
+const MAX_STEPS: usize = 8;
+/// Two steps explain a panel equally well when the points one explains and the other doesn't
+/// are no more than this share of its points.
+const TIE: f64 = 0.05;
+
+/// The steps (m) that piece `now` may have been dragged across the pattern table by since `was`,
+/// the same piece as it was before, nearest zero first. [`best_step`] chooses among them by how
+/// much of the new fabric each explains. The evidence is the step each corner and curve handle
+/// that kept its index took.
+/// - **One step for every point** (a piece dragged and nothing else, or not at all): that step
+///   alone. This is exact.
+/// - **Otherwise** the piece was reshaped, and may have been dragged as well (edits made in
+///   quick succession are made once, as is fast Undo over a drag and a reshape): no step, and
+///   each step that corners share and that at least two more corners took than stayed put.
+///
+/// The fabric can't be left to choose alone. A hem made longer by `h` fits the old fabric about
+/// as well as "the piece moved down by `h` and its top shortened by `h`" (a rectangle's scores
+/// differ by under 1%), and a triangle's base made lower fits better still shifted. So a step
+/// is tried only when it is the likelier edit: it then takes fewer corners to say that the
+/// piece was dragged and the rest reshaped than that the corners that moved were reshaped. Two
+/// hem corners of four, or a triangle's two base corners, are not a drag. Handles don't count:
+/// they move with their corner, so a curved hem has two more points that moved than it has
+/// corners.
+pub(crate) fn steps(was: &Shape, now: &Shape) -> Vec<DVec2> {
     let (a, b) = (&was.piece, &now.piece);
-    let mut steps: Vec<Point2> = a
+    let step = |from: Point2, to: Point2| DVec2::new(to.x - from.x, to.y - from.y);
+    let mut corners: Vec<DVec2> = a
         .vertices
         .iter()
         .zip(&b.vertices)
-        .map(|(v, w)| w.pos - v.pos)
+        .map(|(v, w)| step(v.pos, w.pos))
         .collect();
+    let mut handles = Vec::new();
+    let mut same_edges = a.vertices.len() == b.vertices.len() && a.edges.len() == b.edges.len();
     for pair in a.edges.iter().zip(&b.edges) {
-        if let (Edge::Curve { c1, c2 }, Edge::Curve { c1: d1, c2: d2 }) = pair {
-            steps.extend([*d1 - *c1, *d2 - *c2]);
+        match pair {
+            (Edge::Line, Edge::Line) => {}
+            (Edge::Curve { c1, c2 }, Edge::Curve { c1: d1, c2: d2 }) => {
+                handles.extend([step(*c1, *d1), step(*c2, *d2)]);
+            }
+            _ => same_edges = false,
         }
     }
-    DVec2::new(
-        shared(steps.iter().map(|s| s.x).collect()) / 1000.0,
-        shared(steps.iter().map(|s| s.y).collect()) / 1000.0,
-    )
+    corners.retain(|s| s.is_finite());
+    handles.retain(|s| s.is_finite());
+    let Some(&first) = corners.first().or(handles.first()) else {
+        return vec![DVec2::ZERO];
+    };
+    let same = |s: DVec2, t: DVec2| (s - t).abs().max_element() <= SAME_MM;
+    if same_edges && corners.iter().chain(&handles).all(|s| same(*s, first)) {
+        return vec![first / 1000.0];
+    }
+    let stayed = corners.iter().filter(|s| same(**s, DVec2::ZERO)).count();
+    let mut shared = shared_steps(corners);
+    shared.retain(|(n, s)| *n >= stayed + 2 && !same(*s, DVec2::ZERO));
+    shared.sort_by(|x, y| y.0.cmp(&x.0).then(x.1.length().total_cmp(&y.1.length())));
+    shared.truncate(MAX_STEPS);
+    let mut steps: Vec<DVec2> = shared.into_iter().map(|(_, s)| s / 1000.0).collect();
+    steps.push(DVec2::ZERO);
+    steps.sort_by(|x, y| x.length().total_cmp(&y.length()));
+    steps
 }
 
-/// The value that most of `values` share (within [`SAME_MM`]), the one nearest zero when two
-/// are shared by as many; zero when none is shared by two or more.
-fn shared(mut values: Vec<f64>) -> f64 {
-    values.retain(|v| v.is_finite());
-    values.sort_by(f64::total_cmp);
-    let mut best: Option<(usize, f64)> = None;
+/// Each step (mm) that two or more of `steps` share (within [`SAME_MM`] on both axes), with how
+/// many do.
+fn shared_steps(mut steps: Vec<DVec2>) -> Vec<(usize, DVec2)> {
+    steps.sort_by(|a, b| a.x.total_cmp(&b.x));
+    let mut shared = Vec::new();
     let mut i = 0;
-    while i < values.len() {
-        let n = values[i..]
+    while i < steps.len() {
+        let n = steps[i..]
             .iter()
-            .take_while(|v| **v - values[i] <= SAME_MM)
+            .take_while(|s| s.x - steps[i].x <= SAME_MM)
             .count();
-        let value = values[i + n / 2];
-        if best.is_none_or(|(m, v)| n > m || (n == m && value.abs() < v.abs())) {
-            best = Some((n, value));
+        let column = &mut steps[i..i + n];
+        column.sort_by(|a, b| a.y.total_cmp(&b.y));
+        let mut j = 0;
+        while j < column.len() {
+            let m = column[j..]
+                .iter()
+                .take_while(|s| s.y - column[j].y <= SAME_MM)
+                .count();
+            if m >= 2 {
+                shared.push((m, column[j + m / 2]));
+            }
+            j += m;
         }
         i += n;
     }
-    best.filter(|(n, _)| *n >= 2).map_or(0.0, |(_, v)| v)
+    shared
+}
+
+/// The step of `steps` (m) that explains most of `panel`, a panel of the new fabric: the one
+/// for which most of its points, looked up where the step puts them, are in a triangle of `old`,
+/// the old fabric's grid. A step takes over from an earlier one (they come nearest zero first)
+/// only by explaining more than [`TIE`] of the points more: a near tie goes to the step nearest
+/// zero. Fabric that fits about as well shifted as not is a tie, however the meshes happen to
+/// fall.
+fn best_step(old: &Index, panel: &PanelMesh, steps: &[DVec2]) -> DVec2 {
+    let Some(&first) = steps.first() else {
+        return DVec2::ZERO;
+    };
+    if steps.len() == 1 {
+        return first;
+    }
+    let explained = |step: DVec2| {
+        panel
+            .flat
+            .iter()
+            .filter(|f| old.contains(DVec2::from_array(**f) - step).is_some())
+            .count()
+    };
+    let tie = (panel.flat.len() as f64 * TIE) as usize;
+    let mut best = (first, explained(first));
+    for &step in &steps[1..] {
+        let score = explained(step);
+        if score > best.1 + tie {
+            best = (step, score);
+        }
+    }
+    best.0
 }
 
 /// Where the points of `panel` (a panel of the new fabric) start, carrying on from drape `old`:
 /// each point where the same spot of the same piece was in the old cloth, found through the old
 /// triangle that held it (welding renumbers triangles in place, so this reaches the live
-/// particles); a point outside every old triangle carries on from the nearest one. `moved` (m)
-/// is how far the piece has been dragged across the pattern table since (see [`moved`]): a point
-/// is looked up where it was before the drag. None when the old drape had no panel for the
+/// particles); a point outside every old triangle carries on from the nearest one. `steps` are
+/// the steps the piece may have been dragged across the pattern table since (see [`steps`]): a
+/// point is looked up where it was before the drag. None when the old drape had no panel for the
 /// shape (it starts at its placement).
-pub(crate) fn warm_positions(old: &Drape, panel: &PanelMesh, moved: DVec2) -> Option<Vec<DVec3>> {
+pub(crate) fn warm_positions(
+    old: &Drape,
+    panel: &PanelMesh,
+    steps: &[DVec2],
+) -> Option<Vec<DVec3>> {
     let was = old.fabric.panel(panel.shape)?;
     let index = Index::new(was);
+    let moved = best_step(&index, panel, steps);
     let cloth = old.solver.cloth();
     let (x, triangles) = (cloth.positions(), cloth.triangles());
     panel
@@ -867,97 +958,166 @@ mod tests {
         piece
     }
 
+    /// The one step a piece took when it was only dragged (or not touched).
+    fn dragged_by(was: &Shape, now: &Shape) -> DVec2 {
+        let steps = steps(was, now);
+        assert_eq!(steps.len(), 1, "{steps:?}");
+        steps[0]
+    }
+
+    fn shape_of(project: &Project, id: PieceId) -> Shape {
+        geom::shapes(project)
+            .into_iter()
+            .find(|s| s.id == id)
+            .unwrap()
+    }
+
+    /// The steps `project`'s piece `id` may have taken since `was`, in mm.
+    fn steps_mm(was: &Shape, project: &Project, id: PieceId) -> Vec<(f64, f64)> {
+        steps(was, &shape_of(project, id))
+            .iter()
+            .map(|s| (s.x * 1000.0, s.y * 1000.0))
+            .collect()
+    }
+
     #[test]
-    fn a_piece_moved_is_the_step_most_of_its_points_took_and_reshaping_alone_is_not_a_move() {
+    fn a_piece_only_dragged_took_one_step_and_a_reshaped_one_offers_the_steps_to_choose_from() {
         let square = [(0.0, 0.0), (200.0, 0.0), (200.0, 300.0), (0.0, 300.0)];
-        let shape_of = |project: &Project, id: PieceId| {
-            geom::shapes(project)
-                .into_iter()
-                .find(|s| s.id == id)
-                .unwrap()
-        };
         let mut pr = Project::new();
         let id = pr.add_piece(corner_piece(&square, true));
         let was = shape_of(&pr, id);
-        let step = |p: &Project| {
-            let d = moved(&was, &shape_of(p, id));
-            (d.x * 1000.0, d.y * 1000.0)
+        let close = |a: &[(f64, f64)], b: &[(f64, f64)]| {
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b)
+                    .all(|(p, q)| (p.0 - q.0).abs() < 1e-9 && (p.1 - q.1).abs() < 1e-9)
         };
-        assert_eq!(step(&pr), (0.0, 0.0));
-        // Dragged: corners and the curve's handles all step the same.
+        let none = [(0.0, 0.0)];
+        assert!(close(&steps_mm(&was, &pr, id), &none));
+        // Dragged: corners and the curve's handles all step the same, exactly, and that is the
+        // only step.
         let mut dragged = pr.clone();
         dragged
             .piece_mut(id)
             .unwrap()
             .translate(Point2::new(120.0, -35.5));
-        let (x, y) = step(&dragged);
-        assert!(
-            (x - 120.0).abs() < 1e-9 && (y + 35.5).abs() < 1e-9,
-            "{x} {y}"
-        );
-        // Reshaped, not moved: one corner, two (the hem made longer: as many points stayed as
-        // went, so nothing is moved), and a handle on its own.
+        let drag = [(120.0, -35.5)];
+        assert!(close(&steps_mm(&was, &dragged, id), &drag));
+        // Reshaped, no two points sharing a step: the piece did not move.
         let mut one = pr.clone();
         one.piece_mut(id)
             .unwrap()
             .move_vertex(2, Point2::new(210.0, 320.0));
-        assert_eq!(step(&one), (0.0, 0.0));
-        let mut hem = pr.clone();
-        for v in 0..2 {
-            let p = hem.piece(id).unwrap().vertices[v].pos;
-            hem.piece_mut(id)
-                .unwrap()
-                .move_vertex(v, p - Point2::new(0.0, 60.0));
-        }
-        assert_eq!(step(&hem), (0.0, 0.0));
+        assert!(close(&steps_mm(&was, &one, id), &none));
         let mut handle = pr.clone();
         handle.piece_mut(id).unwrap().edges[1] = Edge::Curve {
             c1: Point2::new(215.0, 40.0),
             c2: Point2::new(190.0, 60.0),
         };
-        assert_eq!(step(&handle), (0.0, 0.0));
-        // Dragged and reshaped in one rebuild: most points still took the drag's step.
-        let same = |(x, y): (f64, f64)| (x - 120.0).abs() < 1e-9 && (y + 35.5).abs() < 1e-9;
-        let mut both = dragged.clone();
-        both.piece_mut(id)
-            .unwrap()
-            .move_vertex(2, Point2::new(400.0, 320.0));
-        assert!(same(step(&both)), "{:?}", step(&both));
-        let mut dragged_hem = dragged.clone();
-        for v in 0..2 {
-            let p = dragged_hem.piece(id).unwrap().vertices[v].pos;
-            dragged_hem
-                .piece_mut(id)
-                .unwrap()
-                .move_vertex(v, p - Point2::new(0.0, 60.0));
-        }
-        assert!(same(step(&dragged_hem)), "{:?}", step(&dragged_hem));
-        let mut straight = dragged.clone();
-        straight.piece_mut(id).unwrap().edges[1] = Edge::Line;
-        assert!(same(step(&straight)), "{:?}", step(&straight));
-        // Nothing shared by two points (a triangle with every corner somewhere else) is not a move.
+        assert!(close(&steps_mm(&was, &handle, id), &none));
+        // Two hem corners down 60 mm (and the handle that goes with one of them): as many
+        // corners stayed as moved, so the piece did not move.
+        let lower_hem = |project: &mut Project| {
+            for v in 0..2 {
+                let p = project.piece(id).unwrap().vertices[v].pos;
+                project
+                    .piece_mut(id)
+                    .unwrap()
+                    .move_vertex(v, p - Point2::new(0.0, 60.0));
+            }
+        };
+        let mut hem = pr.clone();
+        lower_hem(&mut hem);
+        assert!(close(&steps_mm(&was, &hem, id), &none));
+        // The same with the hem itself curved: its handles go with the corners, and the points
+        // that moved (6 of 8 here) outnumber the ones that stayed. Still not a move.
+        let mut curved = pr.clone();
+        curved.piece_mut(id).unwrap().edges[0] = Edge::Curve {
+            c1: Point2::new(50.0, -25.0),
+            c2: Point2::new(150.0, -25.0),
+        };
+        let was_curved = shape_of(&curved, id);
+        let mut lowered = curved.clone();
+        lower_hem(&mut lowered);
+        assert!(close(&steps_mm(&was_curved, &lowered, id), &none));
+        // A triangle's base made lower: two corners moved, one stayed. Not a move either.
         let mut triangle = Project::new();
         let t = triangle.add_piece(corner_piece(
-            &[(0.0, 0.0), (100.0, 0.0), (0.0, 100.0)],
+            &[(0.0, 0.0), (200.0, 0.0), (100.0, 300.0)],
             false,
         ));
         let was_t = shape_of(&triangle, t);
-        let piece = triangle.piece_mut(t).unwrap();
-        for (v, to) in [(10.0, 20.0), (130.0, 5.0), (7.0, 140.0)]
+        let mut lower_base = triangle.clone();
+        for v in 0..2 {
+            let p = lower_base.piece(t).unwrap().vertices[v].pos;
+            lower_base
+                .piece_mut(t)
+                .unwrap()
+                .move_vertex(v, p - Point2::new(0.0, 60.0));
+        }
+        assert!(close(&steps_mm(&was_t, &lower_base, t), &none));
+        // Dragged, and one corner somewhere else: the drag's step is one to choose.
+        let mut nudged = dragged.clone();
+        nudged
+            .piece_mut(id)
+            .unwrap()
+            .move_vertex(2, Point2::new(400.0, 320.0));
+        let nudged = steps_mm(&was, &nudged, id);
+        assert!(close(&nudged, &[(0.0, 0.0), (120.0, -35.5)]), "{nudged:?}");
+        // Dragged and its hem lowered in one rebuild: none, and both the steps two corners
+        // took (nearest zero first).
+        let mut dragged_hem = dragged.clone();
+        lower_hem(&mut dragged_hem);
+        let dragged_hem = steps_mm(&was, &dragged_hem, id);
+        assert!(
+            close(&dragged_hem, &[(0.0, 0.0), (120.0, -35.5), (120.0, -95.5)]),
+            "{dragged_hem:?}"
+        );
+        let mut straight = dragged.clone();
+        straight.piece_mut(id).unwrap().edges[1] = Edge::Line;
+        let straight = steps_mm(&was, &straight, id);
+        assert!(
+            close(&straight, &[(0.0, 0.0), (120.0, -35.5)]),
+            "{straight:?}"
+        );
+        // A triangle with every corner somewhere else: none.
+        let mut all_over = triangle.clone();
+        for (v, to) in [(10.0, 20.0), (230.0, 5.0), (7.0, 340.0)]
             .iter()
             .enumerate()
         {
-            piece.move_vertex(v, Point2::new(to.0, to.1));
+            all_over
+                .piece_mut(t)
+                .unwrap()
+                .move_vertex(v, Point2::new(to.0, to.1));
         }
-        assert_eq!(moved(&was_t, &shape_of(&triangle, t)), DVec2::ZERO);
-        // A vertex added: not the same outline.
+        assert!(close(&steps_mm(&was_t, &all_over, t), &none));
+        // A vertex added: not the same outline, and the points that are still there stayed.
         let mut more = pr.clone();
         more.piece_mut(id)
             .unwrap()
             .vertices
             .push(Vertex::corner(Point2::new(0.0, 0.0)));
         more.piece_mut(id).unwrap().edges.push(Edge::Line);
-        assert_eq!(step(&more), (0.0, 0.0));
+        assert!(close(&steps_mm(&was, &more, id), &none));
+        // However many steps a piece with a great many points offers, only the biggest groups
+        // are tried (with none).
+        let ring: Vec<(f64, f64)> = (0..60)
+            .map(|k| {
+                let a = f64::from(k) / 60.0 * std::f64::consts::TAU;
+                (200.0 * a.cos(), 200.0 * a.sin())
+            })
+            .collect();
+        let mut round = Project::new();
+        let r = round.add_piece(corner_piece(&ring, false));
+        let was_r = shape_of(&round, r);
+        for v in 0..60 {
+            let p = round.piece(r).unwrap().vertices[v].pos;
+            // Pairs of corners take the same step as each other and no other's.
+            let d = Point2::new(f64::from(v as u32 / 2) * 3.0 + 1.0, 0.0);
+            round.piece_mut(r).unwrap().move_vertex(v, p + d);
+        }
+        assert_eq!(steps(&was_r, &shape_of(&round, r)).len(), MAX_STEPS + 1);
     }
 
     #[test]
@@ -986,13 +1146,13 @@ mod tests {
         next.piece_mut(front)
             .unwrap()
             .translate(Point2::new(30.0, 10.0));
-        let d = moved(&find(&pr, front), &find(&next, front));
+        let d = dragged_by(&find(&pr, front), &find(&next, front));
         assert!(
             (d.x - 0.03).abs() < 1e-12 && (d.y - 0.01).abs() < 1e-12,
             "{d}"
         );
         // The back dragged leaves its twin where it is.
-        let d = moved(&find(&pr, twin), &find(&next, twin));
+        let d = dragged_by(&find(&pr, twin), &find(&next, twin));
         assert_eq!(d, DVec2::ZERO);
         // The twin dragged: its offset changes.
         let mut dragged = pr.clone();
@@ -1003,12 +1163,15 @@ mod tests {
             .as_mut()
             .unwrap()
             .offset = Point2::new(850.0, 25.0);
-        let d = moved(&find(&pr, twin), &find(&dragged, twin));
+        let d = dragged_by(&find(&pr, twin), &find(&dragged, twin));
         assert!(
             (d.x + 0.05).abs() < 1e-12 && (d.y - 0.025).abs() < 1e-12,
             "{d}"
         );
-        assert_eq!(moved(&find(&pr, back), &find(&dragged, back)), DVec2::ZERO);
+        assert_eq!(
+            dragged_by(&find(&pr, back), &find(&dragged, back)),
+            DVec2::ZERO
+        );
     }
 
     /// A panel of flat points and triangles, as the old fabric has it.
@@ -1222,6 +1385,149 @@ mod tests {
                 "outside, so a negative coordinate"
             );
         }
+    }
+
+    /// `hanging`, with the hem of B (its bottom edge) curved, sagging 25 mm.
+    fn hanging_curved(height: f64) -> Project {
+        let mut pr = hanging(height);
+        let bottom = 300.0 - height;
+        pr.pieces[1].edges[0] = Edge::Curve {
+            c1: Point2::new(250.0, bottom - 25.0),
+            c2: Point2::new(350.0, bottom - 25.0),
+        };
+        assert_eq!(pr.check(), Ok(()));
+        pr
+    }
+
+    /// `pr` with the hem corners of B (its first two) `by` mm lower, the handles of a curved
+    /// hem going with them.
+    fn lowered(pr: &Project, by: f64) -> Project {
+        let mut longer = pr.clone();
+        for v in 0..2 {
+            let at = longer.pieces[1].vertices[v].pos;
+            longer.pieces[1].move_vertex(v, at - Point2::new(0.0, by));
+        }
+        assert_eq!(longer.check(), Ok(()));
+        longer
+    }
+
+    /// How far (m) the fabric of `shape` is from where `old` had it, over a grid of spots on
+    /// the pattern within `old_box` (mm: x0, y0, x1, y1) and moved by `by` (mm) in `new`.
+    fn worst_spot_error(
+        old: &Drape,
+        new: &Drape,
+        shape: PieceId,
+        old_box: (f64, f64, f64, f64),
+        by: Point2,
+    ) -> f64 {
+        let (x0, y0, x1, y1) = old_box;
+        let mut worst: f64 = 0.0;
+        for i in 0..=8 {
+            for j in 0..=8 {
+                let at = Point2::new(
+                    x0 + (x1 - x0) * f64::from(i) / 8.0,
+                    y0 + (y1 - y0) * f64::from(j) / 8.0,
+                );
+                worst = worst.max((spot(old, shape, at) - spot(new, shape, at + by)).length());
+            }
+        }
+        worst
+    }
+
+    #[test]
+    fn a_hem_made_longer_on_a_piece_with_a_curved_hem_is_not_a_move_and_the_fabric_stays_put() {
+        let stage = Stage::shared();
+        // B is 200 wide and 300 tall at (200, 0) on the pattern table; its hem is straight in
+        // one pattern and curved in the other.
+        for pr in [hanging(300.0), hanging_curved(300.0)] {
+            let mut old = Drape::new(Arc::new(pr.clone()), &stage);
+            run(&mut old, &stage, 90);
+            let b = pr.pieces[1].id;
+            let longer = lowered(&pr, 60.0);
+            // Made again while it drapes: every spot of B that the old fabric had is where it
+            // was.
+            let new = old.rebuilt(Arc::new(longer.clone()), &stage);
+            let worst = worst_spot_error(
+                &old,
+                &new,
+                b,
+                (200.0, 0.0, 400.0, 300.0),
+                Point2::new(0.0, 0.0),
+            );
+            assert!(worst < 0.005, "{:.1} mm", worst * 1000.0);
+            assert_eq!(
+                steps(&shape_of(&pr, b), &shape_of(&longer, b)),
+                [DVec2::ZERO],
+                "two corners of four moved: the piece did not"
+            );
+        }
+    }
+
+    #[test]
+    fn a_triangle_with_its_base_made_lower_is_not_a_move_and_the_fabric_stays_put() {
+        let stage = Stage::shared();
+        let mut pr = Project::new();
+        let t = pr.add_piece(Piece::polygon(
+            PieceId(0),
+            "T",
+            &[
+                Point2::new(0.0, 0.0),
+                Point2::new(200.0, 0.0),
+                Point2::new(100.0, 300.0),
+            ],
+        ));
+        pr.set_placement(t, Some(Placement::at([0.0, 1.0, 0.5])));
+        let mut old = Drape::new(Arc::new(pr.clone()), &stage);
+        run(&mut old, &stage, 60);
+        let mut longer = pr.clone();
+        for v in 0..2 {
+            let at = longer.pieces[0].vertices[v].pos;
+            longer.pieces[0].move_vertex(v, at - Point2::new(0.0, 60.0));
+        }
+        assert_eq!(longer.check(), Ok(()));
+        let new = old.rebuilt(Arc::new(longer.clone()), &stage);
+        // The old triangle's spots, away from its edges (the edges move with the corners).
+        let mut worst: f64 = 0.0;
+        for (x, y) in [
+            (100.0, 50.0),
+            (100.0, 150.0),
+            (80.0, 100.0),
+            (120.0, 100.0),
+            (100.0, 250.0),
+        ] {
+            let at = Point2::new(x, y);
+            worst = worst.max((spot(&old, t, at) - spot(&new, t, at)).length());
+        }
+        assert!(worst < 0.005, "{:.1} mm", worst * 1000.0);
+        assert_eq!(
+            steps(&shape_of(&pr, t), &shape_of(&longer, t)),
+            [DVec2::ZERO],
+            "two corners of three moved: the triangle did not"
+        );
+    }
+
+    #[test]
+    fn a_piece_dragged_and_its_hem_made_longer_in_one_rebuild_keeps_the_rest_of_its_fabric() {
+        let stage = Stage::shared();
+        let pr = hanging_curved(300.0);
+        let mut old = Drape::new(Arc::new(pr.clone()), &stage);
+        run(&mut old, &stage, 90);
+        let b = pr.pieces[1].id;
+        // B dragged 120 mm right and 35 down (its pin goes with it), its hem then made 60 mm
+        // longer, all before the fabric is made again. Two corners took each of two steps: the
+        // drag's, and the drag's with the hem's. The new fabric fits the old as well one way
+        // as the other, so it is a tie, and the step nearest zero is the drag's.
+        let mut project = pr.clone();
+        let d = Point2::new(120.0, -35.0);
+        project.piece_mut(b).unwrap().translate(d);
+        project.move_pins(b, d);
+        let project = lowered(&project, 60.0);
+        let steps = steps(&shape_of(&pr, b), &shape_of(&project, b));
+        assert_eq!(steps.len(), 3, "{steps:?}");
+        let new = old.rebuilt(Arc::new(project), &stage);
+        // The upper part of B, clear of the hem, is where it was: the drag's step.
+        let worst = worst_spot_error(&old, &new, b, (200.0, 150.0, 400.0, 300.0), d);
+        assert!(worst < 0.005, "{:.1} mm", worst * 1000.0);
     }
 
     #[test]
