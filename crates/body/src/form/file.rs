@@ -3,7 +3,7 @@
 //! and ranges.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{PI, TAU};
 
 pub const FORMAT: u32 = 1;
@@ -117,6 +117,9 @@ pub const TORSO_LENGTHS: [(&str, &str, &str, &str); 4] = [
 ];
 /// Lengths a user can set; the others are read-only measurements.
 pub const ADJUSTABLE_LENGTHS: [&str; 3] = ["back_waist_length", "waist_to_hip", "shoulder_length"];
+/// How far (in v, where the whole form is 1) a length's tape must run past a station it is
+/// measured from or to.
+const REACH_MARGIN: f64 = 1e-9;
 /// Stations the resizing needs (plus `bust` or `chest` on a torso).
 pub const TORSO_STATIONS: [&str; 4] = ["waist", "hip", "shoulder", "neck"];
 
@@ -235,17 +238,57 @@ impl FormFile {
         if self.chest_station().is_none() {
             return bad("needs a bust or chest station".into());
         }
+        if !self.landmarks.contains_key("back_neck") {
+            return bad(
+                "needs landmark back_neck (the resizing finds the neck's height from it)".into(),
+            );
+        }
         for (m, tape, from, to) in self.lengths() {
-            if !matches!(self.tapes.get(*tape), Some(TapeDef::Samples { .. })) {
+            let Some(TapeDef::Samples { uv, closed, .. }) = self.tapes.get(*tape) else {
                 return bad(format!("{m} needs tape {tape} to be a sampled tape"));
+            };
+            if *closed {
+                return bad(format!("{m} needs tape {tape} to be open, not a loop"));
             }
+            // Ring heights rise with v, so a tape reaches a station's height exactly when the v
+            // of the station lies within the v of its samples. Reaching it by less than
+            // `REACH_MARGIN` is refused: rounding could then miss the crossing.
+            let (v_lo, v_hi) = uv
+                .iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
+                    (lo.min(p[1]), hi.max(p[1]))
+                });
             for place in [from, to] {
-                if !matches!(*place, "start" | "end") && !self.stations.contains_key(*place) {
+                if matches!(*place, "start" | "end") {
+                    continue;
+                }
+                let Some(&ring) = self.stations.get(*place) else {
                     return bad(format!("{m} needs station {place}"));
+                };
+                let v = ring as f64 / (self.rings.len() - 1) as f64;
+                if !(v_lo + REACH_MARGIN <= v && v <= v_hi - REACH_MARGIN) {
+                    return bad(format!(
+                        "{m} needs tape {tape} to cross station {place} (at v {v:.4}), \
+                         but the tape only spans v {v_lo:.4} to {v_hi:.4}"
+                    ));
                 }
             }
         }
+        let mut listed = BTreeSet::new();
+        let mut ring_of: BTreeMap<usize, &str> = BTreeMap::new();
         for m in &self.inputs {
+            if !listed.insert(m) {
+                return bad(format!("input {m} is listed twice"));
+            }
+            // Two girth inputs on one ring could not both be met, and would leave the resizing
+            // with two stations at the same place.
+            if let Some(&ring) = self.stations.get(m)
+                && let Some(other) = ring_of.insert(ring, m)
+            {
+                return bad(format!(
+                    "inputs {other} and {m} are both girths at ring {ring}"
+                ));
+            }
             let adjustable_length =
                 ADJUSTABLE_LENGTHS.contains(&m.as_str()) && self.lengths().iter().any(|l| l.0 == m);
             if !self.stations.contains_key(m) && !adjustable_length {
@@ -535,6 +578,22 @@ mod tests {
                 Box::new(|f| f.inputs.push("knee".into())),
                 "input knee is neither",
             ),
+            // Two girth inputs on one ring, or one input listed twice.
+            (
+                Box::new(|f| {
+                    let ring = f.stations["bust"];
+                    let _ = f.stations.insert("under_bust".into(), ring);
+                }),
+                "inputs bust and under_bust are both girths at ring 51",
+            ),
+            (
+                Box::new(|f| f.inputs.push("hip".into())),
+                "input hip is listed twice",
+            ),
+            (
+                Box::new(|f| f.inputs.push("waist_to_hip".into())),
+                "input waist_to_hip is listed twice",
+            ),
             // A length needs its tape, and the tape must be a sampled one.
             (
                 Box::new(|f| {
@@ -552,6 +611,30 @@ mod tests {
                     );
                 }),
                 "front_waist_length needs tape cf to be a sampled tape",
+            ),
+            // A length's tape must be open, and cross every station its length is measured to.
+            (
+                Box::new(|f| {
+                    if let Some(TapeDef::Samples { closed, .. }) = f.tapes.get_mut("cb") {
+                        *closed = true;
+                    }
+                }),
+                "back_waist_length needs tape cb to be open, not a loop",
+            ),
+            (
+                Box::new(|f| samples(f, "cb").truncate(5)),
+                "back_waist_length needs tape cb to cross station waist (at v 0.4125)",
+            ),
+            (
+                Box::new(|f| samples(f, "side_seam").truncate(25)),
+                "waist_to_hip needs tape side_seam to cross station hip (at v 0.1500)",
+            ),
+            // The resizing finds the neck's height from the back_neck landmark.
+            (
+                Box::new(|f| {
+                    let _ = f.landmarks.remove("back_neck");
+                }),
+                "needs landmark back_neck",
             ),
             // Sampled tapes: too short, not finite, phi or v off the form.
             (
