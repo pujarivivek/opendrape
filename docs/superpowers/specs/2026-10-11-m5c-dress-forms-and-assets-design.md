@@ -1,6 +1,6 @@
 # M5c: the dress form replaces the human avatar, and an Assets section
 
-**Status:** design, waiting for the user's review (2026-10-11).
+**Status:** built (2026-10-11). The user approved the design on 2026-10-11; plan: `docs/superpowers/plans/2026-10-11-m5c-dress-forms-and-assets.md`.
 **Branch:** `dress-forms-app`. It stacks on `m5b-studio-view`, with `dress-forms` (Track A) merged
 in. The merge was clean, and all 978 tests pass on it.
 **Builds on:** `docs/superpowers/specs/2026-10-09-dress-forms-design.md`. That design's "Track B"

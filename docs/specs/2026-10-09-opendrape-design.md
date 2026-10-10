@@ -24,7 +24,7 @@ Sustainability claims stay qualitative, because the 70–90% figures in circulat
 | Pattern creation | Draw from scratch, CLO-style pen tools |
 | Acceptance garments | A-line skirt, basic T-shirt, fitted bodice/dress with darts |
 | Outputs | PNG renders; true-scale A4/Letter tiled PDF; OBJ + glTF; DXF-AAMA |
-| Avatar | Measurement sliders, diverse skin tones and body shapes, a few poses, import own body |
+| Avatar | **Dress forms** (women's and men's torsos on a stand), sized from a chart or custom measurements (M5c). Realistic avatars are left to the AI render step |
 | License | GPL-3.0 |
 | UI language | English only; every string goes through Fluent so translations can be added later |
 | Windows testing | User has a Mac only → Windows is covered by CI (WARP smoke renders) plus recruited testers |
@@ -57,7 +57,7 @@ the next milestones.
   - `spade` 2.15 constrained Delaunay **with refinement** (`keep_constraint_edges`, angle limit) for uniform cloth meshes.
   - `i_overlay` 9 plus our own code for per-segment seam allowance.
   - The 2D editor draws with egui's painter (no lyon).
-- **Avatar:** MakeHuman/MPFB **CC0 assets only** (base mesh, targets, skins, poses).
+- **Avatar (superseded by dress forms in M5c, 2026-10-11; MakeHuman retired):** MakeHuman/MPFB **CC0 assets only** (base mesh, targets, skins, poses).
   - Never MakeHuman's AGPL code, and never SMPL/SMPL-X (non-commercial license).
   - Measurement sliders = linear blendshapes plus an iterative solver. Girths are measured by slicing the mesh and taking the convex hull, not with MakeHuman's AGPL ruler code.
   - An `xtask` converts the assets offline into a compact binary.
@@ -74,7 +74,7 @@ the next milestones.
 crates/core     data model, IDs, units, schema version + migrations (no GPU/geometry deps)
 crates/geom     resolve_piece (mirror/symmetry/darts → concrete paths), seam allowance, notches, validation
 crates/mesh     pattern → GarmentMesh: seam-aware boundary sampling, spade CDT + refine, UVs = pattern mm, grain angles, stitch pairs
-crates/body     avatar assets, measurement + slider solver, skinning/poses, OBJ/glTF import, SDF bake
+crates/body     dress forms: ring files, size charts, resizing to measurements, tapes and stand
 crates/sim      XPBD: stretch/bend/stitch/pin, SDF + exact collision, spatial-hash self-collision
 crates/render   wgpu offscreen renderer (avatar, garment, ground), orbit camera, PNG capture, headless-capable
 crates/io       .odp project zip, OBJ/GLB export, PDF tiling, DXF-AAMA writer + reader
@@ -207,6 +207,12 @@ Each milestone ends with a **GitHub Release** (installers + portable ZIP) and a 
   - edge smoothing while moving, then about 16 sub-pixel-jittered frames averaged when still, after which drawing stops.
 
   View → 3D quality offers Auto, Basic, Medium and High; Auto follows the graphics chip, and the choice is remembered. Spec: `docs/superpowers/specs/2026-10-10-m5b-studio-view-design.md`.
+
+- **M5c Dress forms and Assets: complete (2026-10-11).** The human avatar is replaced by a dress form on its stand (women's or men's torso, from Track A), drawn with its tape lines. An **Assets** section after View picks the form, its chart (Classic form or Everyday body) and size, or custom measurements; a 3D | 2D switch keeps the pattern one click away while it is open.
+  - The project saves its form (format version 5). Older files open on the women's Classic US 8; a file whose form can't be built is refused.
+  - A form change is one undo step, restarts the drape, and moves pieces out of a bigger form.
+  - Sleeves are placed round an imaginary arm line at each armhole and hang when draped.
+  - The MakeHuman body, its file format, its build command and its CI check are gone; every drape gate runs on the form. Spec: `docs/superpowers/specs/2026-10-11-m5c-dress-forms-and-assets-design.md`.
 
 ## On approval: next steps
 1. `git init` in `/Users/vivekpuajri/Developer/vibe-clo3d`, delete the stray `firebase-debug.log`, and save this plan as `docs/specs/2026-10-09-opendrape-design.md`.
