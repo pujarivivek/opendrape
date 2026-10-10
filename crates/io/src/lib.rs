@@ -101,13 +101,13 @@ fn read_from<R: Read + Seek>(r: R) -> Result<Project, OdpError> {
     }
     let text = std::str::from_utf8(&bytes).map_err(|e| OdpError::Corrupt(e.to_string()))?;
     let found = check_version(text)?;
-    let mut document: serde_json::Value =
-        serde_json::from_str(text).map_err(|e| OdpError::Corrupt(e.to_string()))?;
-    if found <= 3 {
-        upgrade_sides_from_v3(&mut document);
-    }
-    let mut project: Project =
-        serde_json::from_value(document).map_err(|e| OdpError::Corrupt(e.to_string()))?;
+    let mut project: Project = if found <= 3 {
+        parse_older(text)?
+    } else {
+        // The current format is read straight into a `Project`: no tree of the whole file
+        // is built first (it takes several times the file's size in memory).
+        serde_json::from_str(text).map_err(|e| OdpError::Corrupt(e.to_string()))?
+    };
     if found == 1 {
         upgrade_from_v1(&mut project);
     }
@@ -116,6 +116,18 @@ fn read_from<R: Read + Seek>(r: R) -> Result<Project, OdpError> {
     project.schema_version = SCHEMA_VERSION;
     project.check().map_err(OdpError::Invalid)?;
     Ok(project)
+}
+
+/// A file of version 1 to 3, read as a `serde_json::Value` first so that the seam sides of
+/// version 3 can be rewritten ([`upgrade_sides_from_v3`]); the fields older versions lack take
+/// their defaults.
+fn parse_older(text: &str) -> Result<Project, OdpError> {
+    #[cfg(test)]
+    tests::VALUE_PARSES.with(|n| n.set(n.get() + 1));
+    let mut document: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| OdpError::Corrupt(e.to_string()))?;
+    upgrade_sides_from_v3(&mut document);
+    serde_json::from_value(document).map_err(|e| OdpError::Corrupt(e.to_string()))
 }
 
 /// Version 3 (M4a) stored a seam side as whole edges: `first_edge`, `edges` and `forward`. From
@@ -185,9 +197,8 @@ fn upgrade_from_v1(project: &mut Project) {
 /// from a newer format is reported as such even when its contents have changed shape. Returns
 /// the version found.
 ///
-/// Versions 1 to 3 are read as a `serde_json::Value` first, so the seam sides of version 3 can be
-/// rewritten ([`upgrade_sides_from_v3`]); the fields older versions lack take their defaults (see
-/// [`upgrade_from_v1`]).
+/// Versions 1 to 3 are read as a `serde_json::Value` first ([`parse_older`]); the fields they lack
+/// take their defaults (see [`upgrade_from_v1`]).
 fn check_version(text: &str) -> Result<u64, OdpError> {
     #[derive(Deserialize)]
     struct Version {
@@ -247,6 +258,12 @@ mod tests {
     use super::*;
     use opendrape_core::{Piece, PieceId, Point2};
 
+    thread_local! {
+        /// How many files this test thread has read as a `serde_json::Value` (see
+        /// [`parse_older`]).
+        pub(super) static VALUE_PARSES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
+
     fn sample() -> Project {
         let mut p = Project::new();
         let mut front = Piece::rectangle(PieceId(0), "Front", Point2::new(0.0, 0.0), 350.0, 550.0);
@@ -271,6 +288,42 @@ mod tests {
             to_bytes(&sample()).unwrap(),
             "same project, same bytes"
         );
+    }
+
+    /// How many files `f` reads as a `serde_json::Value`.
+    fn value_parses(f: impl FnOnce()) -> u32 {
+        let before = VALUE_PARSES.with(std::cell::Cell::get);
+        f();
+        VALUE_PARSES.with(std::cell::Cell::get) - before
+    }
+
+    #[test]
+    fn a_current_file_is_read_straight_into_the_project_and_an_older_one_through_a_value() {
+        // A big hostile file would build a tree several times its own size on the thread that
+        // opens it: only the formats that need rewriting go through one.
+        let current = to_bytes(&sample()).unwrap();
+        assert_eq!(
+            value_parses(|| assert_eq!(from_bytes(&current).unwrap(), sample())),
+            0,
+            "version 4 is typed at once"
+        );
+        for (version, json) in [
+            (1, include_str!("../tests/fixtures/v1/project.json")),
+            (2, include_str!("../tests/fixtures/v2/project.json")),
+            (3, include_str!("../tests/fixtures/v3/project.json")),
+        ] {
+            let packed = zip_with("project.json", json);
+            assert_eq!(
+                value_parses(|| {
+                    from_bytes(&packed).unwrap();
+                }),
+                1,
+                "version {version} still loads, through the upgrade"
+            );
+        }
+        // And what the typed path refuses is still refused as damaged, not as anything else.
+        let bad = zip_with("project.json", r#"{"schema_version": 4, "pieces": 7}"#);
+        assert!(matches!(from_bytes(&bad), Err(OdpError::Corrupt(_))));
     }
 
     #[test]
