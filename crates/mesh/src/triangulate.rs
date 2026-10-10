@@ -125,7 +125,9 @@ pub fn triangulate_with(
     // which then has nothing left either, and the result says so.
     let mut lattice_cut_short = false;
     if let Some(g) = grid {
-        for p in lattice(&loops, &g, CLEARANCE_PER_H * h) {
+        // One more than fits tells whether the lattice was cut short.
+        let points = lattice(&loops, &g, CLEARANCE_PER_H * h, max_added.saturating_add(1));
+        for p in points {
             if cdt.num_vertices() - boundary >= max_added {
                 lattice_cut_short = true;
                 break;
@@ -187,8 +189,11 @@ fn tidy(v: f64) -> f64 {
 }
 
 /// The lattice's points inside the first of `loops` (the outline) and outside the others (the
-/// holes), at least `clearance` from every loop, row by row along the grain.
-fn lattice(loops: &[&[[f64; 2]]], g: &Grid, clearance: f64) -> Vec<[f64; 2]> {
+/// holes), at least `clearance` from every loop, row by row along the grain: at most `most`
+/// of them, and none at all for an outline whose box would take more than [`MOST_CELLS`]
+/// lattice cells to walk (a crafted piece kilometres across, which refinement's own budget
+/// then handles).
+fn lattice(loops: &[&[[f64; 2]]], g: &Grid, clearance: f64, most: usize) -> Vec<[f64; 2]> {
     let (s, c) = g.angle_deg.to_radians().sin_cos();
     let (along, across) = ([c, s], [-s, c]);
     let outline = loops[0];
@@ -203,7 +208,15 @@ fn lattice(loops: &[&[[f64; 2]]], g: &Grid, clearance: f64) -> Vec<[f64; 2]> {
         }
     }
     let mut out = Vec::new();
-    for j in (lo[1].floor() as i64)..=(hi[1].ceil() as i64) {
+    let (rows, cols) = (
+        hi[1].ceil() - lo[1].floor() + 1.0,
+        hi[0].ceil() - lo[0].floor() + 1.0,
+    );
+    let cells = rows * cols;
+    if !cells.is_finite() || cells > MOST_CELLS || most == 0 {
+        return out;
+    }
+    'rows: for j in (lo[1].floor() as i64)..=(hi[1].ceil() as i64) {
         for i in (lo[0].floor() as i64)..=(hi[0].ceil() as i64) {
             let (u, v) = (i as f64 * g.spacing, j as f64 * g.spacing);
             let p = [
@@ -215,11 +228,18 @@ fn lattice(loops: &[&[[f64; 2]]], g: &Grid, clearance: f64) -> Vec<[f64; 2]> {
                 && loops.iter().all(|l| distance_to(p, l) >= clearance)
             {
                 out.push(p);
+                if out.len() >= most {
+                    break 'rows;
+                }
             }
         }
     }
     out
 }
+
+/// The most lattice cells an outline's box may take to walk: a 2 m × 2 m piece at 4 mm
+/// cells is 250,000; this leaves room for a long piece on the bias.
+const MOST_CELLS: f64 = 4_000_000.0;
 
 /// Whether `p` is inside the closed polygon `ring` (even–odd rule).
 fn inside(p: [f64; 2], ring: &[[f64; 2]]) -> bool {
@@ -332,7 +352,7 @@ mod tests {
             angle_deg: 0.0,
             spacing: 12.0,
         };
-        let points = lattice(&[&outline, &hole], &grid, 6.0);
+        let points = lattice(&[&outline, &hole], &grid, 6.0, usize::MAX);
         // Rows 6, 18, …, 114 (10 of them) by columns 6, 18, …, 234 (20), less the hole.
         assert!(points.len() < 200 && points.len() > 160, "{}", points.len());
         for p in &points {
@@ -358,6 +378,7 @@ mod tests {
                 ..grid
             },
             6.0,
+            usize::MAX,
         );
         assert!(up.windows(2).all(|w| w[1][0] < w[0][0] + 1e-9));
         assert!(
@@ -367,7 +388,7 @@ mod tests {
         // The triangles inside are the lattice's right isosceles cells, and the lattice's
         // points come right after the boundary's, in order.
         let t = triangulate_with(&outline, &[], 12.0, Some(grid), 100_000).unwrap();
-        let only_outline = lattice(&[&outline], &grid, CLEARANCE_PER_H * 12.0);
+        let only_outline = lattice(&[&outline], &grid, CLEARANCE_PER_H * 12.0, usize::MAX);
         assert_eq!(
             &t.points[outline.len()..outline.len() + only_outline.len()],
             &only_outline[..]
@@ -380,6 +401,38 @@ mod tests {
             .filter(|tri| tri.iter().all(|&k| k as usize >= outline.len()))
             .count();
         assert!(cells >= 2 * 7 * 17 - 20, "{cells} cells inside");
+    }
+
+    #[test]
+    fn the_lattice_stops_at_its_budget_and_skips_a_piece_too_big_to_walk() {
+        let outline = sampled(
+            &[[0.0, 0.0], [240.0, 0.0], [240.0, 120.0], [0.0, 120.0]],
+            12.0,
+        );
+        let grid = Grid {
+            origin: [6.0, 6.0],
+            angle_deg: 0.0,
+            spacing: 12.0,
+        };
+        assert_eq!(lattice(&[&outline], &grid, 6.0, 5).len(), 5);
+        assert_eq!(lattice(&[&outline], &grid, 6.0, 0).len(), 0);
+        // A strip 3 km long on the bias: its box would be billions of cells.
+        let strip = [
+            [0.0, 0.0],
+            [3e6, 3e6],
+            [3e6 - 10.0, 3e6 + 10.0],
+            [-10.0, 10.0],
+        ];
+        let started = std::time::Instant::now();
+        assert!(lattice(&[&strip], &grid, 6.0, usize::MAX).is_empty());
+        assert!(started.elapsed().as_secs_f64() < 1.0);
+        let t = triangulate_with(&strip, &[], 12.0, Some(grid), 50).unwrap();
+        assert!(
+            t.points.len() <= 54,
+            "{} points, complete: {}",
+            t.points.len(),
+            t.refinement_complete
+        );
     }
 
     #[test]

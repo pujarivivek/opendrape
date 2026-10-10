@@ -1,5 +1,6 @@
 use crate::cloth::{Cloth, Link};
 use crate::collide::{Collider, Plane};
+use crate::self_collide::SelfContacts;
 use crate::timing::{Lap, PhaseTimes};
 use glam::DVec3;
 
@@ -39,6 +40,16 @@ pub struct Params {
     /// Contact planes are created for particles within this distance of the body (m).
     pub collision_margin: f64,
     pub max_speed: f64,
+    /// Whether cloth keeps off cloth (layers stack, folds don't pass through themselves),
+    /// from the moment every seam has welded.
+    pub self_collision: bool,
+    /// How far cloth particles are kept off the other layers' triangles (m); None: half the
+    /// fabric's edge length.
+    pub self_collision_distance: Option<f64>,
+    /// Cloth against cloth is solved every this many substeps (1: every one).
+    pub self_collision_every: usize,
+    /// Friction between layers of cloth.
+    pub cloth_friction: f64,
 }
 
 impl Default for Params {
@@ -60,8 +71,18 @@ impl Default for Params {
             thickness: 0.003,
             collision_margin: 0.05,
             max_speed: 2.0,
+            self_collision: true,
+            self_collision_distance: None,
+            self_collision_every: 1,
+            cloth_friction: 0.3,
         }
     }
+}
+
+/// What self-collision keeps a particle off the other layers' triangles by: the setting, or
+/// half the fabric's edge length.
+pub fn self_collision_distance(p: &Params, spacing: f64) -> f64 {
+    p.self_collision_distance.unwrap_or(0.5 * spacing)
 }
 
 /// Something the solver wants the student to know.
@@ -78,6 +99,8 @@ pub struct Solver {
     time: f64,
     phases: PhaseTimes,
     notes: Vec<SolverNote>,
+    /// Cloth-against-cloth pairs, made on the first step that needs them.
+    self_contacts: Option<SelfContacts>,
 }
 
 impl Solver {
@@ -88,7 +111,15 @@ impl Solver {
             time: 0.0,
             phases: PhaseTimes::default(),
             notes: Vec::new(),
+            self_contacts: None,
         }
+    }
+    /// How many cloth-against-cloth pairs are being watched, and how many times they have
+    /// been found (0, 0 without self-collision).
+    pub fn self_contact_stats(&self) -> (usize, u64) {
+        self.self_contacts
+            .as_ref()
+            .map_or((0, 0), |s| (s.pairs(), s.builds))
     }
     /// The notes made since the last call.
     pub fn take_notes(&mut self) -> Vec<SolverNote> {
@@ -133,6 +164,10 @@ impl Solver {
             } else {
                 self.cloth.weld_closed(p.weld_gap);
             }
+            // A weld renumbers the triangles' particles: any pairs found are stale.
+            if let Some(sc) = &mut self.self_contacts {
+                sc.invalidate();
+            }
         }
         lap.lap(&mut ph.weld);
         let gravity = if t < p.gravity_delay {
@@ -150,8 +185,24 @@ impl Solver {
         let planes = collider.map(|c| c.contact_planes(&self.cloth.x, p.collision_margin));
         lap.lap(&mut ph.body_query);
         let sdt = FRAME_DT / p.substeps as f64;
-        let c = &mut self.cloth;
-        for _ in 0..p.substeps {
+        let Solver {
+            cloth: c,
+            self_contacts,
+            ..
+        } = self;
+        // Cloth keeps off cloth once the garment is sewn. Seams pull pieces through each other
+        // on their way shut (they are arranged round the form, not sewn), and particles kept
+        // a thickness apart cannot meet: with self-collision from the start, the drafted
+        // T-shirt's seams only shut at the timeout.
+        if p.self_collision && c.spacing > 0.0 && !c.has_open_stitches() {
+            let d = self_collision_distance(&p, c.spacing);
+            if self_contacts.as_ref().is_none_or(|s| s.distance != d) {
+                *self_contacts = Some(SelfContacts::new(d));
+            }
+        } else {
+            *self_contacts = None;
+        }
+        for sub in 0..p.substeps {
             for i in 0..c.x.len() {
                 if c.inv_mass[i] == 0.0 {
                     c.prev[i] = c.x[i];
@@ -196,6 +247,14 @@ impl Solver {
                 crate::attach::solve(c, sdt);
                 lap.lap(&mut ph.attach);
             }
+            // Cloth off cloth, then the body has the last word.
+            if let Some(sc) = self_contacts
+                && sub % p.self_collision_every.max(1) == 0
+            {
+                sc.refresh(c);
+                sc.solve(c, p.cloth_friction);
+            }
+            lap.lap(&mut ph.self_collide);
             if let Some(planes) = &planes {
                 collide(c, planes, p.thickness, p.friction);
             }

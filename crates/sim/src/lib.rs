@@ -4,6 +4,7 @@
 mod attach;
 mod cloth;
 mod collide;
+mod self_collide;
 mod solver;
 mod timing;
 

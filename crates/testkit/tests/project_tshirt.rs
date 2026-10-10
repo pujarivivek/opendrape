@@ -14,7 +14,7 @@ use opendrape_drape::{Drape, Stage};
 use opendrape_geom as geom;
 use opendrape_sim::{BodyCollider, FRAME_DT, Solver};
 use opendrape_testkit::drafted::t_shirt;
-use opendrape_testkit::metrics::{measure, position_hash};
+use opendrape_testkit::metrics::{cloth_crossings, measure, position_hash};
 use std::sync::Arc;
 
 fn p(x: f64, y: f64) -> Point2 {
@@ -134,6 +134,16 @@ fn a_drafted_t_shirt_drapes_with_its_sleeves_on_the_arms() {
     assert!(!r.open_stitches, "welded shut");
     assert!(notch_gap <= 5.0, "the cap notch is off the shoulder seam");
     assert!(farthest <= 0.12, "a sleeve slid off its arm");
+    // The sleeves rest on the bodice instead of passing through it. What is left is a patch
+    // about 3 cm across at the top of one cap, where three seams meet at a saddle and the
+    // fabric folded through itself while the seams pulled shut (self-collision begins once
+    // they have welded); a cloth-against-triangle contact for the Fine preset is the fix.
+    let crossings = cloth_crossings(cloth);
+    eprintln!("the fabric crosses itself {crossings} times");
+    assert!(
+        crossings <= 30,
+        "sleeve through the bodice: {crossings} crossings"
+    );
     assert!(
         r.kinetic_energy <= 1e-4,
         "still moving: {} J",

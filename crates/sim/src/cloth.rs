@@ -49,16 +49,31 @@ pub struct Cloth {
     pub(crate) attachments: Vec<Option<crate::attach::Attachment>>,
     /// Fabric edges that run along a welded seam (both ends were stitched), sorted.
     pub(crate) seam_edges: Vec<(u32, u32)>,
+    /// Which panel each particle came from, and where it rests on that panel's pattern (or,
+    /// without a pattern, where it started).
+    pub(crate) panel: Vec<u32>,
+    pub(crate) rest: Vec<DVec3>,
+    /// The fabric's typical edge length (m): the mean structural rest length.
+    pub(crate) spacing: f64,
+    /// Pairs across a seam (each stitched pair, and the neighbours of either end) that are
+    /// never pushed apart by self-collision, sorted.
+    pub(crate) excluded: Vec<(u32, u32)>,
 }
 
 pub struct ClothBuilder {
     cloth: Cloth,
     density: f64,
+    panels: u32,
 }
 
 fn edge_key(a: u32, b: u32) -> (u32, u32) {
     (a.min(b), a.max(b))
 }
+
+/// How many rings of neighbours round each end of a stitch are never pushed apart from the
+/// other end's: the fabric a weld joins. (Wider rings make no difference to how seams close,
+/// measured on the drafted T-shirt.)
+const SEAM_RINGS: usize = 1;
 
 /// An edge within 22.5° of the warp or the weft is structural; the rest are on the bias.
 /// cos 22.5° and sin 22.5°.
@@ -138,6 +153,7 @@ impl ClothBuilder {
         Self {
             cloth: Cloth::default(),
             density,
+            panels: 0,
         }
     }
 
@@ -179,7 +195,12 @@ impl ClothBuilder {
                 .push(if m > 0.0 { 1.0 / m } else { 0.0 });
             self.cloth.alive.push(m > 0.0);
             self.cloth.welded.push(false);
+            self.cloth.panel.push(self.panels);
         }
+        self.cloth
+            .rest
+            .extend((0..panel.positions.len() as u32).map(rest_pos));
+        self.panels += 1;
         // Links to such a vertex would turn it into an invisible pin holding the cloth up.
         let has_mass = |&(a, b): &(u32, u32)| mass[a as usize] > 0.0 && mass[b as usize] > 0.0;
         let link = |(a, b): (u32, u32)| Link {
@@ -244,8 +265,51 @@ impl ClothBuilder {
     }
 
     pub fn build(mut self) -> Cloth {
-        self.cloth.prev = self.cloth.x.clone();
-        self.cloth.v = vec![DVec3::ZERO; self.cloth.x.len()];
+        let c = &mut self.cloth;
+        c.prev = c.x.clone();
+        c.v = vec![DVec3::ZERO; c.x.len()];
+        c.spacing = if c.stretch.is_empty() {
+            0.0
+        } else {
+            c.stretch.iter().map(|l| l.rest).sum::<f64>() / c.stretch.len() as f64
+        };
+        // Each stitched pair, and the neighbours of either end, are never pushed apart: a weld
+        // joins them.
+        let mut ring: Vec<Vec<u32>> = vec![Vec::new(); c.x.len()];
+        for l in c.stretch.iter().chain(&c.shear) {
+            ring[l.a as usize].push(l.b);
+            ring[l.b as usize].push(l.a);
+        }
+        let near = |k: u32| -> Vec<u32> {
+            let mut seen = vec![k];
+            let mut frontier = vec![k];
+            for _ in 0..SEAM_RINGS {
+                let mut next = Vec::new();
+                for &f in &frontier {
+                    for &n in &ring[f as usize] {
+                        if !seen.contains(&n) {
+                            seen.push(n);
+                            next.push(n);
+                        }
+                    }
+                }
+                frontier = next;
+            }
+            seen
+        };
+        let mut excluded = Vec::new();
+        for s in &c.stitches {
+            for &a in &near(s.a) {
+                for &b in &near(s.b) {
+                    if a != b {
+                        excluded.push(edge_key(a, b));
+                    }
+                }
+            }
+        }
+        excluded.sort_unstable();
+        excluded.dedup();
+        c.excluded = excluded;
         self.cloth
     }
 }
@@ -336,6 +400,10 @@ impl Cloth {
     /// The fabric edges along every welded seam, so a drape can be measured along its seams.
     pub fn seam_edges(&self) -> &[(u32, u32)] {
         &self.seam_edges
+    }
+    /// The fabric's typical edge length (m), 0 for a cloth with no edges.
+    pub fn spacing(&self) -> f64 {
+        self.spacing
     }
 
     /// Welds every seam whose stitches are all within `gap` (m): each stitched pair merges

@@ -89,3 +89,35 @@ The strain p99 is now the structural edges'; the bias has its own figure. The de
 - The skirts' crease reads 2° higher: a lattice's diagonal hinges are longer than a
   refined mesh's, so the same curve bends in slightly bigger steps. The floor for a flat seam
   on a curve is now about 9–11°.
+
+## Phase 3 — cloth keeps off cloth (2026-10-11)
+
+Every particle keeps half an edge length off every triangle it is not part of, from the
+moment the garment's seams have all welded. Pairs are found through a spatial hash (from
+each particle to the triangles its hashed neighbours are corners of) and found again only
+when something has moved more than a quarter of an edge length; each pair remembers which
+side of the triangle the particle was on, so a particle that drifts across between two looks
+is put back. Across a seam, each stitched pair and the neighbours of its ends are left alone.
+
+| Scene | Particles | ms/frame (14 threads) | ms/frame (1 thread) | of which self-collision | Penetration | Strain p99 | Crossings | Seam crease |
+|---|---|---|---|---|---|---|---|---|
+| skirt (demo grid) | 4,700 | 16.7 | 19.3 | 3.3 | 0.00 mm | 7.6 % | 0 | 8.9° |
+| tube (demo grid) | 1,440 | 4.1 | 4.5 | 0.2 | 0.00 mm | 3.1 % | 0 | — |
+| drafted-skirt | 3,868 | 10.6 | 13.0 | 2.9 | 0.00 mm | 4.8 % | 0 | 11.4° |
+| drafted-tshirt | 5,050 | 11.8 | 15.4 | 2.1 | 0.00 mm | 3.4 % | 24 | 26.6° |
+
+- `tests/layers.rs`: a square dropped on one held level by its corners is caught 3 cm above
+  it (the held one sags) with no crossings; without self-collision it falls through to the
+  floor.
+- What self-collision costs is almost all finding the pairs again: about 2.5 ms each time for
+  4–5k particles, once or twice a frame while the cloth is moving, and hardly ever once it has
+  settled. Particle-to-particle pushing alone (tried first) was cheaper but left shallow pokes
+  wherever a particle sat over the middle of another layer's cell, where the four corner
+  pushes cancel.
+- The T-shirt's 24 crossings are one patch about 3 cm across at the top of a sleeve cap, at
+  the back, where three seams meet at a saddle: the fabric folds through itself while the
+  seams pull shut, before self-collision begins. With self-collision on from the start the
+  finished T-shirt has no crossings at all, but no seam closes by itself: particles held off
+  the other panel cannot reach the stitch, and all of them shut only at the 3 s timeout, with
+  a note each. So seams close first. An arrangement that keeps the pieces from needing to pass
+  through each other on the way shut would get both.

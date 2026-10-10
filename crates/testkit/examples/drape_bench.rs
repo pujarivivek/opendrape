@@ -12,7 +12,7 @@
 
 use opendrape_drape::{Drape, Stage};
 use opendrape_mesh::MeshParams;
-use opendrape_sim::{Cloth, FRAME_DT, Params, PhaseTimes, Solid};
+use opendrape_sim::{FRAME_DT, Params, PhaseTimes, Solid, Solver};
 use opendrape_testkit::drafted;
 use opendrape_testkit::garments::{Garment, Scene};
 use opendrape_testkit::metrics::{cloth_crossings, measure, seam_crease_deg};
@@ -68,13 +68,16 @@ fn drive(seconds: f64, mut step: impl FnMut() -> PhaseTimes) -> (f64, PhaseTimes
     (ms, acc.scaled(1.0 / frames as f64))
 }
 
-fn report(name: &str, ms: f64, avg: PhaseTimes, cloth: &Cloth, solid: &dyn Solid) {
+fn report(name: &str, ms: f64, avg: PhaseTimes, solver: &Solver, solid: &dyn Solid) {
+    let cloth = solver.cloth();
     let r = measure(cloth, solid);
     let crossings = cloth_crossings(cloth);
     let crease = seam_crease_deg(cloth);
+    let (pairs, builds) = solver.self_contact_stats();
     println!(
         "{name}: {} particles, {ms:.2} ms/frame, penetration max {:.2} mm, strain p99 {:.1}% \
-         (bias {:.1}%), {crossings} crossings, seam crease {}",
+         (bias {:.1}%), {crossings} crossings, seam crease {}, {pairs} contact pairs found \
+         {builds} times",
         r.particles,
         r.penetration_max_mm,
         r.strain_p99 * 100.0,
@@ -138,7 +141,7 @@ fn main() {
                     scene.step();
                     scene.solver.phase_times()
                 });
-                report(name, ms, avg, scene.solver.cloth(), scene.collider());
+                report(name, ms, avg, &scene.solver, scene.collider());
             }
             "drafted-skirt" | "drafted-tshirt" => {
                 let stage = Stage::shared();
@@ -153,7 +156,7 @@ fn main() {
                     drape.solver.step(Some(collider));
                     drape.solver.phase_times()
                 });
-                report(name, ms, avg, drape.solver.cloth(), collider);
+                report(name, ms, avg, &drape.solver, collider);
             }
             other => panic!("unknown scene {other}"),
         }

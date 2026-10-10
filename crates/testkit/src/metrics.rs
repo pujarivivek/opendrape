@@ -102,12 +102,23 @@ pub fn run(scene: &mut Scene, seconds: f64) -> f64 {
 /// 0 for a drape that never goes through itself. Measured through a grid of triangle boxes,
 /// so it is cheap enough for every test.
 pub fn cloth_crossings(cloth: &Cloth) -> usize {
+    cloth_crossing_pairs(cloth).len()
+}
+
+/// Each crossing [`cloth_crossings`] counts: the edge (its particles) and the triangle (its
+/// index) it passes through.
+pub fn cloth_crossing_pairs(cloth: &Cloth) -> Vec<((usize, usize), usize)> {
     use std::collections::{HashMap, HashSet};
     let x = cloth.positions();
     let tris = cloth.triangles();
-    let edges: Vec<(usize, usize)> = cloth.stretch_links().map(|(a, b, _)| (a, b)).collect();
+    let edges: Vec<(usize, usize)> = cloth
+        .stretch_links()
+        .chain(cloth.shear_links())
+        .map(|(a, b, _)| (a, b))
+        .collect();
+    let mut found = Vec::new();
     if edges.is_empty() || tris.is_empty() {
-        return 0;
+        return found;
     }
     let mean = cloth.stretch_links().map(|(_, _, r)| r).sum::<f64>() / edges.len() as f64;
     let cell = (2.0 * mean).max(1e-3);
@@ -141,7 +152,6 @@ pub fn cloth_crossings(cloth: &Cloth) -> usize {
             grid.entry(c).or_default().push(t as u32);
         }
     }
-    let mut crossings = 0;
     let mut checked = HashSet::new();
     for (a, b) in edges {
         let (pa, pb) = (x[a], x[b]);
@@ -159,12 +169,12 @@ pub fn cloth_crossings(cloth: &Cloth) -> usize {
                     continue;
                 }
                 if segment_crosses_triangle(pa, pb, tri.map(|k| x[k as usize])) {
-                    crossings += 1;
+                    found.push(((a, b), t as usize));
                 }
             }
         }
     }
-    crossings
+    found
 }
 
 /// Whether the open segment `a`–`b` passes through the inside of the triangle (Möller–Trumbore;
