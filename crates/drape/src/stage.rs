@@ -192,20 +192,32 @@ impl Stage {
     }
 
     /// Every piece and twin with a placement of its own, moved straight out of this form where
-    /// it would start inside it or touching it (see `place::moved_clear`). A twin that mirrors
-    /// its piece follows the piece. Run after the form changes, as part of the same edit.
+    /// it would start inside it or touching it: away from the centre line (see
+    /// `place::moved_clear`). A twin that mirrors its piece follows the piece. Run after the
+    /// form changes, as part of the same edit.
     pub fn reseat(&self, project: &mut Project) {
         let moved: Vec<(PieceId, Placement)> = geom::shapes(project)
             .iter()
             .filter_map(|s| {
                 let own = project.placement_of(s.id)?;
-                let m = place::moved_clear(s, &own, &|q| self.signed_distance(q));
+                let away = self.away_from_centre_line(DVec3::from_array(own.position), &own);
+                let m = place::moved_clear(s, &own, away, &|q| self.signed_distance(q));
                 (m != own).then_some((s.id, m))
             })
             .collect();
         for (id, m) in moved {
             project.set_placement(id, Some(m));
         }
+    }
+
+    /// The level direction from the centre line out through `p`; for a point on the centre
+    /// line, the way placement `facing` faces (level), or the front.
+    fn away_from_centre_line(&self, p: DVec3, facing: &Placement) -> DVec3 {
+        let (x, z) = self.centre_line();
+        let level = |v: DVec3| DVec3::new(v.x, 0.0, v.z).try_normalize();
+        level(DVec3::new(p.x - x, 0.0, p.z - z))
+            .or_else(|| level(place::rotation(facing) * DVec3::Z))
+            .unwrap_or(DVec3::Z)
     }
 
     /// Place at… front, back or a side: where piece or twin `id` of `project` goes when it is
@@ -658,5 +670,40 @@ mod tests {
         let mut down = pr.clone();
         small.reseat(&mut down);
         assert_eq!(down, pr);
+    }
+    #[test]
+    fn a_flat_piece_behind_or_beside_the_form_moves_away_from_it_not_through_it() {
+        use opendrape_core::{Piece, Point2};
+        let small = form_stage(&FormChoice::default());
+        let big =
+            form_stage(&crate::choice::chart_choice("women-torso", "classic", "US 18").unwrap());
+        let y = small.waist_y() + 0.1;
+        // Unturned flat pieces (facing +z) put there by typing a position, 1 cm off the small
+        // form: behind it, and beside its left side.
+        let back = -small.surface_distance(std::f64::consts::PI, y).unwrap() - 0.01;
+        let side = small
+            .surface_distance(std::f64::consts::FRAC_PI_2, y)
+            .unwrap()
+            + 0.01;
+        for (at, outwards) in [([0.0, y, back], DVec3::NEG_Z), ([side, y, 0.0], DVec3::X)] {
+            let mut pr = Project::new();
+            let id = pr.add_piece(Piece::rectangle(
+                PieceId(0),
+                "Panel",
+                Point2::new(0.0, 0.0),
+                200.0,
+                300.0,
+            ));
+            let before = Placement::at(at);
+            pr.set_placement(id, Some(before));
+            big.reseat(&mut pr);
+            let after = pr.placement_of(id).unwrap();
+            let moved = DVec3::from_array(after.position) - DVec3::from_array(before.position);
+            assert!(
+                moved.length() > 0.0 && moved.normalize().dot(outwards) > 0.99,
+                "{at:?} moved by {moved}"
+            );
+            assert_eq!(after.rotation, before.rotation);
+        }
     }
 }
