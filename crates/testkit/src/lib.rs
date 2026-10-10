@@ -1,5 +1,6 @@
-//! Programmatic garments draped on the bundled body, and the drape-quality metrics used by
-//! automated tests, the app's demo scenes and benchmarks.
+//! Programmatic garments draped on the bundled body or on a dress form, and the drape-quality
+//! metrics used by automated tests, the app's demo scenes and benchmarks.
 
+pub mod forms;
 pub mod garments;
 pub mod metrics;

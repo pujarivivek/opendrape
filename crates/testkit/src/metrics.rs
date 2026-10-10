@@ -1,5 +1,5 @@
-use crate::garments::{Scene, collider};
-use opendrape_sim::{BodyCollider, Cloth};
+use crate::garments::Scene;
+use opendrape_sim::{Cloth, Solid, Solver};
 use rayon::prelude::*;
 
 #[derive(Clone, Debug, Default)]
@@ -20,7 +20,7 @@ pub struct DrapeReport {
     pub has_nan: bool,
 }
 
-pub fn measure(cloth: &Cloth, collider: &BodyCollider) -> DrapeReport {
+pub fn measure(cloth: &Cloth, collider: &dyn Solid) -> DrapeReport {
     let x = cloth.positions();
     let live: Vec<usize> = (0..cloth.len()).filter(|&i| cloth.is_alive(i)).collect();
     let has_nan = live.iter().any(|&i| !x[i].is_finite());
@@ -80,7 +80,17 @@ pub fn run(scene: &mut Scene, seconds: f64) -> f64 {
     let frames = (seconds / opendrape_sim::FRAME_DT).round() as usize;
     let start = std::time::Instant::now();
     for _ in 0..frames {
-        scene.solver.step(Some(collider()));
+        scene.step();
+    }
+    start.elapsed().as_secs_f64() * 1000.0 / frames.max(1) as f64
+}
+
+/// Steps `solver` against `collider` for `seconds`; returns wall-clock ms per frame.
+pub fn run_solver(solver: &mut Solver, collider: &dyn Solid, seconds: f64) -> f64 {
+    let frames = (seconds / opendrape_sim::FRAME_DT).round() as usize;
+    let start = std::time::Instant::now();
+    for _ in 0..frames {
+        solver.step(Some(collider));
     }
     start.elapsed().as_secs_f64() * 1000.0 / frames.max(1) as f64
 }
