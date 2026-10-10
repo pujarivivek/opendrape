@@ -182,6 +182,136 @@ mod tests {
         );
     }
 
+    /// Two triangles of different size sharing an edge, so the four corners have four
+    /// different masses, in 3D positions that don't lie on their flat shape: [0, 1, 2] and
+    /// [0, 2, 3].
+    fn uneven() -> crate::Cloth {
+        let flat = vec![
+            DVec2::new(0.0, 0.0),
+            DVec2::new(0.3, 0.0),
+            DVec2::new(0.1, 0.2),
+            DVec2::new(0.0, 0.5),
+        ];
+        let panel = Panel {
+            positions: vec![
+                DVec3::new(0.0, 1.0, 0.0),
+                DVec3::new(0.3, 1.1, 0.05),
+                DVec3::new(0.1, 1.3, -0.04),
+                DVec3::new(-0.02, 1.5, 0.1),
+            ],
+            flat: Some(flat),
+            triangles: vec![[0, 1, 2], [0, 2, 3]],
+        };
+        let mut b = ClothBuilder::new(0.15);
+        b.add_panel(&panel, 1.0);
+        b.build()
+    }
+
+    const BARY: [f64; 3] = [0.2, 0.3, 0.5];
+
+    /// What the solver does to triangle 0 of `cloth` held at `BARY` against a target `gap` away
+    /// from the point, in one pass with substep `sdt` and compliance `alpha`: the point, where
+    /// the corners go.
+    fn one_pass(mut cloth: crate::Cloth, alpha: f64, sdt: f64) -> (crate::Cloth, DVec3, DVec3) {
+        let t = cloth.triangles[0].map(|k| k as usize);
+        let point: DVec3 = (0..3).map(|k| cloth.x[t[k]] * BARY[k]).sum();
+        let target = point + DVec3::new(0.03, -0.02, 0.06);
+        cloth.attach(0, BARY, target, alpha).unwrap();
+        super::solve(&mut cloth, sdt);
+        (cloth, point, target)
+    }
+
+    #[test]
+    fn one_pass_puts_the_point_on_its_target_and_shares_the_move_by_weight() {
+        let cloth = uneven();
+        let before = cloth.x.clone();
+        let w = cloth.inv_mass.clone();
+        assert!(
+            (w[0] - w[1]).abs() > 1.0 && (w[1] - w[2]).abs() > 1.0,
+            "unequal masses: {w:?}"
+        );
+        let (after, point, target) = one_pass(cloth, 0.0, 1.0 / 1200.0);
+        let t = after.triangles[0].map(|k| k as usize);
+        // The point is exactly on the target after a single pass.
+        let now: DVec3 = (0..3).map(|k| after.x[t[k]] * BARY[k]).sum();
+        assert!(
+            (now - target).length() < 1e-12,
+            "{}",
+            (now - target).length()
+        );
+        // Each corner moved along the gap, by w_i b_i / sum(w_j b_j^2) of it.
+        let gap = target - point;
+        let wsum: f64 = (0..3).map(|k| w[t[k]] * BARY[k] * BARY[k]).sum();
+        for k in 0..3 {
+            let want = gap * (w[t[k]] * BARY[k] / wsum);
+            let got = after.x[t[k]] - before[t[k]];
+            assert!(
+                (got - want).length() < 1e-12,
+                "corner {k}: {got} for {want}"
+            );
+        }
+        // The corner that is not in the triangle didn't move.
+        assert_eq!(after.x[3], before[3]);
+    }
+
+    #[test]
+    fn a_soft_spring_covers_the_share_of_the_gap_its_compliance_leaves() {
+        let sdt = 1.0 / 1200.0;
+        let cloth = uneven();
+        let t = cloth.triangles[0].map(|k| k as usize);
+        let wsum: f64 = (0..3)
+            .map(|k| cloth.inv_mass[t[k]] * BARY[k] * BARY[k])
+            .sum();
+        // A compliance whose term equals the corners' own: half the gap is covered.
+        let (after, point, target) = one_pass(cloth.clone(), wsum * sdt * sdt, sdt);
+        let now: DVec3 = (0..3).map(|k| after.x[t[k]] * BARY[k]).sum();
+        let gap = target - point;
+        assert!(
+            (now - (point + gap * 0.5)).length() < 1e-12,
+            "half way: {now} for {}",
+            point + gap * 0.5
+        );
+        // Four times that: a fifth of it (w / (w + 4w)).
+        let (after, point, target) = one_pass(cloth, 4.0 * wsum * sdt * sdt, sdt);
+        let now: DVec3 = (0..3).map(|k| after.x[t[k]] * BARY[k]).sum();
+        let gap = target - point;
+        assert!(
+            (now - (point + gap * 0.2)).length() < 1e-12,
+            "a fifth: {now}"
+        );
+    }
+
+    #[test]
+    fn pinned_corners_stay_and_the_free_ones_make_up_the_move() {
+        let sdt = 1.0 / 1200.0;
+        // Corner 1 is fixed in space: the point still lands on its target, by the other two.
+        let mut cloth = uneven();
+        cloth.inv_mass[1] = 0.0;
+        let before = cloth.x.clone();
+        let w = cloth.inv_mass.clone();
+        let (after, point, target) = one_pass(cloth, 0.0, sdt);
+        let t = after.triangles[0].map(|k| k as usize);
+        let now: DVec3 = (0..3).map(|k| after.x[t[k]] * BARY[k]).sum();
+        assert!((now - target).length() < 1e-12, "{now}");
+        assert_eq!(after.x[1], before[1], "the pinned corner");
+        let wsum: f64 = (0..3).map(|k| w[t[k]] * BARY[k] * BARY[k]).sum();
+        let gap = target - point;
+        for k in [0, 2] {
+            let want = gap * (w[t[k]] * BARY[k] / wsum);
+            assert!(
+                (after.x[t[k]] - before[t[k]] - want).length() < 1e-12,
+                "corner {k}"
+            );
+        }
+        // Every corner fixed: nothing can move, and nothing breaks.
+        let mut cloth = uneven();
+        cloth.inv_mass[..3].fill(0.0);
+        let before = cloth.x.clone();
+        let (after, _, _) = one_pass(cloth, 0.0, sdt);
+        assert_eq!(after.x, before);
+        assert!(after.x.iter().all(|p| p.is_finite()));
+    }
+
     #[test]
     fn a_point_on_a_seam_stays_held_after_the_seam_welds() {
         // Two squares side by side, sewn along the edge between them; the pin is on the first
