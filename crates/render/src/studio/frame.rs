@@ -7,6 +7,7 @@ pub(crate) struct FrameUniforms {
     pub view_proj: [[f32; 4]; 4],
     pub inv_view_proj: [[f32; 4]; 4],
     pub view: [[f32; 4]; 4],
+    pub proj: [[f32; 4]; 4],
     pub inv_proj: [[f32; 4]; 4],
     pub key_view_proj: [[f32; 4]; 4],
     pub contact_view_proj: [[f32; 4]; 4],
@@ -38,7 +39,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<FrameUniforms>() % 16, 0);
         assert_eq!(
             std::mem::size_of::<FrameUniforms>(),
-            6 * 64 + 3 * 16 + 9 * 16 + 6 * 16
+            7 * 64 + 3 * 16 + 9 * 16 + 6 * 16
         );
     }
 }

@@ -431,3 +431,94 @@ fn shadow_maps_are_redrawn_only_when_geometry_changes() {
     r.render(&g.device, &g.queue, &target, &camera, &[&b]);
     assert_eq!(r.stats().shadow_redraws, first + 1, "the box moved");
 }
+
+/// Two 0.5 m pages meeting in a 90° valley along the y axis, opening towards +Z (an open book
+/// facing the camera), centred on (0, 1, 0).
+fn crease() -> (Vec<Vec3>, Vec<[u32; 3]>) {
+    let d = 0.35;
+    let p = vec![
+        Vec3::new(0.0, 0.75, 0.0),
+        Vec3::new(0.0, 1.25, 0.0),
+        Vec3::new(-d, 1.25, d),
+        Vec3::new(-d, 0.75, d),
+        Vec3::new(d, 0.75, d),
+        Vec3::new(d, 1.25, d),
+    ];
+    // Both pages wound to face the camera (+Z side).
+    (p, vec![[0, 1, 2], [0, 2, 3], [0, 4, 5], [0, 5, 1]])
+}
+
+/// Mean light (linear) of the pixels in `xs` × `ys`.
+fn mean_light(img: &image::RgbaImage, xs: std::ops::Range<u32>, ys: std::ops::Range<u32>) -> f32 {
+    let mut sum = 0.0;
+    let mut n = 0.0;
+    for y in ys {
+        for x in xs.clone() {
+            sum += opendrape_render::colour::srgb_to_linear(luminance(img.get_pixel(x, y)) / 255.0);
+            n += 1.0;
+        }
+    }
+    sum / n
+}
+
+fn render_with_ao(ao: bool, shape: (Vec<Vec3>, Vec<[u32; 3]>)) -> image::RgbaImage {
+    let g = gpu();
+    let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::Medium);
+    r.set_overrides(Overrides {
+        ao: Some(ao),
+        ..plain()
+    });
+    let target = RenderTarget::new(&g.device, 256, 256);
+    let m = mesh(&mut r, &g, shape, [0.6; 3], Material::Cloth);
+    render_still(&mut r, &g, &target, &front_camera(1.3), &[&m])
+}
+
+/// Soft darkening gathers in a fold: the bottom of a crease is clearly darker with it.
+#[test]
+fn ao_darkens_a_crease() {
+    let (with, without) = (
+        render_with_ao(true, crease()),
+        render_with_ao(false, crease()),
+    );
+    with.save(format!(
+        "{}/studio_crease_ao.png",
+        env!("CARGO_TARGET_TMPDIR")
+    ))
+    .ok();
+    let valley = |img: &image::RgbaImage| mean_light(img, 126..130, 100..156);
+    let (a, b) = (valley(&with), valley(&without));
+    assert!(a <= 0.85 * b, "the valley with AO {a}, without {b}");
+}
+
+/// ...and leaves flat surfaces alone.
+#[test]
+fn ao_leaves_flat_surfaces_alone() {
+    let flat = || card(1.0, 0.0, 0.6);
+    let (with, without) = (render_with_ao(true, flat()), render_with_ao(false, flat()));
+    let middle = |img: &image::RgbaImage| mean_light(img, 112..144, 112..144);
+    let (a, b) = (middle(&with), middle(&without));
+    assert!(
+        (a - b).abs() <= 0.02 * b,
+        "flat card with AO {a}, without {b}"
+    );
+}
+
+#[test]
+fn ao_runs_at_every_quality_and_size() {
+    let g = gpu();
+    for quality in Quality::ALL {
+        let mut r = StudioRenderer::new(&g.device, &g.adapter, quality);
+        r.set_overrides(Overrides {
+            ao: Some(true),
+            ..Overrides::default()
+        });
+        let m = mesh(&mut r, &g, crease(), [0.5; 3], Material::Cloth);
+        for (w, h) in [(1, 1), (37, 19), (300, 200)] {
+            let scope = g.device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let target = RenderTarget::new(&g.device, w, h);
+            render_still(&mut r, &g, &target, &front_camera(1.5), &[&m]);
+            let error = pollster::block_on(scope.pop());
+            assert!(error.is_none(), "{quality:?} {w}×{h}: {error:?}");
+        }
+    }
+}

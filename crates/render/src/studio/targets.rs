@@ -11,6 +11,9 @@ pub(crate) struct Targets {
     /// The lit scene: half-float HDR, or 8-bit already tone-mapped (the LDR path).
     pub colour_view: wgpu::TextureView,
     pub depth_view: wgpu::TextureView,
+    /// The AO prepass: depth (read by the AO search and the main pass) and view normals.
+    pub prepass_depth: wgpu::TextureView,
+    pub normals: wgpu::TextureView,
 }
 
 pub(crate) fn texture(
@@ -62,6 +65,20 @@ impl Targets {
                 "studio depth",
                 size,
                 DEPTH,
+                U::RENDER_ATTACHMENT | U::TEXTURE_BINDING,
+            )),
+            prepass_depth: view(texture(
+                device,
+                "studio prepass depth",
+                size,
+                DEPTH,
+                U::RENDER_ATTACHMENT | U::TEXTURE_BINDING,
+            )),
+            normals: view(texture(
+                device,
+                "studio normals",
+                size,
+                super::ao::NORMALS,
                 U::RENDER_ATTACHMENT | U::TEXTURE_BINDING,
             )),
         }

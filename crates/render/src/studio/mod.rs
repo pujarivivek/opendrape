@@ -1,6 +1,7 @@
 //! The studio 3D view: a soft grey photo studio lit by a baked studio HDRI and one soft key
 //! light, with colour-accurate output (Khronos PBR Neutral, exact sRGB).
 
+mod ao;
 pub mod environment;
 mod environment_data;
 mod frame;
@@ -18,6 +19,7 @@ use crate::camera::OrbitCamera;
 use crate::colour::srgb8_to_linear;
 use crate::mesh::Vertex;
 use crate::target::RenderTarget;
+use ao::{AoPass, AoTarget};
 use frame::FrameUniforms;
 use glam::{Mat4, Vec2, Vec3};
 use output::OutputPass;
@@ -105,8 +107,14 @@ pub struct StudioRenderer {
     compare_sampler: wgpu::Sampler,
     linear_sampler: wgpu::Sampler,
     placeholders: Placeholders,
-    /// Made again when a texture it binds is made anew.
-    textures_bind_group: Option<wgpu::BindGroup>,
+    /// The main pass's textures, one set per AO resolution (half or full); made again when a
+    /// texture they bind is made anew.
+    textures_bind_groups: Vec<(bool, wgpu::BindGroup)>,
+    ao: AoPass,
+    /// AO textures at each resolution this quality level uses.
+    ao_targets: Vec<AoTarget>,
+    /// The quality level the targets were made for.
+    targets_quality: Option<Quality>,
     shadows: Shadows,
     frames_drawn: u64,
     pipelines: Option<Pipelines>,
@@ -261,7 +269,10 @@ impl StudioRenderer {
                 ao,
                 prepass,
             },
-            textures_bind_group: None,
+            textures_bind_groups: Vec::new(),
+            ao: AoPass::new(device, &frame_layout),
+            ao_targets: Vec::new(),
+            targets_quality: None,
             shadows: Shadows::new(device),
             frames_drawn: 0,
             pipelines: None,
@@ -438,12 +449,34 @@ impl StudioRenderer {
             .targets
             .as_ref()
             .is_some_and(|t| t.matches(width, height, format))
+            && self.targets_quality == Some(self.quality)
         {
             return;
         }
         let targets = Targets::new(device, width, height, format);
         self.output.bind(device, &targets.colour_view);
+        let s = self.quality.settings();
+        let mut resolutions: Vec<bool> = [s.ao_moving, Some(s.ao_still)]
+            .into_iter()
+            .flatten()
+            .map(|a| a.half_res)
+            .collect();
+        resolutions.dedup();
+        self.ao_targets = resolutions
+            .into_iter()
+            .map(|half| {
+                self.ao.target(
+                    device,
+                    &targets.prepass_depth,
+                    &targets.normals,
+                    (width, height),
+                    half,
+                )
+            })
+            .collect();
         self.targets = Some(targets);
+        self.targets_quality = Some(self.quality);
+        self.textures_bind_groups.clear();
     }
 
     /// What this frame draws: the quality level's moving or still settings, with the test
@@ -469,32 +502,48 @@ impl StudioRenderer {
         }
     }
 
-    /// Binds the textures the main pass reads, the real ones where they exist.
+    /// Binds the textures the main pass reads, the real ones where they exist: one set per
+    /// AO resolution.
     fn bind_textures(&mut self, device: &wgpu::Device) {
         let p = &self.placeholders;
         let shadow = self.shadows.key_view().unwrap_or(&p.shadow);
         let contact = self.shadows.contact_view().unwrap_or(&p.contact);
-        let views = [(0, shadow), (2, contact), (4, &p.ao), (5, &p.prepass)];
-        let mut entries: Vec<wgpu::BindGroupEntry> = views
-            .iter()
-            .map(|&(binding, view)| wgpu::BindGroupEntry {
-                binding,
-                resource: wgpu::BindingResource::TextureView(view),
+        let prepass = self
+            .targets
+            .as_ref()
+            .map_or(&p.prepass, |t| &t.prepass_depth);
+        let mut sets: Vec<(bool, &wgpu::TextureView)> =
+            self.ao_targets.iter().map(|t| (t.half, &t.a)).collect();
+        if sets.is_empty() {
+            sets.push((true, &p.ao));
+        }
+        self.textures_bind_groups = sets
+            .into_iter()
+            .map(|(half, ao)| {
+                let views = [(0, shadow), (2, contact), (4, ao), (5, prepass)];
+                let mut entries: Vec<wgpu::BindGroupEntry> = views
+                    .iter()
+                    .map(|&(binding, view)| wgpu::BindGroupEntry {
+                        binding,
+                        resource: wgpu::BindingResource::TextureView(view),
+                    })
+                    .collect();
+                entries.push(wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.compare_sampler),
+                });
+                entries.push(wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&self.linear_sampler),
+                });
+                let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("studio textures"),
+                    layout: &self.textures_layout,
+                    entries: &entries,
+                });
+                (half, group)
             })
             .collect();
-        entries.push(wgpu::BindGroupEntry {
-            binding: 1,
-            resource: wgpu::BindingResource::Sampler(&self.compare_sampler),
-        });
-        entries.push(wgpu::BindGroupEntry {
-            binding: 3,
-            resource: wgpu::BindingResource::Sampler(&self.linear_sampler),
-        });
-        self.textures_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("studio textures"),
-            layout: &self.textures_layout,
-            entries: &entries,
-        }));
     }
 
     fn frame_uniforms(
@@ -527,6 +576,7 @@ impl StudioRenderer {
             view_proj: view_proj.to_cols_array_2d(),
             inv_view_proj: view_proj.inverse().to_cols_array_2d(),
             view: view.to_cols_array_2d(),
+            proj: proj.to_cols_array_2d(),
             inv_proj: proj.inverse().to_cols_array_2d(),
             key_view_proj: shadow::key_view_proj().to_cols_array_2d(),
             contact_view_proj: shadow::contact_view_proj().to_cols_array_2d(),
@@ -588,7 +638,7 @@ impl StudioRenderer {
             settings.shadow_still.size,
             settings.contact_size,
         );
-        if remade || self.textures_bind_group.is_none() {
+        if remade || self.textures_bind_groups.is_empty() {
             self.bind_textures(device);
         }
         let size = (target.width, target.height);
@@ -610,7 +660,28 @@ impl StudioRenderer {
         let floor = self.floor.as_ref().expect("made above");
         let pipelines = self.pipelines.as_ref().expect("made above");
         let targets = self.targets.as_ref().expect("made above");
-        let textures = self.textures_bind_group.as_ref().expect("bound above");
+        let ao_half = effects.ao.map(|a| a.half_res);
+        if let Some(half) = ao_half {
+            let all: Vec<&StudioMesh> = meshes.iter().copied().chain([floor]).collect();
+            self.ao.prepass(
+                &mut encoder,
+                &self.frame_bind_group,
+                &targets.prepass_depth,
+                &targets.normals,
+                &all,
+            );
+            if let Some(target) = self.ao_targets.iter().find(|t| t.half == half) {
+                self.ao
+                    .occlusion(&mut encoder, &self.frame_bind_group, target);
+            }
+        }
+        let textures = self
+            .textures_bind_groups
+            .iter()
+            .find(|(half, _)| Some(*half) == ao_half)
+            .or(self.textures_bind_groups.first())
+            .map(|(_, group)| group)
+            .expect("bound above");
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("studio main"),

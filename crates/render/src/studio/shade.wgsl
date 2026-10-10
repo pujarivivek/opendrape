@@ -5,6 +5,7 @@ struct Frame {
     view_proj: mat4x4<f32>,
     inv_view_proj: mat4x4<f32>,
     view: mat4x4<f32>,
+    proj: mat4x4<f32>,
     inv_proj: mat4x4<f32>,
     key_view_proj: mat4x4<f32>,
     contact_view_proj: mat4x4<f32>,
@@ -39,6 +40,8 @@ const FORM: u32 = 1u;
 const LINING: f32 = 0.8;
 // How dark the key light's shadow makes the floor (the soft light still reaches it).
 const KEY_ON_FLOOR: f32 = 0.35;
+// How much the folds' darkening also takes from the key light.
+const AO_ON_KEY: f32 = 0.5;
 // The key shadow map's square (metres) and depth range: as in shadow.rs.
 const KEY_BOX: f32 = 2.6;
 const KEY_DEPTH: f32 = 6.0;
@@ -124,13 +127,54 @@ fn contact_shadow(world: vec3<f32>) -> f32 {
     return 1.0 - frame.extra.w * dark;
 }
 
-// Soft darkening in folds for the pixel at `pixel`, with GTAO's multi-bounce correction for
-// `albedo` so pale fabrics don't go grey (1: none).
-fn ambient_occlusion(pixel: vec2<f32>, albedo: vec3<f32>) -> vec3<f32> {
+// Distance (metres) from the camera of what the prepass drew at full-resolution pixel `p`.
+fn depth_at(p: vec2<i32>) -> f32 {
+    let d = textureLoad(prepass_depth, p, 0);
+    let uv = (vec2<f32>(p) + 0.5) * frame.screen.zw;
+    let v = frame.inv_proj * vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, d, 1.0);
+    return -v.z / v.w;
+}
+
+fn unpack_depth(gb: vec2<f32>) -> f32 {
+    return (gb.x * 255.0 + gb.y) / 255.0 * 20.0;
+}
+
+// Soft darkening in folds for the pixel at `pixel` (1: none): the AO result scaled up from
+// its own resolution, each of the four nearest values weighted by how close its depth is, so
+// it doesn't halo at edges.
+fn occlusion_at(pixel: vec2<f32>) -> f32 {
     if (frame.flags.x == 0u) {
-        return vec3<f32>(1.0);
+        return 1.0;
     }
-    return vec3<f32>(1.0);
+    let full = vec2<i32>(textureDimensions(prepass_depth));
+    let small = vec2<i32>(textureDimensions(ao_map));
+    let depth = depth_at(min(vec2<i32>(floor(pixel)), full - 1));
+    let at = pixel * vec2<f32>(small) / vec2<f32>(full) - 0.5;
+    let base = vec2<i32>(floor(at));
+    let f = fract(at);
+    var sum = 0.0;
+    var total = 0.0;
+    for (var j = 0; j < 2; j++) {
+        for (var i = 0; i < 2; i++) {
+            let q = clamp(base + vec2<i32>(i, j), vec2<i32>(0), small - 1);
+            let tap = textureLoad(ao_map, q, 0);
+            let wx = select(1.0 - f.x, f.x, i == 1);
+            let wy = select(1.0 - f.y, f.y, j == 1);
+            let w = max(wx * wy, 1e-3) / (1e-3 + abs(unpack_depth(tap.gb) - depth));
+            sum += w * tap.r;
+            total += w;
+        }
+    }
+    return sum / total;
+}
+
+// The darkening for the soft light, with GTAO's multi-bounce correction for `albedo`: light
+// bounces about inside a pale fold, so pale fabrics don't go grey.
+fn multi_bounce(ao: f32, albedo: vec3<f32>) -> vec3<f32> {
+    let a = 2.0404 * albedo - 0.3324;
+    let b = -4.7951 * albedo + 0.6417;
+    let c = 2.7552 * albedo + 0.6903;
+    return max(vec3<f32>(ao), ((ao * a + b) * ao + c) * ao);
 }
 
 // Scene light to what the target holds: as it is (HDR), or tone-mapped and encoded (LDR).
@@ -180,8 +224,11 @@ fn fs_mesh(v: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     let lit = max(n_dot_l, 0.0);
     let soft = irradiance(n);
     let key = frame.key_colour.rgb;
-    let shadow = key_shadow(v.world, n, v.clip.xy);
-    let ao = ambient_occlusion(v.clip.xy, albedo);
+    let occluded = occlusion_at(v.clip.xy);
+    let ao = multi_bounce(occluded, albedo);
+    // Folds also darken the key a little: the shadow map is too coarse for the small shadows
+    // inside a fold (like HDRP's "direct lighting strength" for SSAO).
+    let shadow = key_shadow(v.world, n, v.clip.xy) * mix(1.0, occluded, AO_ON_KEY);
     // Every surface reflects about 4 % like any dielectric; rough, so little more at the edges.
     let fresnel = 0.04 + 0.16 * pow(1.0 - n_dot_v, 5.0);
     let reflected = fresnel * (soft * ao + key * lit * shadow);
