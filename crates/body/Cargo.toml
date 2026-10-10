@@ -1,6 +1,6 @@
 [package]
 name = "opendrape-body"
-description = "OpenDrape avatar bodies and body measurements"
+description = "OpenDrape dress forms, bodies and body measurements"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,6 +10,9 @@ publish.workspace = true
 
 [dependencies]
 glam.workspace = true
+serde.workspace = true
+# float_roundtrip: a form read back from its own JSON must equal the form that was written.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 
 [lints]
 workspace = true
