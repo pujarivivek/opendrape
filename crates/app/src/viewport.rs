@@ -18,6 +18,9 @@ struct ClothOnGpu {
     triangles: Arc<Vec<[u32; 3]>>,
 }
 
+/// A picture for Assets is drawn at most this many times while its still image builds up.
+const THUMB_FRAMES: usize = 64;
+
 /// A part of the dress form, drawn in its own colour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Part {
@@ -52,6 +55,8 @@ pub struct Viewport {
     target: Option<(RenderTarget, egui::TextureId)>,
     /// The form's torso, tape lines and stand.
     form: Vec<(Part, StudioMesh)>,
+    /// The pictures drawn for Assets, kept while their egui textures are shown.
+    thumbs: Vec<RenderTarget>,
     /// The tape lines are drawn.
     show_tapes: bool,
     cloth: Option<ClothOnGpu>,
@@ -84,6 +89,7 @@ impl Viewport {
             camera,
             target: None,
             form,
+            thumbs: Vec::new(),
             show_tapes: settings.show_tapes,
             cloth: None,
             pieces: Vec::new(),
@@ -97,6 +103,57 @@ impl Viewport {
     pub fn set_stage(&mut self, rs: &egui_wgpu::RenderState, stage: &Stage) {
         self.form = form_meshes(&mut self.renderer, rs, stage);
         self.camera.target.y = stage.waist_y() as f32;
+    }
+
+    /// Shows or hides the form's tape lines.
+    pub fn set_show_tapes(&mut self, on: bool) {
+        self.show_tapes = on;
+    }
+
+    /// A picture of `stage`'s form, `size` points large, for Assets: seen from the front
+    /// three-quarter in the studio, its still image finished. The view's own next frame is drawn
+    /// afresh.
+    pub fn thumbnail(
+        &mut self,
+        rs: &egui_wgpu::RenderState,
+        stage: &Stage,
+        size: egui::Vec2,
+        pixels_per_point: f32,
+    ) -> egui::TextureId {
+        let (w, h) = (
+            (size.x * pixels_per_point).round().max(1.0) as u32,
+            (size.y * pixels_per_point).round().max(1.0) as u32,
+        );
+        let target = RenderTarget::new(&rs.device, w, h);
+        let meshes = form_meshes(&mut self.renderer, rs, stage);
+        let shown: Vec<&StudioMesh> = meshes
+            .iter()
+            .filter(|(part, _)| self.show_tapes || *part != Part::Tapes)
+            .map(|(_, mesh)| mesh)
+            .collect();
+        let camera = OrbitCamera {
+            target: glam::Vec3::new(0.0, stage.waist_y() as f32 + 0.05, 0.0),
+            yaw: 0.5,
+            pitch: 0.12,
+            distance: 2.0,
+            fov_y: 35f32.to_radians(),
+        };
+        self.renderer.set_moving(false);
+        for _ in 0..THUMB_FRAMES {
+            let drawn = self
+                .renderer
+                .render(&rs.device, &rs.queue, &target, &camera, &shown);
+            if drawn.still_done {
+                break;
+            }
+        }
+        let id = rs.renderer.write().register_native_texture(
+            &rs.device,
+            &target.color_view,
+            wgpu::FilterMode::Linear,
+        );
+        self.thumbs.push(target);
+        id
     }
 
     /// The quality level the 3D view draws at.

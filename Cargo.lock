@@ -2518,6 +2518,7 @@ dependencies = [
  "glam",
  "i18n-embed",
  "i18n-embed-fl",
+ "opendrape-body",
  "opendrape-core",
  "opendrape-drape",
  "opendrape-geom",

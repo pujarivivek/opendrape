@@ -14,7 +14,7 @@ use crate::view_settings::{LightingChoice, QualityChoice, ViewSettings};
 use crate::viewport::{Show, Viewport};
 use crate::workspace::{self, Workspace};
 use egui::{Key, KeyboardShortcut, Modifiers, ViewportCommand};
-use opendrape_core::FormChoice;
+use opendrape_core::{FormChoice, Units};
 use opendrape_core::{PieceId, Project};
 use opendrape_drape::Stage;
 use opendrape_drape::choice::FormProblem;
@@ -156,6 +156,8 @@ pub struct OpenDrapeApp {
     assets_open: bool,
     /// While Assets is open in Modeling, the left area shows the pattern, not the 3D view.
     left_2d: bool,
+    /// The dress-form panel in Assets.
+    forms: assets::FormsPanel,
     /// How the 3D view should look (View → 3D quality), remembered between launches.
     view_settings: ViewSettings,
 }
@@ -211,6 +213,7 @@ impl OpenDrapeApp {
             workspace: Workspace::default(),
             assets_open: false,
             left_2d: false,
+            forms: assets::FormsPanel::default(),
         }
     }
 
@@ -347,6 +350,55 @@ impl OpenDrapeApp {
         });
         self.next_stage = Some(Arc::new(stage));
         Ok(())
+    }
+
+    /// Carries out what the student asked for in Assets' dress-form panel. A form that can't
+    /// be built (a custom measurement out of its range) changes nothing and says why.
+    fn form_action(&mut self, action: Option<assets::FormAction>, now: &FormChoice, units: Units) {
+        match action {
+            Some(assets::FormAction::Pick(choice)) => {
+                if let Err(e) = self.apply_form(choice) {
+                    let text = match &e {
+                        FormProblem::Size(e) => tr!(
+                            "form-out-of-range",
+                            name = assets::measure_name(&e.measurement),
+                            min = units.format_number(e.min_mm),
+                            max = units.format(e.max_mm)
+                        ),
+                        FormProblem::Unknown(_) => e.to_string(),
+                    };
+                    self.forms.refused(now, text);
+                }
+            }
+            Some(assets::FormAction::ShowTapes(on)) => {
+                self.view_settings.show_tapes = on;
+                self.view_settings.save(self.startup.store.dir());
+                if let Some(viewport) = self.viewport.as_mut() {
+                    viewport.set_show_tapes(on);
+                }
+            }
+            None => {}
+        }
+    }
+
+    /// Draws each form's picture for Assets the first time it is wanted (there are none without
+    /// a 3D view: the cards show an icon then).
+    fn draw_thumbnails(&mut self, frame: &eframe::Frame, ctx: &egui::Context) {
+        let (Some(viewport), Some(rs)) = (self.viewport.as_mut(), frame.wgpu_render_state()) else {
+            return;
+        };
+        for id in opendrape_body::form::Form::IDS {
+            if self.forms.thumbs.contains_key(id) {
+                continue;
+            }
+            let Some(stage) =
+                opendrape_drape::choice::base_choice(id).and_then(|c| Stage::for_choice(&c).ok())
+            else {
+                continue;
+            };
+            let texture = viewport.thumbnail(rs, &stage, assets::THUMB, ctx.pixels_per_point());
+            self.forms.thumbs.insert(id.to_string(), texture);
+        }
     }
 
     /// The stage follows the project's form: after a form change, an undo or redo of one, or
@@ -1450,7 +1502,19 @@ impl eframe::App for OpenDrapeApp {
                 if keys_for_pattern && !pattern_left {
                     self.app_undo_redo(&ctx);
                 }
-                egui::CentralPanel::default().show(ui, |ui| close_assets = assets::header(ui));
+                self.draw_thumbnails(frame, &ctx);
+                let units = self.editor.doc.project().units;
+                let choice = self.editor.doc.project().form.clone();
+                let (forms, stage) = (&mut self.forms, &self.stage);
+                let show_tapes = self.view_settings.show_tapes;
+                let action = egui::CentralPanel::default()
+                    .show(ui, |ui| {
+                        close_assets = assets::header(ui);
+                        ui.separator();
+                        forms.ui(ui, &choice, stage.measured(), units, show_tapes)
+                    })
+                    .inner;
+                self.form_action(action, &choice, units);
             }
             Workspace::Modeling => {
                 egui::CentralPanel::default()
