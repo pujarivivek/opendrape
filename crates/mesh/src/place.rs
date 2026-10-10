@@ -1313,7 +1313,7 @@ mod tests {
             "the axis stays at z = 0"
         );
         assert!(
-            r >= 0.2 + PLACE_GAP_M - 1e-9 && r <= 0.2 + PLACE_GAP_M + RESEAT_STEP_M,
+            (0.2 + PLACE_GAP_M - 1e-9..=0.2 + PLACE_GAP_M + RESEAT_STEP_M).contains(&r),
             "{r}"
         );
         // Clear already: unchanged.
