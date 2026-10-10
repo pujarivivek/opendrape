@@ -133,17 +133,24 @@ impl Drape {
         let mesh = opendrape_mesh::build(&project, &MeshParams::default());
         let fabric = Fabric::of(&mesh);
         let shapes = geom::shapes(&project);
+        let was = from.map(|old| geom::shapes(&old.project));
         let layout = place::layout(&shapes);
         let mut notes: Vec<DrapeNote> = mesh.notes.iter().map(|n| DrapeNote::Mesh(*n)).collect();
         let mut builder = ClothBuilder::new(DENSITY_KG_M2);
         let mut ids = Vec::with_capacity(mesh.panels.len());
         for panel in &mesh.panels {
-            let warm = from.and_then(|old| live::warm_positions(old, panel));
+            let shape = shapes
+                .iter()
+                .find(|s| s.id == panel.shape)
+                .expect("every panel comes from a shape");
+            // A piece dragged across the pattern table since: its fabric goes with it.
+            let moved = was
+                .iter()
+                .flatten()
+                .find(|s| s.id == panel.shape)
+                .map_or(DVec2::ZERO, |was| live::moved(was, shape));
+            let warm = from.and_then(|old| live::warm_positions(old, panel, moved));
             let positions = warm.unwrap_or_else(|| {
-                let shape = shapes
-                    .iter()
-                    .find(|s| s.id == panel.shape)
-                    .expect("every panel comes from a shape");
                 let placement = place::effective(&project, shape, &layout, stage.shoulder_y());
                 let positions: Vec<DVec3> = panel
                     .flat
@@ -214,6 +221,12 @@ impl Drape {
         }
         self.project = project;
         self.hold_pins();
+    }
+
+    /// How many pins are held in the cloth: the project's, less any on a piece that was left out
+    /// of the fabric.
+    pub fn held_pins(&self) -> usize {
+        self.pins.len()
     }
 
     /// Attaches each of the project's pins to its spot of the fabric.
