@@ -110,3 +110,117 @@ fn pins_show_where_their_shapes_are_and_are_selected_and_removed_there() {
     key(&mut h, Key::Delete);
     assert_eq!(h.state().doc.project().pins, vec![pin(twin, 300.0, 400.0)]);
 }
+
+/// Three pins on a 300 × 400 mm rectangle, at x = 150, 250 and 350 (the middle of its bottom).
+fn three_pins(h: &mut H) -> (PieceId, Vec<Pin>) {
+    let front = with_rectangle(h); // (100,100)–(400,500)
+    let pins = vec![
+        pin(front, 150.0, 150.0),
+        pin(front, 250.0, 150.0),
+        pin(front, 350.0, 150.0),
+    ];
+    h.state_mut().doc.edit(|p| p.pins = pins.clone());
+    h.state_mut().fit();
+    h.run();
+    (front, pins)
+}
+
+#[test]
+fn removing_a_pin_before_the_selected_one_keeps_the_selection_on_its_own_pin() {
+    let mut h = harness();
+    let (_, pins) = three_pins(&mut h);
+    h.state_mut().selection = Selection::Pin(2);
+    h.state_mut().remove_pin(0);
+    assert_eq!(
+        h.state().selection,
+        Selection::Pin(1),
+        "the same pin, renumbered"
+    );
+    key(&mut h, Key::Delete);
+    assert_eq!(
+        h.state().doc.project().pins,
+        vec![pins[1]],
+        "the selected pin went, and no other"
+    );
+    assert_eq!(h.state().selection, Selection::None);
+}
+
+#[test]
+fn the_selection_follows_its_pin_through_undo_and_redo_of_a_removal() {
+    let mut h = harness();
+    let (_, pins) = three_pins(&mut h);
+    h.state_mut().remove_pin(0);
+    assert_eq!(h.state().doc.project().pins, pins[1..]);
+    h.state_mut().selection = Selection::Pin(1); // the pin at x = 350
+    // As the Edit menu does it, with no frame between: the pin at x = 150 is back as pin 0.
+    h.state_mut().undo();
+    assert_eq!(h.state().doc.project().pins, pins);
+    assert_eq!(
+        h.state().selection,
+        Selection::Pin(2),
+        "still the pin at x = 350"
+    );
+    h.state_mut().redo(); // the first pin goes again
+    assert_eq!(h.state().doc.project().pins, pins[1..]);
+    assert_eq!(h.state().selection, Selection::Pin(1));
+    // The same from the keyboard.
+    cmd(&mut h, Key::Z);
+    assert_eq!(h.state().selection, Selection::Pin(2));
+    cmd(&mut h, Key::Y);
+    assert_eq!(h.state().selection, Selection::Pin(1));
+    // The selected pin itself going leaves nothing selected.
+    h.state_mut().selection = Selection::Pin(0);
+    h.state_mut().remove_pin(0);
+    assert_eq!(h.state().selection, Selection::None, "its own pin went");
+}
+
+#[test]
+fn a_pin_added_is_the_one_selected() {
+    let mut h = harness();
+    let (front, pins) = three_pins(&mut h);
+    h.state_mut().selection = Selection::Pin(2);
+    h.state_mut().add_pin(pin(front, 200.0, 400.0));
+    assert_eq!(h.state().selection, Selection::Pin(3));
+    h.run();
+    assert_eq!(h.state().selection, Selection::Pin(3), "and stays so");
+    assert_eq!(h.state().doc.project().pins[..3], pins);
+}
+
+#[test]
+fn a_pin_lost_with_its_piece_renumbers_the_rest() {
+    let mut h = harness();
+    let (front, pins) = three_pins(&mut h);
+    let other = h.state_mut().doc.edit(|p| {
+        p.add_piece(Piece::rectangle(
+            PieceId(0),
+            "Other",
+            Point2::new(600.0, 100.0),
+            100.0,
+            100.0,
+        ))
+    });
+    let mut all = pins.clone();
+    all.insert(1, pin(other, 650.0, 150.0));
+    h.state_mut().doc.edit(|p| p.pins = all.clone());
+    h.run();
+    h.state_mut().selection = Selection::Pin(3); // the front's pin at x = 350
+    h.state_mut().doc.edit(|p| p.remove_piece(other));
+    h.run();
+    assert_eq!(h.state().doc.project().pins, pins);
+    assert_eq!(h.state().selection, Selection::Pin(2), "the same pin");
+    assert_eq!(h.state().doc.project().pieces[0].id, front);
+}
+
+#[test]
+fn a_new_project_lets_go_of_every_pin_held_by_number() {
+    let mut h = harness();
+    three_pins(&mut h);
+    h.state_mut().selection = Selection::Pin(1);
+    h.state_mut().take_pin_shifts();
+    h.state_mut()
+        .set_project(opendrape_core::Project::new(), None);
+    let shifts = h.state_mut().take_pin_shifts();
+    assert_eq!(shifts.len(), 1);
+    assert!((0..4).all(|k| shifts[0].index(k).is_none()));
+    assert!(h.state_mut().take_pin_shifts().is_empty(), "taken once");
+}

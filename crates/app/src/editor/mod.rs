@@ -16,7 +16,7 @@ mod sew_tool;
 mod view;
 
 pub use canvas::PenPoint;
-pub use document::{Document, UNDO_LIMIT};
+pub use document::{Document, PinShift, UNDO_LIMIT};
 pub(crate) use paint::PIN_COLOUR;
 pub use placing::DEFAULT_SHOULDER_M;
 pub use view::View;
@@ -196,6 +196,8 @@ pub struct PatternEditor {
     pub stage: Option<Arc<Stage>>,
     /// The garment is draping: placements don't apply until Reset, so they are not offered.
     pub draping: bool,
+    /// How pins were renumbered since the app last took them for the 3D view.
+    pin_shifts: Vec<PinShift>,
     canvas: canvas::CanvasState,
     panel: panel::PanelState,
     cache: cache::ShapeCache,
@@ -225,6 +227,7 @@ impl PatternEditor {
             notice: None,
             stage: None,
             draping: false,
+            pin_shifts: Vec::new(),
             canvas: canvas::CanvasState::default(),
             panel: panel::PanelState::default(),
             cache: cache::ShapeCache::default(),
@@ -244,6 +247,8 @@ impl PatternEditor {
             ..Self::new()
         };
         self.doc = Document::new(project, path);
+        // The old project's pins are gone, and with them whatever holds one in the 3D view.
+        self.pin_shifts.push(PinShift::none_kept());
     }
 
     /// Like [`Self::set_project`], for work restored from a recovery copy: it stays unsaved.
@@ -284,6 +289,7 @@ impl PatternEditor {
             self.canvas.drag = None;
             self.doc.undo();
         }
+        self.sync_pins();
         self.selection = self.selection.validated(self.doc.project());
         self.drop_stale_sew();
         self.drop_stale_free_sew();
@@ -297,6 +303,7 @@ impl PatternEditor {
             self.cancel_half_made_seam();
             self.doc.redo();
         }
+        self.sync_pins();
         self.selection = self.selection.validated(self.doc.project());
         self.drop_stale_sew();
         self.drop_stale_free_sew();
@@ -358,6 +365,7 @@ impl PatternEditor {
         if keys_free {
             self.shortcuts(ui);
         }
+        self.sync_pins();
         self.selection = self.selection.validated(self.doc.project());
         self.drop_stale_sew();
         self.drop_stale_free_sew();

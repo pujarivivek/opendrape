@@ -1,10 +1,69 @@
 //! The open project and its undo history.
 
-use opendrape_core::{ModelError, Project};
+use opendrape_core::{ModelError, Pin, Project};
 use std::path::PathBuf;
 
 /// Undo steps kept; older ones are dropped.
 pub const UNDO_LIMIT: usize = 200;
+
+/// How the pins' numbers changed when a change added or took away pins. A pin is known by its
+/// place in [`Project::pins`], so whatever holds one by number (the selection, a pin being
+/// dragged, a menu open on a pin) must follow it when pins before it go, and let go when its
+/// own pin does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PinShift {
+    /// For each number a pin had before, the number it has now; None when that pin is gone.
+    now: Vec<Option<usize>>,
+}
+
+impl PinShift {
+    /// Pins `before` and `after` a change, matched in order by what they are: the longest run
+    /// of pins that are the same in both. A pin the change also altered can't be told from a
+    /// gone one, and counts as gone (so what held it lets go rather than hold another).
+    pub fn between(before: &[Pin], after: &[Pin]) -> Self {
+        let (n, m) = (before.len(), after.len());
+        if n == m {
+            return Self {
+                now: (0..n).map(Some).collect(),
+            };
+        }
+        // The usual table of longest common runs, from the ends back to the starts.
+        let mut common = vec![vec![0u16; m + 1]; n + 1];
+        for i in (0..n).rev() {
+            for j in (0..m).rev() {
+                common[i][j] = if before[i] == after[j] {
+                    common[i + 1][j + 1] + 1
+                } else {
+                    common[i + 1][j].max(common[i][j + 1])
+                };
+            }
+        }
+        let mut now = vec![None; n];
+        let (mut i, mut j) = (0, 0);
+        while i < n && j < m {
+            if before[i] == after[j] {
+                now[i] = Some(j);
+                i += 1;
+                j += 1;
+            } else if common[i + 1][j] >= common[i][j + 1] {
+                i += 1;
+            } else {
+                j += 1;
+            }
+        }
+        Self { now }
+    }
+
+    /// Every pin is gone: the project was replaced.
+    pub fn none_kept() -> Self {
+        Self { now: Vec::new() }
+    }
+
+    /// The number pin `k` has now; None when it is gone.
+    pub fn index(&self, k: usize) -> Option<usize> {
+        self.now.get(k).copied().flatten()
+    }
+}
 
 /// The project being edited. Undo keeps whole snapshots of the project (a pattern is small), so
 /// there is no reverse-edit code to get wrong.
@@ -18,6 +77,8 @@ pub struct Document {
     saved: Project,
     /// Why the last [`Self::edit`] or [`Self::gesture_edit`] was refused; None if it was not.
     refused: Option<ModelError>,
+    /// How pins were renumbered by changes since [`Self::take_pin_shifts`] last asked.
+    pin_shifts: Vec<PinShift>,
     /// Where the project was last saved or opened from.
     pub path: Option<PathBuf>,
 }
@@ -37,6 +98,7 @@ impl Document {
             redo: Vec::new(),
             gesture: None,
             refused: None,
+            pin_shifts: Vec::new(),
             path,
         }
     }
@@ -65,8 +127,11 @@ impl Document {
         if self.refused.is_some() {
             // Never keep a project that could not be saved and opened again.
             self.project = before;
-        } else if self.project != before {
-            self.push_undo(before);
+        } else {
+            self.note_pins(&before.pins);
+            if self.project != before {
+                self.push_undo(before);
+            }
         }
         result
     }
@@ -96,6 +161,8 @@ impl Document {
         self.refused = self.project.check().err();
         if self.refused.is_some() {
             self.project = before;
+        } else {
+            self.note_pins(&before.pins);
         }
         result
     }
@@ -105,6 +172,17 @@ impl Document {
         {
             self.push_undo(before);
         }
+    }
+    /// Records how the pins were renumbered, if the project's pins are not as many as `before`.
+    fn note_pins(&mut self, before: &[Pin]) {
+        if before.len() != self.project.pins.len() {
+            self.pin_shifts
+                .push(PinShift::between(before, &self.project.pins));
+        }
+    }
+    /// How pins were renumbered by the changes since this was last asked, oldest first.
+    pub fn take_pin_shifts(&mut self) -> Vec<PinShift> {
+        std::mem::take(&mut self.pin_shifts)
     }
     fn push_undo(&mut self, before: Project) {
         self.undo.push(before);
@@ -118,8 +196,9 @@ impl Document {
         let Some(previous) = self.undo.pop() else {
             return false;
         };
-        self.redo
-            .push(std::mem::replace(&mut self.project, previous));
+        let now = std::mem::replace(&mut self.project, previous);
+        self.note_pins(&now.pins);
+        self.redo.push(now);
         true
     }
     pub fn redo(&mut self) -> bool {
@@ -127,7 +206,9 @@ impl Document {
         let Some(next) = self.redo.pop() else {
             return false;
         };
-        self.undo.push(std::mem::replace(&mut self.project, next));
+        let was = std::mem::replace(&mut self.project, next);
+        self.note_pins(&was.pins);
+        self.undo.push(was);
         true
     }
     pub fn can_undo(&self) -> bool {
@@ -149,7 +230,7 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opendrape_core::{Piece, PieceId, Point2};
+    use opendrape_core::{Piece, PieceId, Pin, Point2};
 
     fn rect() -> Piece {
         Piece::rectangle(PieceId(0), "R", Point2::new(0.0, 0.0), 100.0, 50.0)
@@ -361,5 +442,107 @@ mod tests {
         assert_eq!(steps(&mut doc), 3, "in the same step");
         doc.undo();
         assert_eq!(doc.project().seams.len(), 1, "undo brings both back");
+    }
+
+    fn pin(x: f64) -> Pin {
+        Pin {
+            shape: PieceId(1),
+            half: opendrape_core::Half::Drawn,
+            at: Point2::new(x, 10.0),
+            target: [0.0, 1.0, 0.5],
+        }
+    }
+
+    /// Where each of pins `0..n` went, as a list.
+    fn went(shift: &PinShift, n: usize) -> Vec<Option<usize>> {
+        (0..n).map(|k| shift.index(k)).collect()
+    }
+
+    #[test]
+    fn pins_after_a_removed_one_move_down_and_it_is_gone() {
+        let (a, b, c) = (pin(10.0), pin(20.0), pin(30.0));
+        assert_eq!(
+            went(&PinShift::between(&[a, b, c], &[a, c]), 4),
+            vec![Some(0), None, Some(1), None],
+            "the middle one went; nothing is numbered past the end"
+        );
+        assert_eq!(
+            went(&PinShift::between(&[a, b, c], &[b, c]), 3),
+            vec![None, Some(0), Some(1)]
+        );
+        assert_eq!(
+            went(&PinShift::between(&[a, b, c], &[a, b]), 3),
+            vec![Some(0), Some(1), None]
+        );
+        // Put back (an undo): the ones after it move up.
+        assert_eq!(
+            went(&PinShift::between(&[b, c], &[a, b, c]), 2),
+            vec![Some(1), Some(2)]
+        );
+        // Two pins alike: whichever went, the others keep their order.
+        assert_eq!(
+            went(&PinShift::between(&[a, b, a], &[b, a]), 3),
+            vec![None, Some(0), Some(1)]
+        );
+        // A pin the change also altered counts as gone, not as another pin.
+        let moved = Pin {
+            target: [0.5, 1.0, 0.5],
+            ..b
+        };
+        assert_eq!(
+            went(&PinShift::between(&[a, b, c], &[moved, c]), 3),
+            vec![None, None, Some(1)]
+        );
+        // As many pins as before: the same pins, whatever was done to them.
+        assert_eq!(
+            went(&PinShift::between(&[a, b], &[moved, b]), 2),
+            vec![Some(0), Some(1)]
+        );
+        assert_eq!(went(&PinShift::none_kept(), 2), vec![None, None]);
+    }
+
+    #[test]
+    fn every_way_the_pins_change_is_recorded_as_a_shift() {
+        let mut doc = Document::default();
+        let id = doc.edit(|p| {
+            let id = p.add_piece(rect());
+            p.pins = vec![pin(10.0), pin(20.0), pin(30.0)];
+            id
+        });
+        assert_eq!(doc.take_pin_shifts().len(), 1, "three pins came");
+        assert!(doc.take_pin_shifts().is_empty(), "asked once");
+        // A removal.
+        doc.edit(|p| {
+            p.pins.remove(0);
+        });
+        let shifts = doc.take_pin_shifts();
+        assert_eq!(went(&shifts[0], 3), vec![None, Some(0), Some(1)]);
+        // Undo brings it back, redo takes it away again.
+        doc.undo();
+        let shifts = doc.take_pin_shifts();
+        assert_eq!(went(&shifts[0], 2), vec![Some(1), Some(2)]);
+        doc.redo();
+        let shifts = doc.take_pin_shifts();
+        assert_eq!(went(&shifts[0], 3), vec![None, Some(0), Some(1)]);
+        // A pin dragged, or a change that leaves them as many: no shift.
+        doc.gesture_edit(|p| p.pins[0].target = [0.1, 1.0, 0.5]);
+        doc.end_gesture();
+        doc.edit(|p| p.pins[1].target = [0.2, 1.0, 0.5]);
+        assert!(doc.take_pin_shifts().is_empty());
+        // A change a gesture makes counts as it is made.
+        doc.gesture_edit(|p| {
+            p.pins.pop();
+        });
+        doc.end_gesture();
+        assert_eq!(went(&doc.take_pin_shifts()[0], 2), vec![Some(0), None]);
+        // A pin lost with its piece, and a change that is refused (too many pins): no shift.
+        doc.edit(|p| p.remove_piece(id));
+        assert!(doc.project().pins.is_empty());
+        assert_eq!(went(&doc.take_pin_shifts()[0], 1), vec![None]);
+        doc.undo();
+        doc.take_pin_shifts();
+        doc.edit(|p| p.pins = vec![pin(10.0); 501]);
+        assert!(doc.last_change_refused());
+        assert!(doc.take_pin_shifts().is_empty());
     }
 }

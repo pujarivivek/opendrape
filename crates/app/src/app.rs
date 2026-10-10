@@ -247,6 +247,11 @@ impl OpenDrapeApp {
         &self.arranger
     }
 
+    /// What the pointer does in the 3D view while draping: a grab or pin move in progress.
+    pub fn draper(&self) -> &Draper {
+        &self.draper
+    }
+
     /// The 3D view's camera and rectangle as last drawn.
     pub fn view_camera(&self) -> Option<ScreenCamera> {
         self.view_camera
@@ -372,6 +377,11 @@ impl OpenDrapeApp {
     /// The 3D view: its toolbar and notes, the form with the pieces being arranged or the
     /// drape, and the speed overlay.
     fn view_3d(&mut self, ui: &mut egui::Ui, frame: &eframe::Frame) {
+        // A pin taken away (or brought back by an undo) renumbers the others: a pin being
+        // moved here and the menu on a pin follow theirs.
+        for shift in self.editor.take_pin_shifts() {
+            self.draper.pins_shifted(&shift, &mut self.editor.doc);
+        }
         self.update_if_edited();
         // Kept up to date while draping too: the project doesn't change then, so it costs
         // nothing, and Reset shows the pieces at once. Made before the notes are shown, so that
@@ -411,6 +421,9 @@ impl OpenDrapeApp {
         let drawn = viewport.ui(ui, rs, show);
         match (&drawn, &sim) {
             (Some(drawn), _) if !draping => {
+                // The drape ended (Reset, or it went wrong) under a held grab or pin move: the
+                // press is over, and the camera is free at once.
+                self.stop_pulling();
                 self.arrange(ui, &drawn.response, &drawn.camera, &scene)
             }
             (Some(drawn), Some(frame)) => {
@@ -496,6 +509,11 @@ impl OpenDrapeApp {
         let at = |p: egui::Pos2| glam::DVec2::new(f64::from(p.x), f64::from(p.y));
         let editor = &mut self.editor;
         let mut pulls = Vec::new();
+        // Esc gives a pull or a pin move up: the pin goes back, with no undo step. The pattern
+        // window did not hear it (see `ui`).
+        if self.draper.is_dragging() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            pulls.extend(self.draper.cancel(&mut editor.doc));
+        }
         if response.drag_started_by(egui::PointerButton::Primary)
             && let Some(p) = ui.input(|i| i.pointer.press_origin())
         {
@@ -1103,9 +1121,10 @@ impl eframe::App for OpenDrapeApp {
             0.9 * self.fps + 0.1 / dt
         };
         let width = ui.available_width();
-        // Decided before the 3D view has run: Escape that gives a gizmo drag up, or an Undo or
-        // Delete typed while it is held, is not also the pattern table's.
-        let gizmo_drag = self.arranger.is_dragging();
+        // Decided before the 3D view has run: Escape that gives a drag in the 3D view up (a
+        // gizmo handle, a pin, the fabric), or an Undo or Delete typed while one is held, is not
+        // also the pattern table's.
+        let view_drag = self.arranger.is_dragging() || self.draper.is_dragging();
         egui::Panel::left("view_3d")
             .resizable(true)
             .default_size(width * 0.42)
@@ -1114,7 +1133,7 @@ impl eframe::App for OpenDrapeApp {
         // Decided here, before the question or message box below has run: when one of them is
         // closed by Escape this frame, that Escape must not reach the pattern table too.
         let keys_for_pattern =
-            self.pending.is_none() && self.error.is_none() && self.offered.is_none() && !gizmo_drag;
+            self.pending.is_none() && self.error.is_none() && self.offered.is_none() && !view_drag;
         egui::CentralPanel::default().show(ui, |ui| self.editor.ui_with_keys(ui, keys_for_pattern));
         self.unsaved_changes_modal(frame, &ctx);
         self.error_modal(&ctx);

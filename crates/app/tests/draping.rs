@@ -5,7 +5,7 @@ use glam::{DVec2, DVec3, Vec3};
 use opendrape::SimFrame;
 use opendrape::arrange::ScreenCamera;
 use opendrape::draping::{Draper, MenuAt, Pull};
-use opendrape::editor::{Document, Selection};
+use opendrape::editor::{Document, PinShift, Selection};
 use opendrape::sim_runner::SimRunner;
 use opendrape_core::{Half, Piece, PieceId, Pin, Placement, Point2, Project};
 use opendrape_drape::{Drape, Stage};
@@ -161,6 +161,155 @@ fn a_pin_marker_is_dragged_as_one_undo_step_selected_by_a_click_and_removed_from
     assert_eq!(selection, Selection::Pin(0));
     draper.secondary_click(&camera(), &frame, doc.project(), on_screen);
     assert_eq!(draper.menu, Some(MenuAt::Pin(0)));
+}
+
+/// Three pins on the front's right half at x = 50, 150 and 250 mm, 300 mm up, held where the
+/// fabric is.
+fn three_pins() -> (Project, Vec<DVec2>) {
+    let mut pr = front();
+    let mut on_screen = Vec::new();
+    for x in [50.0, 150.0, 250.0] {
+        let (at, shown) = spot(x, 300.0);
+        pr.pins.push(Pin {
+            shape: PieceId(1),
+            half: Half::Drawn,
+            at: Point2::new(x, 300.0),
+            target: at.to_array(),
+        });
+        on_screen.push(shown);
+    }
+    (pr, on_screen)
+}
+
+#[test]
+fn escape_gives_a_pin_move_up_the_pin_goes_back_and_there_is_no_undo_step() {
+    let (pr, on_screen) = three_pins();
+    let frame = first_frame(&pr);
+    let mut doc = Document::new(pr.clone(), None);
+    let mut draper = Draper::default();
+    assert_eq!(
+        draper.press(&camera(), &frame, &mut doc, on_screen[1]),
+        None
+    );
+    for k in 1..=4 {
+        draper.drag_to(
+            &camera(),
+            &mut doc,
+            on_screen[1] + DVec2::new(0.0, -10.0 * f64::from(k)),
+        );
+    }
+    assert_ne!(
+        doc.project().pins[1].target,
+        pr.pins[1].target,
+        "it followed"
+    );
+    assert_eq!(
+        draper.cancel(&mut doc),
+        None,
+        "a pin move asks nothing of the cloth"
+    );
+    assert_eq!(*doc.project(), pr, "back where it was held");
+    assert!(!doc.can_undo(), "and no step was made");
+    // The press is still down, and still the 3D view's: it does nothing more, and its
+    // release makes no step either.
+    assert!(draper.is_dragging());
+    let more = on_screen[1] + DVec2::new(30.0, -50.0);
+    assert_eq!(draper.drag_to(&camera(), &mut doc, more), None);
+    assert_eq!(draper.release(&mut doc), None);
+    assert_eq!(*doc.project(), pr);
+    assert!(!doc.can_undo());
+    assert!(!draper.is_dragging(), "the next press is a new one");
+}
+
+#[test]
+fn escape_lets_go_of_a_grab_once() {
+    let pr = front();
+    let frame = first_frame(&pr);
+    let mut doc = Document::new(pr, None);
+    let mut draper = Draper::default();
+    let (_, on_screen) = spot(100.0, 300.0);
+    assert!(matches!(
+        draper.press(&camera(), &frame, &mut doc, on_screen),
+        Some(Pull::Grab { .. })
+    ));
+    assert_eq!(draper.cancel(&mut doc), Some(Pull::Release));
+    assert!(
+        draper.is_dragging(),
+        "the press goes on until the button is up"
+    );
+    assert_eq!(
+        draper.drag_to(&camera(), &mut doc, on_screen + DVec2::new(20.0, 0.0)),
+        None,
+        "it pulls nothing now"
+    );
+    assert_eq!(draper.cancel(&mut doc), None, "nothing left to give up");
+    assert_eq!(
+        draper.release(&mut doc),
+        None,
+        "and nothing to let go twice"
+    );
+    assert!(!draper.is_dragging());
+    assert!(!doc.can_undo());
+}
+
+#[test]
+fn a_pin_move_and_a_pin_menu_follow_their_pin_when_pins_before_it_are_taken_away() {
+    let (pr, on_screen) = three_pins();
+    let frame = first_frame(&pr);
+    let mut doc = Document::new(pr.clone(), None);
+    let mut draper = Draper::default();
+    // Pin 2 is being moved when pin 0 is taken away: it is pin 1 now, and the move goes on
+    // with it, not with the pin that took its number.
+    draper.press(&camera(), &frame, &mut doc, on_screen[2]);
+    draper.drag_to(&camera(), &mut doc, on_screen[2] + DVec2::new(0.0, -20.0));
+    let so_far = DVec3::from_array(doc.project().pins[2].target);
+    assert!(so_far.y > DVec3::from_array(pr.pins[2].target).y + 0.02);
+    doc.edit(|p| {
+        p.pins.remove(0);
+    });
+    for shift in doc.take_pin_shifts() {
+        draper.pins_shifted(&shift, &mut doc);
+    }
+    draper.drag_to(&camera(), &mut doc, on_screen[2] + DVec2::new(0.0, -60.0));
+    let pins = &doc.project().pins;
+    assert_eq!(pins.len(), 2);
+    assert_eq!(
+        pins[0].target, pr.pins[1].target,
+        "the other pin was not touched"
+    );
+    let moved = DVec3::from_array(pins[1].target);
+    assert!(
+        moved.y > so_far.y + 0.03,
+        "the pin it began with was moved on: {moved}"
+    );
+    // Its own pin going ends the move.
+    doc.edit(|p| {
+        p.pins.remove(1);
+    });
+    for shift in doc.take_pin_shifts() {
+        draper.pins_shifted(&shift, &mut doc);
+    }
+    assert!(!draper.is_dragging());
+    assert_eq!(draper.drag_to(&camera(), &mut doc, on_screen[2]), None);
+    assert_eq!(doc.project().pins.len(), 1);
+    assert_eq!(
+        doc.project().pins[0].target,
+        pr.pins[1].target,
+        "no pin was moved"
+    );
+    // A menu on a pin follows it, or goes with it.
+    draper.menu = Some(MenuAt::Pin(2));
+    draper.pins_shifted(&PinShift::between(&pr.pins, &pr.pins[1..]), &mut doc);
+    assert_eq!(draper.menu, Some(MenuAt::Pin(1)));
+    draper.pins_shifted(&PinShift::between(&pr.pins[1..], &pr.pins[..1]), &mut doc);
+    assert_eq!(draper.menu, None, "its pin is gone");
+    draper.menu = Some(MenuAt::Fabric(pr.pins[0]));
+    draper.pins_shifted(&PinShift::none_kept(), &mut doc);
+    assert_eq!(
+        draper.menu,
+        Some(MenuAt::Fabric(pr.pins[0])),
+        "Pin here is for a spot of fabric, not for a pin"
+    );
 }
 
 fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {

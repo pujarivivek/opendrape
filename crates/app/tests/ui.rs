@@ -2180,3 +2180,155 @@ fn a_ring_taken_by_its_far_half_turns_with_the_point_held_in_every_view_the_app_
     }
     assert!(far_halves.len() >= 8, "{far_halves:?}");
 }
+
+// Pulling the fabric and moving a pin in the 3D view of the real app (drawn off-screen): the
+// view owns the keys and the camera while the button is down. The maths and the undo steps are
+// tested without a window in `tests/draping.rs`.
+
+/// A 300 × 400 mm piece hanging upright in front of the form, its top-left corner pinned where
+/// it hangs, and Play pressed; steps until the drape has a frame.
+fn draping_with_a_pin(h: &mut App) -> opendrape_core::Pin {
+    let pin = opendrape_core::Pin {
+        shape: PieceId(1),
+        half: Half::Drawn,
+        at: Point2::new(0.0, 400.0),
+        target: [-0.15, 1.2, 0.5],
+    };
+    h.state_mut().editor_mut().doc.edit(|p| {
+        let id = p.add_piece(Piece::rectangle(
+            PieceId(0),
+            "Front",
+            Point2::new(0.0, 0.0),
+            300.0,
+            400.0,
+        ));
+        p.set_placement(id, Some(opendrape_core::Placement::at([0.0, 1.0, 0.5])));
+        p.pins = vec![pin];
+    });
+    h.run();
+    h.get_by_label("Play").click();
+    h.run_steps(2);
+    wait_until(h, "the drape", |a| a.sim_frame().is_some());
+    h.run_steps(1);
+    pin
+}
+
+fn pins_now(h: &App) -> Vec<opendrape_core::Pin> {
+    h.state().editor().doc.project().pins.clone()
+}
+
+#[test]
+fn escape_gives_a_pin_move_in_3d_up_and_undo_and_delete_wait_until_it_is_let_go() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    let pin = draping_with_a_pin(&mut h);
+    h.state_mut().editor_mut().selection = Selection::Pin(0);
+    h.step();
+    let cam = h.state().view_camera().expect("the 3D view was drawn");
+    let marker = cam.project(glam::DVec3::from_array(pin.target)).unwrap();
+    let to = marker + DVec2::new(0.0, -40.0);
+    grab_and_pull(&mut h, marker, to);
+    assert!(h.state().draper().is_dragging());
+    let moved = pins_now(&h)[0].target;
+    assert_ne!(moved, pin.target, "the pin follows the pointer");
+    // Cmd+Z and Delete are not the pattern window's now.
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.step();
+    h.key_press(egui::Key::Delete);
+    h.step();
+    assert_eq!(pins_now(&h).len(), 1, "Delete took no pin");
+    assert_eq!(pins_now(&h)[0].target, moved, "and Cmd+Z undid nothing");
+    assert!(h.state().draper().is_dragging());
+    // Escape gives the move up: the pin goes back and Escape did not clear the selection.
+    h.key_press(egui::Key::Escape);
+    h.step();
+    assert_eq!(pins_now(&h), vec![pin]);
+    assert_eq!(h.state().editor().selection, Selection::Pin(0));
+    // The pointer going on, and letting go, change nothing.
+    for k in 1..=4 {
+        h.hover_at(screen(to + DVec2::new(15.0 * f64::from(k), 0.0)));
+        h.step();
+    }
+    assert_eq!(pins_now(&h), vec![pin]);
+    let_go(&mut h, to + DVec2::new(60.0, 0.0));
+    assert!(!h.state().draper().is_dragging());
+    assert_eq!(pins_now(&h), vec![pin]);
+    // The last step in the history is the piece and its pin being set up: Cmd+Z undoes that.
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.step();
+    assert!(pins_now(&h).is_empty(), "no step of the move was made");
+}
+
+#[test]
+fn undo_and_delete_wait_while_the_fabric_is_pulled_and_escape_lets_go() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    draping_with_a_pin(&mut h);
+    h.state_mut().editor_mut().selection = Selection::Piece(PieceId(1));
+    h.step();
+    let cam = h.state().view_camera().expect("the 3D view was drawn");
+    let from = cam.project(glam::DVec3::new(0.0, 1.0, 0.5)).unwrap();
+    grab_and_pull(&mut h, from, from + DVec2::new(0.0, -30.0));
+    assert!(h.state().draper().is_dragging(), "the fabric is held");
+    h.key_press(egui::Key::Delete);
+    h.step();
+    assert_eq!(
+        pieces(&h),
+        1,
+        "Delete took no piece while the fabric is pulled"
+    );
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.step();
+    assert_eq!(pieces(&h), 1, "and Cmd+Z undid nothing");
+    h.key_press(egui::Key::Escape);
+    h.step();
+    assert_eq!(
+        h.state().editor().selection,
+        Selection::Piece(PieceId(1)),
+        "Escape was the pull's"
+    );
+    let_go(&mut h, from + DVec2::new(0.0, -30.0));
+    assert!(!h.state().draper().is_dragging());
+    // Let go, Delete is the pattern window's again.
+    h.key_press(egui::Key::Delete);
+    h.step();
+    assert_eq!(pieces(&h), 0);
+}
+
+#[test]
+fn the_camera_is_free_at_once_when_the_drape_ends_under_a_held_pull() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    draping_with_a_pin(&mut h);
+    let cam = h.state().view_camera().expect("the 3D view was drawn");
+    let from = cam.project(glam::DVec3::new(0.0, 1.0, 0.5)).unwrap();
+    grab_and_pull(&mut h, from, from + DVec2::new(0.0, -30.0));
+    assert!(h.state().draper().is_dragging());
+    // Reset, with the button still down (clicking it by accessibility does not move the pointer).
+    h.get_by_label("Reset").click();
+    h.run_steps(3);
+    assert!(!h.state().is_draping());
+    assert!(
+        !h.state().draper().is_dragging(),
+        "the pull ended with the drape"
+    );
+    let_go(&mut h, from + DVec2::new(0.0, -30.0));
+    // A drag beside the form turns the camera.
+    let (corner, _) = cam.rect();
+    let yaw = h.state().orbit_camera().unwrap().yaw;
+    let start = corner + DVec2::new(8.0, 8.0);
+    h.hover_at(screen(start));
+    h.step();
+    pointer_button(&mut h, start, true);
+    h.step();
+    for k in 1..=4 {
+        h.hover_at(screen(start + DVec2::new(10.0 * f64::from(k), 0.0)));
+        h.step();
+    }
+    pointer_button(&mut h, start + DVec2::new(40.0, 0.0), false);
+    h.step();
+    assert_ne!(h.state().orbit_camera().unwrap().yaw, yaw, "it turned");
+}

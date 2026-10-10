@@ -11,7 +11,7 @@
 
 use crate::arrange::ScreenCamera;
 use crate::arrange::gizmo::{GRAB_PT, plane_drag};
-use crate::editor::{Document, Selection};
+use crate::editor::{Document, PinShift, Selection};
 use crate::sim_runner::SimFrame;
 use glam::{DVec2, DVec3};
 use opendrape_core::{Pin, Project};
@@ -68,6 +68,9 @@ enum Drag {
 #[derive(Default)]
 pub struct Draper {
     drag: Option<Drag>,
+    /// A drag was given up (Esc) and the button is still down: the rest of that press does
+    /// nothing, and the 3D view still owns the keys and the camera, until it is let go.
+    given_up: bool,
     /// What the last right-click was on: the 3D view's menu is for it.
     pub menu: Option<MenuAt>,
 }
@@ -143,9 +146,11 @@ pub fn pin_here(project: &Project, fabric: &Fabric, hit: &FabricHit) -> Option<P
 }
 
 impl Draper {
-    /// A pin is being moved, or the fabric pulled: the camera stays put.
+    /// A pin is being moved, or the fabric pulled (or that was given up and the button is
+    /// still down): the camera stays put, and the keys are the 3D view's, not the pattern
+    /// window's.
     pub fn is_dragging(&self) -> bool {
-        self.drag.is_some()
+        self.drag.is_some() || self.given_up
     }
 
     /// The primary button went down at `pos`. On a pin's marker it starts moving the pin
@@ -158,6 +163,7 @@ impl Draper {
         doc: &mut Document,
         pos: DVec2,
     ) -> Option<Pull> {
+        self.given_up = false;
         if let Some(index) = pin_at(cam, doc.project(), pos) {
             doc.begin_gesture();
             self.drag = Some(Drag::Pin {
@@ -209,11 +215,50 @@ impl Draper {
 
     /// The button came up: a grab lets go; a pin's move is one undo step.
     pub fn release(&mut self, doc: &mut Document) -> Option<Pull> {
+        self.given_up = false;
         match self.drag.take()? {
             Drag::Grab { .. } => Some(Pull::Release),
             Drag::Pin { .. } => {
                 doc.end_gesture();
                 None
+            }
+        }
+    }
+
+    /// The drag is given up (Esc): a grab lets go, and a pin goes back to where it was held
+    /// when the press began, with no undo step. The press goes on doing nothing until the
+    /// button comes up.
+    pub fn cancel(&mut self, doc: &mut Document) -> Option<Pull> {
+        let drag = self.drag.take()?;
+        self.given_up = true;
+        match drag {
+            Drag::Grab { .. } => Some(Pull::Release),
+            Drag::Pin { index, target, .. } => {
+                doc.gesture_edit(|p| {
+                    if let Some(pin) = p.pins.get_mut(index) {
+                        pin.target = target.to_array();
+                    }
+                });
+                doc.end_gesture();
+                None
+            }
+        }
+    }
+
+    /// Pins were renumbered (see [`PinShift`]): the pin being moved and the pin the menu is
+    /// open on stay the same pins, or are let go with them. A pin move that loses its pin ends
+    /// where it is.
+    pub fn pins_shifted(&mut self, shift: &PinShift, doc: &mut Document) {
+        if let Some(MenuAt::Pin(k)) = self.menu {
+            self.menu = shift.index(k).map(MenuAt::Pin);
+        }
+        if let Some(Drag::Pin { index, .. }) = &mut self.drag {
+            match shift.index(*index) {
+                Some(k) => *index = k,
+                None => {
+                    self.drag = None;
+                    doc.end_gesture();
+                }
             }
         }
     }
