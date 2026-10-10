@@ -39,6 +39,167 @@
 - **No new CI job.** The bundled-form validation tests live in `crates/body/tests/forms.rs` and run in the existing `test` job on all three OSes.
 - **`CompoundCollider` picks the nearest way out** when a particle is inside several parts. The spec's "deepest plane" would push it through the far side.
 
+## Revision 2 (2026-10-10): what changed after the forms were approved
+
+The task texts below were written before the shapes were finished. Where this section and a task
+disagree, **this section wins**; everything a task says that this section doesn't touch still
+holds.
+
+**Done: Tasks 1 and 2.** The user approved the women's form (size 8) and the men's form
+(size 40), and both are exported:
+- `scripts/forms/loft_base.py` builds a form as a signed-distance shape: a lofted body, a
+  forward-leaning neck joined with fillets, flat armhole plates, a slanted neck cut. It computes
+  the tape lines and landmarks itself and stores them in the `.blend` as `tape.*` curves and
+  `lm.*` empties.
+- `scripts/forms/export_form.py` writes `assets/forms/<id>.form.json`.
+- `scripts/forms/render_views.py` makes review pictures: linen, sewn seams, a label, a neck cap,
+  a pole and a round base.
+- `scripts/forms/measure_form.py` measures a form the way the book does. It is a developer tool,
+  and the book's targets stay private.
+- `scripts/forms/blender.sh loft|render|export <ids>` runs these headless. The `.blend` files are
+  build products in `target/forms/build/`, not committed: `loft_base.py` is the master.
+
+**The arms are dropped** (the user's decision: "make the torso perfect first").
+- No soft arm, `soft-arm.*`, `Kind::Arm`, `ArmAttach`, `arm` key, `ARM_LENGTHS`,
+  `ARM_STATIONS`, `Arms`, `Side`, `BuiltArm`, `place_arm`, `upper_arm` or `arm_length`
+  anywhere.
+- `Kind` keeps only `Torso`: the key stays in the file for future parts.
+- `Form::new(torso: FormFile)` takes one file; `build(&self, &Measurements, Quality)`.
+- `BuiltForm` loses `arms`.
+- Review Focus item 3 and every arm test go.
+
+**The real files** (`assets/forms/women-torso.form.json`, `men-torso.form.json`): about 100 rings
+× 49 radii.
+- **Women's stations:** bottom, hip, high_hip, waist, under_bust, bust, shoulder, neck. **Men's:**
+  bottom, hip, high_hip, waist, chest, shoulder, neck.
+- **15 landmarks:** armhole_back, armhole_bottom, armhole_front, back_neck, back_waist,
+  bust_apex (on the men's form, the middle of the chest), cb_blade, cb_bottom, cf_bottom,
+  front_neck, front_waist, plate_centre, shoulder_blade, shoulder_point, side_neck.
+- **Each file has `"stand": {"pole_xz": [x, z], "neck_cut": {"y": m, "tilt_deg": deg}}`.** The
+  pole is the vertical line through (x, z). The neck is cut by a plane through the pole at
+  height `y`, lower at the front by `tilt_deg`: points with `z > (y_cut − y)/tan(tilt)` are
+  cut away. The top rings already follow the cut.
+- **Base sizes:**
+  - women's "US 8": bust 889, under-bust 755, waist 673, hip 928, neck 357 mm;
+  - men's "40": chest 1024, waist 838, hip 1015, neck 400 mm.
+
+**Tape lines are sampled, not built from landmarks** (Task 3, Task 5).
+- `TapeDef` becomes:
+  ```rust
+  #[serde(untagged)]
+  pub enum TapeDef {
+      Ring { ring: String },
+      Samples { uv: Vec<[f64; 2]>, #[serde(default)] closed: bool, #[serde(default)] mirror: bool },
+  }
+  ```
+  - `uv` holds [phi, v] pairs: phi in radians, 0..2π, from centre front towards +x; v from 0
+    (bottom ring) to 1 (top). They sit about 2–4 mm apart.
+  - phi may cross 2π: for example, `neckline_front` runs from the right side through centre
+    front to the left.
+  - `mirror: true` also draws `2π − phi` as `<name>_R`.
+- **`check()`:**
+  - A `Samples` tape needs at least 2 points (3 if closed), every value finite, phi in
+    [0, 2π] and v in [0, 1].
+  - `Path`/anchor checks go.
+- **`Tape`** is `{ name, closed, uv: Vec<DVec2>, points: Vec<DVec3> }`: no `anchors`, no
+  Catmull-Rom. Points are `rings.point(phi, v)` for each sample, so tapes move with the rings
+  when a form is resized.
+  - `rings.point` and `normal` must accept any phi, wrapping it into 0..2π.
+- **`Tape::length()`** is the whole polyline. **`Tape::length_between(from: Span, to: Span)`**
+  measures between two places on the tape:
+  ```rust
+  pub enum Span { Start, End, Height(f64) }
+  ```
+  - `Height(y)` is the first point where the tape crosses that height, interpolated between
+    samples.
+  - It returns `None` if the tape never reaches the height. Either order gives the same length.
+- `tape::landmark_uv` stays (for `_R` landmark positions).
+- Ribbons are built exactly as written, from the points.
+
+**Lengths** (Task 3 constant, used by Tasks 6–7). They are measured along a tape between two
+spans, where a station name means `Span::Height` of that station's ring:
+```rust
+pub const TORSO_LENGTHS: [(&str, &str, &str, &str); 4] = [
+    ("back_waist_length", "cb", "start", "waist"),
+    ("waist_to_hip", "side_seam", "waist", "hip"),
+    ("shoulder_length", "shoulder_seam", "start", "end"),
+    ("front_waist_length", "cf", "start", "waist"),
+];
+pub const ADJUSTABLE_LENGTHS: [&str; 3] = ["back_waist_length", "waist_to_hip", "shoulder_length"];
+```
+- "start" and "end" are the tape's first and last samples. `cb` and `cf` start at the neck, and
+  `shoulder_seam` runs from the side neck point to the shoulder tip.
+- `check()` requires each length's tape to exist as `Samples`, and each named station to exist.
+- `back_width` is dropped: the forms no longer carry a back-width tape.
+
+**The fixture** (Task 3).
+- It keeps the synthetic elliptical rings and the stations. It uses landmarks with the 15 names
+  above, at sensible angles and heights.
+- It writes its own sampled tapes instead of reading the meta's (the meta files hold only
+  `{"curve": true}` markers). Each tape is a straight line in (phi, v), sampled 40 times:
+  - `cf`: phi 0, from front_neck down to cf_bottom;
+  - `cb`: phi π, from back_neck down to cb_bottom;
+  - `side_seam`: phi of armhole_bottom, from armhole_bottom down to the bottom ring;
+  - `shoulder_seam` (mirror): side_neck to shoulder_point;
+  - `armhole` (closed, mirror): an ellipse in (phi, v) round plate_centre, through
+    armhole_front, armhole_bottom and armhole_back;
+  - `neckline_front`: phi from 2π − side_neck's phi through 0 to side_neck's phi, at
+    front_neck's v rising to side_neck's;
+  - `neckline_back`: side_neck → π → mirror;
+  - `princess_front` (mirror) and `princess_back` (mirror): through bust_apex (and
+    shoulder_blade) down to the bottom;
+  - ring tapes for each girth station.
+- It reads `inputs`, `ranges` and `collision` from `assets-src/forms/women-torso.meta.json` and
+  adds `"stand": {"pole_xz": [0, 0], "neck_cut": {"y": 1.52, "tilt_deg": 17}}`.
+
+**The stand** (Task 7), drawn and not collided, in place of the plan's four cylinders:
+- **a neck cap:** a disc lying on the slanted cut plane, covering the top ring's outline plus
+  2.5 mm, 4 mm thick, with a 22 mm collar hanging below its rim;
+- **a rod and knob** on the pole axis above the cap: a 6 mm-radius rod 24 mm tall, and a 16 mm
+  sphere-ish knob (a short cylinder is fine);
+- **the pole:** 13 mm radius, from the floor to the bottom ring, on `pole_xz`;
+- **a round base:** a 164 mm-radius disc, 26 mm tall, on the floor (y = 0).
+
+Every piece is closed and outward-wound (`boundary_edge_count == 0`).
+
+**`measured`** (Task 7) holds:
+- every input;
+- every ring-tape station (e.g. `high_hip`, and `under_bust` or `chest` when it isn't an input);
+- `front_waist_length`;
+- `apex_to_apex`, only on forms with a `bust` station.
+
+**Charts** (Task 8). The four chart files stay as written, minus the `upper_arm` and
+`arm_length` keys. `base_size` in each form file names the chart row nearest its own shape.
+
+**The collider** (Task 9) is the torso plus the floor. `CompoundCollider` keeps its list of
+parts, for later arms and legs. The arm tests become a second synthetic box overlapping the
+first.
+- **The `Collider` trait is not changed.** M4's `crates/drape` implements `Collider` for its own
+  `BodyAndFloor`, so a new required method would break a crate Track A may not touch.
+- Instead `crates/sim` adds:
+  ```rust
+  pub trait Solid: Collider { fn signed_distance(&self, p: DVec3) -> f64; }
+  ```
+  - It is implemented for `BodyCollider` (forwarding to its existing inherent method) and for
+    `CompoundCollider`.
+  - It is exported from `opendrape_sim`.
+- Wherever Task 9 or 10 says `&dyn Collider` for measuring (`metrics::measure`,
+  `metrics::run_solver`, `Scene::collider`), read `&dyn Solid`.
+
+**The drape tests** (Task 10):
+- `forms::{collider, skirt, bodice_proxy, long_hem}` (no `sleeve`);
+- the skirt and tube on the women's form at the smallest, middle and largest size of both its
+  charts;
+- the tube on the men's form at its smallest, middle and largest Classic sizes;
+- the long hem resting on the floor.
+
+**The codebase moved on.** `main` (merged into this branch on 2026-10-10) now has M2b, M4a and
+M4b.
+- "All 225 current tests" means **every test that passes on this branch today**.
+- `crates/drape` (M4) also builds on `opendrape-body` and `opendrape-sim`: keep its APIs working.
+- Track A still must not touch `crates/core`, `crates/geom`, `crates/io`, `crates/app` or
+  `crates/drape`.
+
 ## Global Constraints
 
 - **Never launch the OpenDrape app, or anything that opens a window or dialog, on the user's Mac without asking first.**

@@ -1,0 +1,27 @@
+{
+  "id": "women-torso",
+  "kind": "torso",
+  "name": "form-women-torso",
+  "suits": ["dresses", "tops", "blouses", "skirts", "kurtas"],
+  "licence": "CC0-1.0",
+  "base_size": "US 8",
+  "tapes": {
+    "cf": {"curve": true},
+    "cb": {"curve": true},
+    "neckline_front": {"curve": true},
+    "neckline_back": {"curve": true},
+    "shoulder_seam": {"curve": true, "mirror": true},
+    "armhole": {"curve": true, "closed": true, "mirror": true},
+    "side_seam": {"curve": true, "mirror": true},
+    "princess_front": {"curve": true, "mirror": true},
+    "princess_back": {"curve": true, "mirror": true},
+    "bust": {"ring": "bust"},
+    "under_bust": {"ring": "under_bust"},
+    "waist": {"ring": "waist"},
+    "high_hip": {"ring": "high_hip"},
+    "hip": {"ring": "hip"}
+  },
+  "inputs": ["bust", "under_bust", "waist", "hip", "neck", "shoulder_length", "back_waist_length", "waist_to_hip"],
+  "ranges": {"bust": [700, 1400], "under_bust": [600, 1250], "waist": [500, 1300], "hip": [750, 1500], "neck": [280, 480], "shoulder_length": [90, 190], "back_waist_length": [330, 520], "waist_to_hip": [150, 280]},
+  "collision": {"thickness": 0.003, "friction": 0.4}
+}

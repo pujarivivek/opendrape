@@ -1,0 +1,26 @@
+{
+  "id": "men-torso",
+  "kind": "torso",
+  "name": "form-men-torso",
+  "suits": ["shirts", "kurtas", "waistcoats", "jackets"],
+  "licence": "CC0-1.0",
+  "base_size": "40",
+  "tapes": {
+    "cf": {"curve": true},
+    "cb": {"curve": true},
+    "neckline_front": {"curve": true},
+    "neckline_back": {"curve": true},
+    "shoulder_seam": {"curve": true, "mirror": true},
+    "armhole": {"curve": true, "closed": true, "mirror": true},
+    "side_seam": {"curve": true, "mirror": true},
+    "princess_front": {"curve": true, "mirror": true},
+    "princess_back": {"curve": true, "mirror": true},
+    "chest": {"ring": "chest"},
+    "waist": {"ring": "waist"},
+    "high_hip": {"ring": "high_hip"},
+    "hip": {"ring": "hip"}
+  },
+  "inputs": ["chest", "waist", "hip", "neck", "shoulder_length", "back_waist_length", "waist_to_hip"],
+  "ranges": {"chest": [750, 1500], "waist": [600, 1450], "hip": [750, 1500], "neck": [300, 520], "shoulder_length": [110, 210], "back_waist_length": [380, 560], "waist_to_hip": [150, 280]},
+  "collision": {"thickness": 0.003, "friction": 0.4}
+}

@@ -274,6 +274,22 @@ them, and it adds new APIs beside the old ones, so `main` keeps working with the
   Fabulous Fit pads), and pins and arrangement points in M4 using the form's (angle, height)
   addresses.
 
+## Changes after the forms were approved (2026-10-10)
+- **Arms are dropped for now.** The user wants the torsos perfect first. The torso file keeps
+  room for more parts later.
+- **The look:** forms are covered in sewn linen panels. The seams run where the tape lines were,
+  and there's a woven size label. The neck is about 8.5 cm tall above the back neck, under a
+  rounded metal cap. A pole stands on a round base.
+- **Tape lines are computed in Blender** and stored as sampled (angle, height) points, so they
+  follow the form when the app resizes it. They aren't rebuilt from landmarks in Rust.
+- **Base forms:**
+  - women's: Armstrong size 8 proportions (shipped as "US 8");
+  - men's: the Young Men's 40 form (shipped as "40").
+- **The book-tuned size runs stay private.** Armstrong-tuned women's sizes 6–18 and men's 36–44
+  were built in Blender as references. They come from the books' charts, so they stay out of the
+  repo. The app ships the two base forms and its own metric charts, and resizes as this spec
+  describes.
+
 ## Next steps on approval
 1. Create the `dress-forms` worktree, save this design as
    `docs/superpowers/specs/2026-10-09-dress-forms-design.md`, and commit it there.
