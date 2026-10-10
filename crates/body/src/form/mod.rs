@@ -5,6 +5,7 @@ mod file;
 #[cfg(test)]
 mod fixture;
 mod rings;
+pub mod tape;
 
 pub use file::{
     ADJUSTABLE_LENGTHS, ANGLES, Collision, FORMAT, FormError, FormFile, Kind, NeckCut, Ring, Stand,
