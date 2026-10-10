@@ -2,6 +2,7 @@
 //! millimetres with y up. Pure data with no geometry or GPU dependencies, so it is easy to
 //! save, compare and test.
 
+mod form;
 mod measure;
 mod piece;
 mod pin;
@@ -10,6 +11,7 @@ mod project;
 mod seam;
 mod units;
 
+pub use form::{FORM_MM, FormChoice, FormSize, MAX_FORM_MEASUREMENTS, MAX_FORM_NAME};
 pub use piece::{
     DEFAULT_ALLOWANCE_MM, Edge, EdgeProps, HEM_ALLOWANCE_MM, HandleEnd, InternalLine, LineKind,
     MAX_ALLOWANCE_MM, MAX_COORDINATE_MM, MAX_NAME_CHARS, MAX_VERTICES_PER_PIECE, Notch, NotchStyle,

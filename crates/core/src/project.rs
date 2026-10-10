@@ -1,15 +1,17 @@
 use crate::seam::spans_overlap;
 use crate::{
-    Half, MAX_PINS, MAX_PLACEMENT_M, MAX_SEAM_ID, MAX_SEAMS, MIN_SIDE_MM, OutlinePos, PIN_SLACK_MM,
-    Piece, PieceId, Pin, Placement, Point2, Seam, SeamId, SeamSide, Side, Span, Units, measure,
+    FormChoice, Half, MAX_PINS, MAX_PLACEMENT_M, MAX_SEAM_ID, MAX_SEAMS, MIN_SIDE_MM, OutlinePos,
+    PIN_SLACK_MM, Piece, PieceId, Pin, Placement, Point2, Seam, SeamId, SeamSide, Side, Span,
+    Units, measure,
 };
 use serde::{Deserialize, Serialize};
 
 /// Version of the project format written by this build. Bump it when the format changes, and
 /// add a migration step in `opendrape-io`. Version 2 added seam allowances, notches, internal
 /// lines, folds and twins; version 3 added seams and 3D placements (2026-10-09); version 4 made
-/// seam sides run between any two points of an outline (2026-10-10).
-pub const SCHEMA_VERSION: u32 = 4;
+/// seam sides run between any two points of an outline (2026-10-10); version 5 added the dress
+/// form (2026-10-11).
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// Most pieces a project may hold.
 pub const MAX_PIECES: usize = 500;
@@ -36,6 +38,9 @@ pub struct Project {
     /// Spots of fabric held in place while it drapes.
     #[serde(default)]
     pub pins: Vec<Pin>,
+    /// The dress form the garment drapes on.
+    #[serde(default)]
+    pub form: FormChoice,
     #[serde(default = "first_id")]
     next_piece_id: u32,
 }
@@ -73,6 +78,7 @@ pub enum ModelError {
     TooManyPieces,
     TooManyPointsInProject,
     IdCounterTooLarge,
+    BadForm,
 }
 
 impl std::fmt::Display for ModelError {
@@ -100,6 +106,7 @@ impl std::fmt::Display for ModelError {
             Self::TooManyPieces => write!(f, "the project has too many pieces"),
             Self::TooManyPointsInProject => write!(f, "the project has too many points"),
             Self::IdCounterTooLarge => write!(f, "the piece id counter is too large"),
+            Self::BadForm => write!(f, "the dress form is invalid"),
         }
     }
 }
@@ -114,6 +121,7 @@ impl Project {
             pieces: Vec::new(),
             seams: Vec::new(),
             pins: Vec::new(),
+            form: FormChoice::default(),
             next_piece_id: first_id(),
         }
     }
@@ -579,7 +587,8 @@ impl Project {
             return Err(ModelError::TooManyPointsInProject);
         }
         self.check_seams()?;
-        self.check_pins()
+        self.check_pins()?;
+        self.form.check()
     }
 
     /// At most [`MAX_PINS`] pins, each on a shape (and half) that exists, within
@@ -1460,7 +1469,7 @@ mod tests {
             pr.piece(PieceId(3)).unwrap().placement,
             Some(Placement::at([0.0, 1.0, -0.4]))
         );
-        assert_eq!(SCHEMA_VERSION, 4);
+        assert_eq!(SCHEMA_VERSION, 5);
     }
 
     #[test]

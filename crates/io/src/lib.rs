@@ -315,7 +315,7 @@ mod tests {
         assert_eq!(
             value_parses(|| assert_eq!(from_bytes(&current).unwrap(), sample())),
             0,
-            "version 4 is typed at once"
+            "version 5 is typed at once"
         );
         for (version, json) in [
             (1, include_str!("../tests/fixtures/v1/project.json")),

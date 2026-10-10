@@ -4,8 +4,9 @@
 //! so a change to how projects are saved cannot quietly change what these files mean.
 
 use opendrape_core::{
-    Edge, EdgeProps, Half, InternalLine, LineKind, Notch, NotchStyle, OutlinePos, Piece, PieceId,
-    Pin, Placement, Point2, Project, Seam, SeamId, SeamSide, Twin, Units, Vertex, VertexKind,
+    Edge, EdgeProps, FormChoice, FormSize, Half, InternalLine, LineKind, Notch, NotchStyle,
+    OutlinePos, Piece, PieceId, Pin, Placement, Point2, Project, SCHEMA_VERSION, Seam, SeamId,
+    SeamSide, Twin, Units, Vertex, VertexKind,
 };
 use std::io::{Cursor, Write};
 use zip::ZipWriter;
@@ -105,7 +106,7 @@ fn format_v1_still_opens() {
     }
 
     assert_eq!(loaded, expected);
-    assert_eq!(loaded.schema_version, 4, "upgraded on load");
+    assert_eq!(loaded.schema_version, SCHEMA_VERSION, "upgraded on load");
     assert_eq!(loaded.next_piece_name("Piece"), "Piece 7");
 }
 
@@ -206,7 +207,7 @@ fn format_v2_still_opens() {
         placement: None,
     });
     assert_eq!(loaded, expected);
-    assert_eq!(loaded.schema_version, 4, "upgraded on load");
+    assert_eq!(loaded.schema_version, SCHEMA_VERSION, "upgraded on load");
     assert!(loaded.seams.is_empty());
     assert_eq!(loaded.name_of(PieceId(3)), Some("Back right"));
     assert_eq!(loaded.next_piece_name("Piece"), "Piece 4");
@@ -364,7 +365,7 @@ fn format_v3_still_opens() {
         },
     ];
     assert_eq!(loaded, expected);
-    assert_eq!(loaded.schema_version, 4, "upgraded on load");
+    assert_eq!(loaded.schema_version, SCHEMA_VERSION, "upgraded on load");
     assert_eq!(loaded.next_piece_name("Piece"), "Piece 5");
     // The first seam has a mirror image (front's pale half to the back's twin); the centre
     // back is its own; the pocket has none.
@@ -438,7 +439,7 @@ fn format_v3_with_a_whole_edge_seam_on_a_sub_millimetre_edge_opens_without_that_
     let ids: Vec<u32> = opened.seams.iter().map(|s| s.id.0).collect();
     assert_eq!(ids, [1, 2, 5], "only the 0.5 mm seam is gone");
     assert_eq!(opened, without_the_probe, "and nothing else changed");
-    assert_eq!(opened.schema_version, 4);
+    assert_eq!(opened.schema_version, SCHEMA_VERSION);
 
     // A seam that is wrong in another way is still refused, short seam or not: the repair is
     // for the new length rule only.
@@ -689,7 +690,7 @@ fn format_v4_still_opens() {
         pin(3, Half::Drawn, 600.0, 100.0, [-0.3, 1.1, 0.0]),
     ];
     assert_eq!(loaded, expected);
-    assert_eq!(loaded.schema_version, 4);
+    assert_eq!(loaded.schema_version, SCHEMA_VERSION);
     // Each of the three seams has a mirror image.
     assert_eq!(loaded.all_seams().len(), 6);
 }
@@ -730,4 +731,40 @@ fn refuses_invalid_v4_details() {
             "{to}"
         );
     }
+}
+
+#[test]
+fn format_v5_still_opens_with_its_form() {
+    let loaded = opendrape_io::from_bytes(&odp(include_str!("fixtures/v5/project.json")))
+        .expect("the frozen v5 project opens");
+    assert_eq!(loaded.form.id, "men-torso");
+    assert_eq!(loaded.form.size, FormSize::Custom);
+    assert_eq!(loaded.form.measurements["waist"], 880.0);
+    assert_eq!(loaded.form.measurements.len(), 7);
+    assert_eq!(loaded.pieces.len(), 1);
+    assert_eq!(loaded.pieces[0].name, "Back");
+}
+
+#[test]
+fn older_formats_open_on_the_default_form() {
+    for json in [
+        include_str!("fixtures/v1/project.json"),
+        include_str!("fixtures/v2/project.json"),
+        include_str!("fixtures/v3/project.json"),
+        include_str!("fixtures/v4/project.json"),
+    ] {
+        let loaded = opendrape_io::from_bytes(&odp(json)).unwrap();
+        assert_eq!(loaded.form, FormChoice::default());
+    }
+}
+
+#[test]
+fn a_malformed_form_is_refused_as_invalid() {
+    let json = include_str!("fixtures/v5/project.json").replace(r#""men-torso""#, r#""""#);
+    assert!(matches!(
+        opendrape_io::from_bytes(&odp(&json)),
+        Err(opendrape_io::OdpError::Invalid(
+            opendrape_core::ModelError::BadForm
+        ))
+    ));
 }

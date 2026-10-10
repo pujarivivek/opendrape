@@ -1,0 +1,51 @@
+{
+  "schema_version": 5,
+  "units": "cm",
+  "pieces": [
+    {
+      "id": 1,
+      "name": "Back",
+      "vertices": [
+        { "pos": { "x": 0.0, "y": 0.0 }, "kind": "corner" },
+        { "pos": { "x": 250.0, "y": 0.0 }, "kind": "corner" },
+        { "pos": { "x": 250.0, "y": 500.0 }, "kind": "corner" },
+        { "pos": { "x": 0.0, "y": 500.0 }, "kind": "corner" }
+      ],
+      "edges": [
+        { "type": "line" },
+        { "type": "line" },
+        { "type": "line" },
+        { "type": "line" }
+      ],
+      "grain_deg": 90.0,
+      "allowance": 10.0,
+      "edge_props": [
+        { "allowance": null, "hem": true },
+        { "allowance": null, "hem": false },
+        { "allowance": null, "hem": false },
+        { "allowance": null, "hem": false }
+      ],
+      "notches": [],
+      "lines": [],
+      "fold": null,
+      "twin": null,
+      "placement": null
+    }
+  ],
+  "seams": [],
+  "pins": [],
+  "form": {
+    "id": "men-torso",
+    "size": { "kind": "custom" },
+    "measurements": {
+      "back_waist_length": 455.0,
+      "chest": 1015.0,
+      "hip": 985.0,
+      "neck": 395.0,
+      "shoulder_length": 160.0,
+      "waist": 880.0,
+      "waist_to_hip": 195.0
+    }
+  },
+  "next_piece_id": 2
+}
