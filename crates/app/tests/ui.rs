@@ -273,6 +273,89 @@ fn editing_the_pattern_while_draped_carries_the_drape_on() {
     assert!(h.state().is_draping());
 }
 
+/// Plays the two sewn pieces and waits until the drape has advanced.
+fn drape_the_sewn_pieces(h: &mut App) {
+    h.run();
+    add_sewn_pieces(h);
+    h.get_by_label("Play").click();
+    h.run_steps(2);
+    wait_until(h, "the drape", |a| {
+        a.sim_frame().is_some_and(|f| f.time > 0.1)
+    });
+    assert!(h.state().is_draping(), "Play was pressed");
+}
+
+/// A file with one "Sleeve", numbered 1 as the first piece of any project is, placed in the
+/// air well clear of the form (the two sewn pieces are "Front" and "Back", 1 and 2).
+fn sleeve_file(dir: &Path) -> (std::path::PathBuf, [f64; 3]) {
+    let at = [0.9, 1.5, 0.0];
+    let mut project = Project::new();
+    let sleeve = project.add_piece(Piece::rectangle(
+        PieceId(0),
+        "Sleeve",
+        Point2::new(0.0, 0.0),
+        200.0,
+        150.0,
+    ));
+    project.set_placement(sleeve, Some(opendrape_core::Placement::at(at)));
+    let file = dir.join("sleeve.odp");
+    opendrape_io::save(&project, &file).unwrap();
+    (file, at)
+}
+
+#[test]
+fn opening_a_file_while_draping_returns_to_arranging_and_its_pieces_start_at_their_own_placements()
+{
+    let dir = tempfile::tempdir().unwrap();
+    let (file, at) = sleeve_file(dir.path());
+    let mut h = harness_with(
+        dir.path(),
+        SharedState::default(),
+        FileDialogs::scripted(vec![Some(file)]),
+    );
+    drape_the_sewn_pieces(&mut h);
+    file_menu(&mut h, "Open…");
+    h.get_by_label("Don't save").click(); // there are unsaved changes: asked first
+    h.run_steps(2);
+    assert_eq!(pieces(&h), 1, "the file is open");
+    assert!(!h.state().is_draping(), "arranging, as after Reset");
+    assert!(h.state().sim_frame().is_none(), "no cloth of the old file");
+    assert!(h.query_by_label("Press Reset to move pieces.").is_none());
+    // Play makes the fabric of this file alone, from its own placement: the same piece number
+    // as the old file's "Front" must not start it from there.
+    h.get_by_label("Play").click();
+    h.run_steps(2);
+    wait_until(&mut h, "the opened file's drape", |a| {
+        a.sim_frame().is_some()
+    });
+    let frame = h.state().sim_frame().unwrap();
+    assert!(!frame.positions.is_empty());
+    let n = frame.positions.len() as f32;
+    let middle = frame.positions.iter().sum::<glam::Vec3>() / n;
+    let [x, _, z] = at.map(|v| v as f32);
+    assert!(
+        (middle.x - x).abs() < 0.1 && (middle.z - z).abs() < 0.1 && (middle.y - 1.5).abs() < 0.5,
+        "the sleeve starts at {middle:?}, not at its placement {at:?}"
+    );
+}
+
+#[test]
+fn new_while_draping_returns_to_arranging_with_no_cloth() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    drape_the_sewn_pieces(&mut h);
+    file_menu(&mut h, "New");
+    h.get_by_label("Don't save").click(); // there are unsaved changes: asked first
+    h.run_steps(2);
+    assert_eq!(pieces(&h), 0, "a new project");
+    assert!(!h.state().is_draping(), "arranging, as after Reset");
+    assert!(h.state().sim_frame().is_none(), "no cloth");
+    assert!(h.query_by_label("Press Reset to move pieces.").is_none());
+    // Nothing comes back from the drape that was running.
+    h.run_steps(5);
+    assert!(!h.state().is_draping() && h.state().sim_frame().is_none());
+}
+
 #[test]
 fn a_piece_that_cannot_be_made_into_fabric_is_named() {
     let dir = tempfile::tempdir().unwrap();

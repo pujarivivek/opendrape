@@ -791,8 +791,19 @@ impl OpenDrapeApp {
     /// copy, which stays unsaved): a fresh history, and a 3D view with nothing in it yet. The
     /// view keeps the pieces of the last pattern it could make when a pattern can't be made, so
     /// it must not keep those of the project that has just gone, or a file that fails to mesh
-    /// would show the pieces of the one before it.
+    /// would show the pieces of the one before it. A drape is of the project that has gone
+    /// too: the 3D view is back to arranging, as it is after Reset, so that the new pieces
+    /// start at their own placements and not from the old fabric.
     fn replace_project(&mut self, project: Project, path: Option<PathBuf>, recovered: bool) {
+        // First, while a held grab or move still has the old project to end in.
+        self.stop_pulling();
+        self.stop_arranging();
+        if let Some(runner) = &self.runner
+            && runner.is_draping()
+        {
+            runner.reset();
+        }
+        self.draped = None;
         if recovered {
             self.editor.set_recovered(project, path);
         } else {
@@ -1201,6 +1212,11 @@ mod tests {
 
     /// The app in a headless window, drawing the 3D view off-screen.
     fn headless_app() -> egui_kittest::Harness<'static, OpenDrapeApp> {
+        headless_app_recovering(Recovery::new(None))
+    }
+
+    /// [`headless_app`], offering back the work `recovery` holds.
+    fn headless_app_recovering(recovery: Recovery) -> egui_kittest::Harness<'static, OpenDrapeApp> {
         use crate::gpu::{GpuState, Reason, StateStore};
         let dir = tempfile::tempdir().unwrap();
         let startup = Startup {
@@ -1212,7 +1228,7 @@ mod tests {
             store: StateStore::new(Some(dir.path())),
             smoke_test: false,
             file_dialogs: FileDialogs::always_cancel(),
-            recovery: Recovery::new(None),
+            recovery,
         };
         egui_kittest::Harness::builder()
             .with_size(egui::vec2(1000.0, 700.0))
@@ -1394,6 +1410,39 @@ mod tests {
         h.run();
         assert_eq!(*h.state().editor.doc.project(), skirt, "the restored copy");
         assert_eq!(shown_when_the_pattern_cannot_be_made(&mut h), vec![]);
+    }
+
+    #[test]
+    fn restoring_work_while_draping_returns_to_arranging() {
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().unwrap();
+        let mut skirt = Project::new();
+        skirt.add_piece(rectangle("Skirt", 0.0, 100.0));
+        Recovery::new(Some(dir.path())).write(&skirt, None);
+        let mut h = headless_app_recovering(Recovery::new(Some(dir.path())));
+        h.run();
+        // The question is up; a drape is running behind it (nothing in the window can start
+        // one while it is open, so the runner is told directly).
+        h.state_mut()
+            .editor
+            .doc
+            .edit(|p| p.add_piece(rectangle("Front", 0.0, 300.0)));
+        let snapshot = Arc::new(h.state().editor.doc.project().clone());
+        let runner = h.state().runner.as_ref().unwrap();
+        runner.play(snapshot.clone());
+        h.state_mut().draped = Some(snapshot);
+        let start = std::time::Instant::now();
+        while h.state().sim_frame().is_none() {
+            assert!(start.elapsed().as_secs() < 20, "no drape to restore over");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(h.state().is_draping());
+        h.get_by_label("Restore").click();
+        h.run_steps(2);
+        assert_eq!(*h.state().editor.doc.project(), skirt, "the restored copy");
+        assert!(!h.state().is_draping(), "arranging, as after Reset");
+        assert!(h.state().sim_frame().is_none(), "no cloth of the old work");
+        assert!(h.state().draped.is_none());
     }
 
     #[test]
