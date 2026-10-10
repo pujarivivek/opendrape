@@ -4,8 +4,10 @@
 mod file;
 #[cfg(test)]
 mod fixture;
+mod rings;
 
 pub use file::{
     ADJUSTABLE_LENGTHS, ANGLES, Collision, FORMAT, FormError, FormFile, Kind, NeckCut, Ring, Stand,
     TORSO_LENGTHS, TORSO_STATIONS, TapeDef,
 };
+pub use rings::Rings;

@@ -1,5 +1,5 @@
 use crate::BodyMesh;
-use glam::Vec2;
+use glam::DVec2;
 use std::collections::HashMap;
 
 /// Height from the lowest to the highest vertex.
@@ -27,6 +27,7 @@ pub fn boundary_edge_count(mesh: &BodyMesh) -> usize {
 
 /// Tape-measure girth at height `y`: perimeter of the convex hull of the mesh's
 /// cross-section, keeping only points with |x| < `max_abs_x` (to leave out the arms).
+/// Vertices lying exactly on the plane count (a dress form has a ring at every station).
 pub fn girth_at(mesh: &BodyMesh, y: f32, max_abs_x: f32) -> f32 {
     let mut pts = vec![];
     for t in &mesh.triangles {
@@ -35,26 +36,29 @@ pub fn girth_at(mesh: &BodyMesh, y: f32, max_abs_x: f32) -> f32 {
                 mesh.positions[t[k] as usize],
                 mesh.positions[t[(k + 1) % 3] as usize],
             );
+            if a.y == y && a.x.abs() < max_abs_x {
+                pts.push(DVec2::new(f64::from(a.x), f64::from(a.z)));
+            }
             if (a.y - y) * (b.y - y) < 0.0 {
                 let p = a + (b - a) * ((y - a.y) / (b.y - a.y));
                 if p.x.abs() < max_abs_x {
-                    pts.push(Vec2::new(p.x, p.z));
+                    pts.push(DVec2::new(f64::from(p.x), f64::from(p.z)));
                 }
             }
         }
     }
-    hull_perimeter(pts)
+    hull_perimeter(pts) as f32
 }
 
 /// Andrew's monotone chain convex hull, returning its perimeter.
-fn hull_perimeter(mut pts: Vec<Vec2>) -> f32 {
+pub(crate) fn hull_perimeter(mut pts: Vec<DVec2>) -> f64 {
     pts.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
     pts.dedup();
     if pts.len() < 3 {
         return 0.0;
     }
-    fn half(points: impl Iterator<Item = Vec2>) -> Vec<Vec2> {
-        let mut h: Vec<Vec2> = vec![];
+    fn half(points: impl Iterator<Item = DVec2>) -> Vec<DVec2> {
+        let mut h: Vec<DVec2> = vec![];
         for p in points {
             while h.len() >= 2
                 && (h[h.len() - 1] - h[h.len() - 2]).perp_dot(p - h[h.len() - 2]) <= 0.0
@@ -124,6 +128,12 @@ mod tests {
         // crossings (|x| = 0.5) and the ±Z face-diagonal crossings (x = 0). With |x| < 0.4
         // only the two x = 0 points remain: no area, so no girth.
         assert_eq!(girth_at(&cube(), 0.0, 0.4), 0.0);
+    }
+
+    #[test]
+    fn girth_counts_vertices_lying_on_the_slice_plane() {
+        // y = 0.5 is the cube's top face: no edge crosses it, but its four corners lie on it.
+        assert!((girth_at(&cube(), 0.5, 10.0) - 4.0).abs() < 1e-5);
     }
 
     #[test]
