@@ -59,6 +59,9 @@ pieces, press **Play**, and change the pattern while it drapes.
 - [ ] While it drapes, the 3D placement fields are greyed out under "Placements apply after
       Reset.", and so is **Place at…**.
 - [ ] Press **Reset**: the pieces are back where you placed them.
+- [ ] **Open or start a project while it drapes.** Press **Play**, then choose **File → New**
+      (or **File → Open…** and pick a saved project). The 3D view is back to arranging: you
+      see the new project's pieces where they were placed, and none of the old fabric.
 - [ ] **File → Save As…**, quit, reopen and **File → Open…**: the free seams and the pins are
       back. Your M4a files still open, with their seams as they were.
 

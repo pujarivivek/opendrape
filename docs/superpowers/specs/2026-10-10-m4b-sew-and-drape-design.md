@@ -114,16 +114,18 @@ pub struct SeamSide {
 
 ## 3. Sleeves on arms
 
-- **Arm lines.** `crates/drape`'s `Stage` gains `arms: [Arm; 2]`, one per side; left is +x. Each `Arm` gives:
+- **Arm lines.** `crates/drape`'s `Stage::arms()` returns `Option<&[Arm; 2]>`: one arm per side, left (+x) first. A form may have no arms, or none may be found, and then it is `None`: **Place at → arm** is greyed out, and says "This form has no arms." Each `Arm` gives:
   - a shoulder point;
   - a unit direction down the arm;
-  - a length;
-  - the surface distance from the arm line at any point along it and angle around it, measured by rays as for the torso.
+  - a length: how far down from the shoulder the straight line runs inside the arm (the elbow bends away below it);
+  - `free`: how far down from the shoulder the arm starts to hang clear of the body (below the armpit);
+  - the surface distance from the arm line at any point along it and angle around it (`Stage::arm_surface_distance`), measured by rays as for the torso.
 
-  For today's body, the arm lines are worked out once from the mesh. For the dress forms they come from the form file later.
+  For today's body, the arm lines are worked out once from the mesh. A form made from a mesh (`Stage::from_mesh`) has them worked out the same way. For the dress forms they come from the form file later.
 - **Place at → Left arm / Right arm** (the 3D and 2D right-click menu, next to front, back and sides):
   - **Orientation:** the sleeve's pattern "up" (the cap) points to the shoulder, and its length runs down the arm. Its width wraps around the arm, centred on the arm's front, 3 cm off the skin. The curve radius is the largest surface distance over the span the sleeve covers, plus 3 cm.
   - **Mirrored pairs:** placing one sleeve of a pair puts its twin on the other arm.
+  - **One wiring.** The form's rays are wired to the placement maths in `Stage` only (`Stage::place_at` and `Stage::place_at_arm`). The app's menu and the drape gates both call them.
   - **Storage:** a placement keeps the cylinder axis it wraps around, so a sleeve isn't forced around the body's centre line. `Placement` gains `axis: Option<Axis>`, a point and a direction. Without it, the M4a vertical centre line is used.
 - **Gizmo and typed values** work as in M4a, on the whole placement.
 
@@ -231,3 +233,5 @@ The planning probe built every task in a scratch copy. It found the following, a
 8. **An edit that leaves a pin off its piece deletes that pin** in the same undo step, as short seams are deleted. Refusing the edit would stop a student shortening a sleeve past a pin.
 9. **Notches within 1 mm of a side's ends don't count** for notch matching. Otherwise the two cap seams would each count the shared cap notch.
 10. **Removing a point at a side's end keeps the end on the joined edge.** M4a shortened the side by an edge instead.
+11. **`Stage::arms()` is optional.** A form may have no arms (or none can be found): `arms()` returns `Option<&[Arm; 2]>`, and Place at → arm then says "This form has no arms." `Arm.length` is how far down from the shoulder the straight arm line runs inside the arm, and `Arm.free` is how far down the arm starts to hang clear of the body.
+12. **The Place at wiring lives in `Stage`** (`place_at` and `place_at_arm`) and is shared by the app and the drape gates, so the T-shirt gate places pieces the way the app's menu does.
