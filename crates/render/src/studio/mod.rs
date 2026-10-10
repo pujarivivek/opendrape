@@ -3,3 +3,4 @@
 
 pub mod environment;
 mod environment_data;
+pub mod quality;
