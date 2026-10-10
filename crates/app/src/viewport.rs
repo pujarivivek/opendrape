@@ -1,6 +1,6 @@
 use crate::arrange::{ArrangedScene, ScreenCamera};
 use crate::sim_runner::SimFrame;
-use crate::theme::{FABRIC, FORM_SRGB, SELECTED_FABRIC};
+use crate::theme::{FABRIC, FORM_SRGB, SELECTED_FABRIC, STAND_SRGB, TAPE_SRGB};
 use crate::view_settings::{LightingChoice, QualityChoice, ViewSettings};
 use glam::DVec2;
 use opendrape_core::PieceId;
@@ -16,6 +16,14 @@ struct ClothOnGpu {
     mesh: StudioMesh,
     seq: u64,
     triangles: Arc<Vec<[u32; 3]>>,
+}
+
+/// A part of the dress form, drawn in its own colour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Part {
+    Torso,
+    Tapes,
+    Stand,
 }
 
 /// What the 3D view shows besides the form.
@@ -42,7 +50,10 @@ pub struct Viewport {
     auto_quality: Quality,
     camera: OrbitCamera,
     target: Option<(RenderTarget, egui::TextureId)>,
-    body: StudioMesh,
+    /// The form's torso, tape lines and stand.
+    form: Vec<(Part, StudioMesh)>,
+    /// The tape lines are drawn.
+    show_tapes: bool,
     cloth: Option<ClothOnGpu>,
     /// The arranged pieces on the GPU, and the scene they were made from.
     pieces: Vec<(PieceId, StudioMesh)>,
@@ -58,15 +69,7 @@ impl Viewport {
         let auto_quality = quality::auto(&rs.adapter.get_info(), renderer.hdr_ok());
         renderer.set_quality(settings.quality.resolve(auto_quality));
         renderer.set_lighting(settings.lighting.lighting());
-        let (positions, triangles) = stage.render_mesh();
-        let body = renderer.create_mesh(
-            &rs.device,
-            &rs.queue,
-            positions,
-            triangles,
-            srgb8_to_linear(FORM_SRGB),
-            Material::Form,
-        );
+        let form = form_meshes(&mut renderer, rs, stage);
         let camera = OrbitCamera {
             // The form's waist, in the middle of the view.
             target: glam::Vec3::new(0.0, stage.waist_y() as f32, 0.0),
@@ -80,13 +83,20 @@ impl Viewport {
             auto_quality,
             camera,
             target: None,
-            body,
+            form,
+            show_tapes: settings.show_tapes,
             cloth: None,
             pieces: Vec::new(),
             pieces_of: None,
             frames_drawn: 0,
             pointer_held: false,
         }
+    }
+
+    /// Draws the form of `stage` from now on, and looks at its waist.
+    pub fn set_stage(&mut self, rs: &egui_wgpu::RenderState, stage: &Stage) {
+        self.form = form_meshes(&mut self.renderer, rs, stage);
+        self.camera.target.y = stage.waist_y() as f32;
     }
 
     /// The quality level the 3D view draws at.
@@ -155,7 +165,12 @@ impl Viewport {
         }
         self.ensure_target(rs, w, h);
         let (target, texture_id) = self.target.as_ref().expect("ensure_target sets it");
-        let mut meshes = vec![&self.body];
+        let mut meshes: Vec<&StudioMesh> = self
+            .form
+            .iter()
+            .filter(|(part, _)| self.show_tapes || *part != Part::Tapes)
+            .map(|(_, mesh)| mesh)
+            .collect();
         meshes.extend(self.cloth.as_ref().map(|c| &c.mesh));
         meshes.extend(self.pieces.iter().map(|(_, m)| m));
         // A button held on the view (as it was last frame) is a drag in progress too.
@@ -287,4 +302,32 @@ impl Viewport {
         };
         self.target = Some((target, id));
     }
+}
+
+/// The torso, tape lines and stand of `stage` on the GPU, each in its colour (a part with no
+/// triangles is left out).
+fn form_meshes(
+    renderer: &mut StudioRenderer,
+    rs: &egui_wgpu::RenderState,
+    stage: &Stage,
+) -> Vec<(Part, StudioMesh)> {
+    [
+        (Part::Torso, stage.render_mesh(), FORM_SRGB),
+        (Part::Tapes, stage.tapes_mesh(), TAPE_SRGB),
+        (Part::Stand, stage.stand_mesh(), STAND_SRGB),
+    ]
+    .into_iter()
+    .filter(|(_, (_, triangles), _)| !triangles.is_empty())
+    .map(|(part, (positions, triangles), colour)| {
+        let mesh = renderer.create_mesh(
+            &rs.device,
+            &rs.queue,
+            positions,
+            triangles,
+            srgb8_to_linear(colour),
+            Material::Form,
+        );
+        (part, mesh)
+    })
+    .collect()
 }

@@ -55,12 +55,29 @@ impl LightingChoice {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ViewSettings {
     #[serde(default)]
     pub quality: QualityChoice,
     #[serde(default)]
     pub lighting: LightingChoice,
+    /// The dress form's tape lines are drawn (Assets → Show tape lines).
+    #[serde(default = "shown")]
+    pub show_tapes: bool,
+}
+
+fn shown() -> bool {
+    true
+}
+
+impl Default for ViewSettings {
+    fn default() -> Self {
+        Self {
+            quality: QualityChoice::default(),
+            lighting: LightingChoice::default(),
+            show_tapes: true,
+        }
+    }
 }
 
 impl ViewSettings {
@@ -94,6 +111,7 @@ mod tests {
         let s = ViewSettings {
             quality: QualityChoice::Basic,
             lighting: LightingChoice::Soft,
+            show_tapes: false,
         };
         assert!(s.save(Some(dir.path())));
         assert_eq!(ViewSettings::load(Some(dir.path())), s);
@@ -129,6 +147,21 @@ mod tests {
         let s = ViewSettings::load(Some(dir.path()));
         assert_eq!(s.quality, QualityChoice::Basic);
         assert_eq!(s.lighting, LightingChoice::Sculpted);
+    }
+
+    #[test]
+    fn tape_lines_show_unless_turned_off_and_old_files_still_load() {
+        assert!(ViewSettings::default().show_tapes);
+        let dir = tempfile::tempdir().unwrap();
+        // Saved before tape lines were a setting.
+        std::fs::write(dir.path().join("view.json"), r#"{ "quality": "basic" }"#).unwrap();
+        assert!(ViewSettings::load(Some(dir.path())).show_tapes);
+        let off = ViewSettings {
+            show_tapes: false,
+            ..ViewSettings::default()
+        };
+        assert!(off.save(Some(dir.path())));
+        assert!(!ViewSettings::load(Some(dir.path())).show_tapes);
     }
 
     #[test]

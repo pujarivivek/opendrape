@@ -13,8 +13,10 @@ use crate::view_settings::{LightingChoice, QualityChoice, ViewSettings};
 use crate::viewport::{Show, Viewport};
 use crate::workspace::{self, Workspace};
 use egui::{Key, KeyboardShortcut, Modifiers, ViewportCommand};
+use opendrape_core::FormChoice;
 use opendrape_core::{PieceId, Project};
 use opendrape_drape::Stage;
+use opendrape_drape::choice::FormProblem;
 use opendrape_mesh::MeshNote;
 use opendrape_render::OrbitCamera;
 use std::path::{Path, PathBuf};
@@ -113,8 +115,14 @@ pub struct OpenDrapeApp {
     runner: Option<SimRunner>,
     fps: f32,
     editor: PatternEditor,
-    /// The form, shared with the simulation thread.
+    /// The form, shared with the simulation thread. It follows the project's form (see
+    /// [`Self::sync_stage`]).
     stage: Arc<Stage>,
+    /// A form already built for the project's next form (by Assets, or for a file being
+    /// opened), so the next sync needn't build it again.
+    next_stage: Option<Arc<Stage>>,
+    /// A form that could not be built, so it isn't tried again every frame.
+    unbuilt: Option<FormChoice>,
     /// The project the drape was last given (at Play, or since by an edit while draping).
     draped: Option<Arc<Project>>,
     /// The pieces as the 3D view shows them while arranging.
@@ -180,6 +188,8 @@ impl OpenDrapeApp {
             fps: 0.0,
             editor,
             stage,
+            next_stage: None,
+            unbuilt: None,
             draped: None,
             arranged: SceneCache::default(),
             arranger: Arranger::default(),
@@ -264,6 +274,60 @@ impl OpenDrapeApp {
     /// The form garments are arranged round and draped on.
     pub fn stage(&self) -> &Arc<Stage> {
         &self.stage
+    }
+
+    /// Changes the project's dress form to `choice`, as one undo step: pieces that would
+    /// start inside the new form are moved straight out of it (see [`Stage::reseat`]). The 3D
+    /// view, the drape and Place at follow on the next frame. Nothing changes when the form
+    /// can't be built.
+    pub fn apply_form(&mut self, choice: FormChoice) -> Result<(), FormProblem> {
+        let stage = Stage::for_choice(&choice)?;
+        self.editor.doc.edit(|p| {
+            p.form = choice;
+            stage.reseat(p);
+        });
+        self.next_stage = Some(Arc::new(stage));
+        Ok(())
+    }
+
+    /// The stage follows the project's form: after a form change, an undo or redo of one, or
+    /// opening a file. The drape restarts, a held drag ends, and the 3D view draws the new
+    /// form.
+    fn sync_stage(&mut self, frame: &eframe::Frame) {
+        let wanted = &self.editor.doc.project().form;
+        if self.stage.choice() == Some(wanted) || self.unbuilt.as_ref() == Some(wanted) {
+            return;
+        }
+        let ready = self
+            .next_stage
+            .take()
+            .filter(|s| s.choice() == Some(wanted));
+        let stage = match ready {
+            Some(stage) => stage,
+            None => match Stage::for_choice(wanted) {
+                Ok(stage) => Arc::new(stage),
+                Err(e) => {
+                    crate::startup_log::stage(format_args!("form: kept the last one: {e}"));
+                    self.unbuilt = Some(wanted.clone());
+                    return;
+                }
+            },
+        };
+        self.unbuilt = None;
+        self.stop_pulling();
+        self.stop_arranging();
+        if let Some(runner) = &self.runner {
+            runner.set_stage(stage.clone());
+        }
+        self.draped = None;
+        self.arranged = SceneCache::default();
+        if self.editor.stage.is_some() {
+            self.editor.stage = Some(stage.clone());
+        }
+        if let (Some(viewport), Some(rs)) = (self.viewport.as_mut(), frame.wgpu_render_state()) {
+            viewport.set_stage(rs, &stage);
+        }
+        self.stage = stage;
     }
 
     /// The pieces as the 3D view shows them while arranging.
@@ -1028,7 +1092,14 @@ impl OpenDrapeApp {
         let Some(path) = answer else { return }; // cancelled
         match purpose {
             DialogFor::Open => match opendrape_io::load(&path) {
-                Ok(project) => self.replace_project(project, Some(path), false),
+                // A form this version can't build is refused, never swapped for another.
+                Ok(project) => match Stage::for_choice(&project.form) {
+                    Ok(stage) => {
+                        self.next_stage = Some(Arc::new(stage));
+                        self.replace_project(project, Some(path), false);
+                    }
+                    Err(e) => self.error = Some(tr!("error-open", error = e.to_string())),
+                },
                 Err(e) => self.error = Some(tr!("error-open", error = e.to_string())),
             },
             DialogFor::SaveAs(then) => {
@@ -1254,6 +1325,7 @@ fn choice_label(choice: GpuChoice) -> String {
 impl eframe::App for OpenDrapeApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.sync_stage(frame);
         self.guard_close(&ctx);
         let shortcut = self.file_shortcut(&ctx);
         let workspace_key = self.workspace_shortcut(&ctx);

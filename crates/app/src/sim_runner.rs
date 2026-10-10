@@ -62,6 +62,8 @@ enum Command {
     /// Let go of the grabbed point.
     Release,
     Reset,
+    /// Drape on this form from now on (the drape so far is dropped, as by Reset).
+    Stage(Arc<Stage>),
     Wake,
     Shutdown,
 }
@@ -138,7 +140,7 @@ impl SimRunner {
         );
         let thread = std::thread::Builder::new()
             .name("opendrape-sim".into())
-            .spawn(move || run(&stage, &rx, &status, &on_frame))
+            .spawn(move || run(stage, &rx, &status, &on_frame))
             .expect("spawn the simulation thread");
         Self {
             tx,
@@ -202,6 +204,11 @@ impl SimRunner {
         self.playing.store(false, Ordering::Relaxed);
         self.latest.store(None);
         let _ = self.tx.send(Command::Reset);
+    }
+    /// Drapes on `stage` from now on. The drape so far ends, as with [`Self::reset`].
+    pub fn set_stage(&self, stage: Arc<Stage>) {
+        self.reset();
+        let _ = self.tx.send(Command::Stage(stage));
     }
     /// The latest frame of the drape since the last Play; None while arranging (and while the
     /// fabric is made). A frame the thread was still working on when Reset (or a newer Play)
@@ -338,7 +345,7 @@ fn carry_on(status: &Status, mut drape: Drape, hold: impl FnOnce(&mut Drape)) ->
     }
 }
 
-fn run(stage: &Stage, rx: &Receiver<Command>, status: &Status, on_frame: &dyn Fn()) {
+fn run(mut stage: Arc<Stage>, rx: &Receiver<Command>, status: &Status, on_frame: &dyn Fn()) {
     let mut drape: Option<Drape> = None;
     let mut seq = 0;
     let mut next = Instant::now();
@@ -366,7 +373,7 @@ fn run(stage: &Stage, rx: &Receiver<Command>, status: &Status, on_frame: &dyn Fn
                 seq += 1;
                 // Making the fabric, and the first frame, are checked like every later frame.
                 drape = start_drape(status, number, || {
-                    let mut d = Drape::new(number, Made::new(project, stage));
+                    let mut d = Drape::new(number, Made::new(project, &stage));
                     let first = d.frame(seq, 0.0);
                     first.map(|f| (d, f))
                 });
@@ -396,7 +403,7 @@ fn run(stage: &Stage, rx: &Receiver<Command>, status: &Status, on_frame: &dyn Fn
                         seq += 1;
                         let number = d.number;
                         drape = start_drape(status, number, || {
-                            let mut remade = Drape::new(number, d.made.rebuilt(project, stage));
+                            let mut remade = Drape::new(number, d.made.rebuilt(project, &stage));
                             let first = remade.frame(seq, 0.0);
                             first.map(|f| (remade, f))
                         });
@@ -446,6 +453,13 @@ fn run(stage: &Stage, rx: &Receiver<Command>, status: &Status, on_frame: &dyn Fn
             }
             Some(Command::Reset) => {
                 drape = None;
+                status.latest.store(None);
+                on_frame();
+                continue;
+            }
+            Some(Command::Stage(new)) => {
+                drape = None;
+                stage = new;
                 status.latest.store(None);
                 on_frame();
                 continue;
@@ -568,6 +582,41 @@ mod tests {
         });
         assert_eq!(r.latest().unwrap().positions.len(), mesh.particles());
         assert!(r.latest().unwrap().notes.is_empty());
+    }
+
+    #[test]
+    fn a_new_stage_drops_the_drape_and_the_next_one_drapes_on_it() {
+        use opendrape_drape::DrapeNote;
+        let women = Stage::shared();
+        let men = Arc::new(
+            Stage::for_choice(&opendrape_drape::choice::base_choice("men-torso").unwrap()).unwrap(),
+        );
+        // A small square in front of the chest: clear of the women's form, inside the men's.
+        let y = 1.2;
+        let (w, m) = (
+            women.surface_distance(0.0, y).unwrap(),
+            men.surface_distance(0.0, y).unwrap(),
+        );
+        assert!(m > w + 0.01, "the men's chest is further out: {w} {m}");
+        let mut pr = Project::new();
+        let mut piece = Piece::rectangle(PieceId(0), "Patch", Point2::new(0.0, 0.0), 40.0, 40.0);
+        piece.placement = Some(Placement::at([0.0, y, (w + m) / 2.0]));
+        pr.add_piece(piece);
+        let pr = Arc::new(pr);
+        let inside = |f: &SimFrame| {
+            f.notes
+                .iter()
+                .any(|n| matches!(n, DrapeNote::StartsInside(_)))
+        };
+        let r = SimRunner::start(women, || {});
+        r.play(pr.clone());
+        wait_for("a frame on the women's form", || r.latest().is_some());
+        assert!(!inside(&r.latest().unwrap()));
+        r.set_stage(men);
+        assert!(r.latest().is_none() && !r.is_draping(), "dropped at once");
+        r.play(pr);
+        wait_for("a frame on the men's form", || r.latest().is_some());
+        assert!(inside(&r.latest().unwrap()), "draped on the new form");
     }
 
     #[test]
