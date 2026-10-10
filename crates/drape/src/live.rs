@@ -6,7 +6,8 @@
 //! closed.
 //!
 //! A spot of a piece is named by where it is on the piece, not on the pattern table: a piece
-//! dragged across the table keeps its fabric (see [`moved`]).
+//! dragged across the table keeps its fabric, even when it is reshaped in the same rebuild (see
+//! [`moved`]).
 
 use crate::{Drape, FabricPanel};
 use glam::{DVec2, DVec3};
@@ -66,7 +67,8 @@ fn flat_triangle(panel: &FabricPanel, j: usize) -> [DVec2; 3] {
 
 /// The triangle of `panel` that `p` (m) is in, or else the nearest one: its index in the panel,
 /// and `p`'s barycentric coordinates in it (some negative when `p` is outside it). None for a
-/// panel with no triangles.
+/// panel with no triangles. It looks at every triangle: for many points of one panel, use an
+/// [`Index`].
 pub(crate) fn nearest_triangle(panel: &FabricPanel, p: DVec2) -> Option<(usize, [f64; 3])> {
     let j = (0..panel.triangles.len()).min_by(|&a, &b| {
         distance(flat_triangle(panel, a), p).total_cmp(&distance(flat_triangle(panel, b), p))
@@ -171,41 +173,115 @@ impl<'a> Index<'a> {
                 }
             }
         }
-        nearest_triangle(self.panel, p)
+        let j = self.nearest(p)?;
+        Some((j, bary(flat_triangle(self.panel, j), p)))
+    }
+
+    /// Looks at the triangles of cell (`c`, `r`), keeping the nearest to `p` so far in `best`.
+    fn look(&self, c: i64, r: i64, p: DVec2, best: &mut Option<(usize, f64)>) {
+        for &j in &self.cells[r as usize * self.cols + c as usize] {
+            let d = distance(flat_triangle(self.panel, j), p);
+            if best.is_none_or(|(_, b)| d < b) {
+                *best = Some((j, d));
+            }
+        }
+    }
+
+    /// The triangle nearest `p`, found in rings of cells round the cell of the grid nearest `p`:
+    /// ring 0 is that cell, ring 1 the cells touching it, and so on. It stops once the next ring
+    /// is further off than the best triangle so far, so a point just off the fabric looks at a
+    /// handful of cells, not at every triangle. None for a panel with no triangles.
+    fn nearest(&self, p: DVec2) -> Option<usize> {
+        if self.panel.triangles.is_empty() {
+            return None;
+        }
+        let (cols, rows) = (self.cols as i64, self.rows as i64);
+        // `as i64` saturates, so a wild point lands on the edge of the grid, not out of range.
+        let at = ((p - self.min) / self.cell).floor();
+        let (c0, r0) = (
+            (at.x as i64).clamp(0, cols - 1),
+            (at.y as i64).clamp(0, rows - 1),
+        );
+        // How far `p` is off the grid along each axis: every cell is at least that far from it.
+        let size = DVec2::new(self.cols as f64, self.rows as f64) * self.cell;
+        let out = (self.min - p).max(p - (self.min + size)).max(DVec2::ZERO);
+        let mut best: Option<(usize, f64)> = None;
+        for k in 0..cols.max(rows) {
+            let (x0, x1, y0, y1) = (c0 - k, c0 + k, r0 - k, r0 + k);
+            for r in y0.max(0)..=y1.min(rows - 1) {
+                if r == y0 || r == y1 {
+                    for c in x0.max(0)..=x1.min(cols - 1) {
+                        self.look(c, r, p, &mut best);
+                    }
+                } else {
+                    if x0 >= 0 {
+                        self.look(x0, r, p, &mut best);
+                    }
+                    if x1 < cols {
+                        self.look(x1, r, p, &mut best);
+                    }
+                }
+            }
+            // A triangle not seen yet has no point in rings 0..=k, so every point of it is more
+            // than k cells away from the grid cell nearest `p` along one axis (and at least as
+            // far as `out` along the other).
+            let reach = k as f64 * self.cell;
+            let next = (out + DVec2::new(reach, 0.0))
+                .length()
+                .min((out + DVec2::new(0.0, reach)).length());
+            if best.is_some_and(|(_, d)| d <= next) {
+                break;
+            }
+        }
+        best.map(|(j, _)| j)
     }
 }
 
 /// How far `now` has been moved on the pattern table (m) from `was`, the same piece as it was
-/// before: the one step every point of its outline (corners and curve handles) has taken. A
-/// piece dragged across the table is exactly that. Zero when the outline itself changed, moved
-/// or not: the shape of the piece is then not the one the old fabric was made for, and a point
-/// carries on from the nearest triangle of the old fabric.
+/// before: the step most of its points took, over the corners and curve handles that kept their
+/// index. A piece dragged across the table is that step for every point; one dragged and also
+/// reshaped before the fabric is made again (edits made in quick succession are made once) has
+/// the step for most of its points, and the rest are the reshaping. Zero when no step is shared
+/// by at least two points, and when as many points stayed as moved: a hem made longer is not a
+/// piece moved halfway, and a point it can't place is carried on from the nearest triangle.
 pub(crate) fn moved(was: &Shape, now: &Shape) -> DVec2 {
     let (a, b) = (&was.piece, &now.piece);
-    let (Some(first), Some(first_now)) = (a.vertices.first(), b.vertices.first()) else {
-        return DVec2::ZERO;
-    };
-    let step = first_now.pos - first.pos;
-    let same = |was: Point2, now: Point2| (now - was - step).length() <= SAME_MM;
-    let one_step = a.vertices.len() == b.vertices.len()
-        && a.edges.len() == b.edges.len()
-        && step.is_finite()
-        && a.vertices
-            .iter()
-            .zip(&b.vertices)
-            .all(|(v, w)| same(v.pos, w.pos))
-        && a.edges.iter().zip(&b.edges).all(|pair| match pair {
-            (Edge::Line, Edge::Line) => true,
-            (Edge::Curve { c1, c2 }, Edge::Curve { c1: d1, c2: d2 }) => {
-                same(*c1, *d1) && same(*c2, *d2)
-            }
-            _ => false,
-        });
-    if one_step {
-        DVec2::new(step.x / 1000.0, step.y / 1000.0)
-    } else {
-        DVec2::ZERO
+    let mut steps: Vec<Point2> = a
+        .vertices
+        .iter()
+        .zip(&b.vertices)
+        .map(|(v, w)| w.pos - v.pos)
+        .collect();
+    for pair in a.edges.iter().zip(&b.edges) {
+        if let (Edge::Curve { c1, c2 }, Edge::Curve { c1: d1, c2: d2 }) = pair {
+            steps.extend([*d1 - *c1, *d2 - *c2]);
+        }
     }
+    DVec2::new(
+        shared(steps.iter().map(|s| s.x).collect()) / 1000.0,
+        shared(steps.iter().map(|s| s.y).collect()) / 1000.0,
+    )
+}
+
+/// The value that most of `values` share (within [`SAME_MM`]), the one nearest zero when two
+/// are shared by as many; zero when none is shared by two or more.
+fn shared(mut values: Vec<f64>) -> f64 {
+    values.retain(|v| v.is_finite());
+    values.sort_by(f64::total_cmp);
+    let mut best: Option<(usize, f64)> = None;
+    let mut i = 0;
+    while i < values.len() {
+        let n = values[i..]
+            .iter()
+            .take_while(|v| **v - values[i] <= SAME_MM)
+            .count();
+        let value = values[i + n / 2];
+        if best.is_none_or(|(m, v)| n > m || (n == m && value.abs() < v.abs())) {
+            best = Some((n, value));
+        }
+        i += n;
+    }
+    best.filter(|(n, _)| *n >= 2).map_or(0.0, |(_, v)| v)
 }
 
 /// Where the points of `panel` (a panel of the new fabric) start, carrying on from drape `old`:
@@ -792,7 +868,7 @@ mod tests {
     }
 
     #[test]
-    fn a_piece_moved_is_the_step_all_its_points_took_and_a_changed_one_is_not() {
+    fn a_piece_moved_is_the_step_most_of_its_points_took_and_reshaping_alone_is_not_a_move() {
         let square = [(0.0, 0.0), (200.0, 0.0), (200.0, 300.0), (0.0, 300.0)];
         let shape_of = |project: &Project, id: PieceId| {
             geom::shapes(project)
@@ -819,8 +895,8 @@ mod tests {
             (x - 120.0).abs() < 1e-9 && (y + 35.5).abs() < 1e-9,
             "{x} {y}"
         );
-        // One corner moved: the piece changed. So did two (the hem made longer), and so did a
-        // handle on its own; and a piece dragged and changed.
+        // Reshaped, not moved: one corner, two (the hem made longer: as many points stayed as
+        // went, so nothing is moved), and a handle on its own.
         let mut one = pr.clone();
         one.piece_mut(id)
             .unwrap()
@@ -840,14 +916,40 @@ mod tests {
             c2: Point2::new(190.0, 60.0),
         };
         assert_eq!(step(&handle), (0.0, 0.0));
+        // Dragged and reshaped in one rebuild: most points still took the drag's step.
+        let same = |(x, y): (f64, f64)| (x - 120.0).abs() < 1e-9 && (y + 35.5).abs() < 1e-9;
         let mut both = dragged.clone();
         both.piece_mut(id)
             .unwrap()
             .move_vertex(2, Point2::new(400.0, 320.0));
-        assert_eq!(step(&both), (0.0, 0.0));
+        assert!(same(step(&both)), "{:?}", step(&both));
+        let mut dragged_hem = dragged.clone();
+        for v in 0..2 {
+            let p = dragged_hem.piece(id).unwrap().vertices[v].pos;
+            dragged_hem
+                .piece_mut(id)
+                .unwrap()
+                .move_vertex(v, p - Point2::new(0.0, 60.0));
+        }
+        assert!(same(step(&dragged_hem)), "{:?}", step(&dragged_hem));
         let mut straight = dragged.clone();
         straight.piece_mut(id).unwrap().edges[1] = Edge::Line;
-        assert_eq!(step(&straight), (0.0, 0.0));
+        assert!(same(step(&straight)), "{:?}", step(&straight));
+        // Nothing shared by two points (a triangle with every corner somewhere else) is not a move.
+        let mut triangle = Project::new();
+        let t = triangle.add_piece(corner_piece(
+            &[(0.0, 0.0), (100.0, 0.0), (0.0, 100.0)],
+            false,
+        ));
+        let was_t = shape_of(&triangle, t);
+        let piece = triangle.piece_mut(t).unwrap();
+        for (v, to) in [(10.0, 20.0), (130.0, 5.0), (7.0, 140.0)]
+            .iter()
+            .enumerate()
+        {
+            piece.move_vertex(v, Point2::new(to.0, to.1));
+        }
+        assert_eq!(moved(&was_t, &shape_of(&triangle, t)), DVec2::ZERO);
         // A vertex added: not the same outline.
         let mut more = pr.clone();
         more.piece_mut(id)
@@ -965,10 +1067,8 @@ mod tests {
         assert!(j < 100);
     }
 
-    #[test]
-    fn a_grid_over_ordinary_fabric_has_cells_about_as_wide_as_its_triangles() {
-        // A 60 x 80 cm piece of 2 cm triangles (a 40 x 30 grid of squares).
-        let (w, h, step) = (40, 30, 0.02);
+    /// A panel of `w` × `h` squares `step` (m) wide, two triangles each.
+    fn lattice(w: usize, h: usize, step: f64) -> FabricPanel {
         let mut flat = Vec::new();
         for r in 0..=h {
             for c in 0..=w {
@@ -983,7 +1083,13 @@ mod tests {
                 triangles.push([at(c, r), at(c + 1, r + 1), at(c, r + 1)]);
             }
         }
-        let panel = panel_of(flat, triangles);
+        panel_of(flat, triangles)
+    }
+
+    #[test]
+    fn a_grid_over_ordinary_fabric_has_cells_about_as_wide_as_its_triangles() {
+        // A 60 x 80 cm piece of 2 cm triangles (a 40 x 30 grid of squares).
+        let panel = lattice(40, 30, 0.02);
         let index = Index::new(&panel);
         assert!(index.cell > 0.01 && index.cell < 0.08, "{} m", index.cell);
         assert!(index.cells.len() <= 4 * panel.triangles.len());
@@ -1001,5 +1107,151 @@ mod tests {
         let index = Index::new(&empty);
         assert_eq!(index.cells.len(), 1);
         assert!(index.find(DVec2::new(1.0, 1.0)).is_none());
+    }
+
+    /// The distance from `p` to the nearest triangle of `panel`, looking at every one.
+    fn nearest_by_looking_at_all(panel: &FabricPanel, p: DVec2) -> f64 {
+        (0..panel.triangles.len())
+            .map(|j| distance(flat_triangle(panel, j), p))
+            .fold(f64::INFINITY, f64::min)
+    }
+
+    #[test]
+    fn the_nearest_triangle_through_the_grid_is_the_nearest_one() {
+        // A lattice with holes in it (every triangle whose number is a multiple of 7 or 13 is
+        // missing, and a whole block of squares), and a sliver panel of unequal triangles.
+        let mut holed = lattice(30, 20, 0.02);
+        let w = 30;
+        let mut k = 0;
+        holed.triangles.retain(|t| {
+            k += 1;
+            let (c, r) = ((t[0] as usize) % (w + 1), (t[0] as usize) / (w + 1));
+            let block = (10..16).contains(&c) && (6..14).contains(&r);
+            !(k % 7 == 0 || k % 13 == 0 || block)
+        });
+        let sliver = {
+            let n = 30;
+            let mut flat = Vec::new();
+            for i in 0..=n {
+                let t = 2.0 * i as f64 / n as f64;
+                flat.extend([[t, t * 0.5], [t + 0.01, t * 0.5]]);
+            }
+            let triangles = (0..n as u32)
+                .flat_map(|i| {
+                    let k = 2 * i;
+                    [[k, k + 1, k + 2], [k + 1, k + 3, k + 2]]
+                })
+                .collect();
+            panel_of(flat, triangles)
+        };
+        // A fixed scatter of points: inside the holes, off the edges, and far outside.
+        let mut seed = 12345_u64;
+        let mut next = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1_u64 << 53) as f64
+        };
+        for panel in [&holed, &sliver] {
+            let index = Index::new(panel);
+            let mut off = 0;
+            for _ in 0..600 {
+                let reach: f64 = [0.05, 1.0, 40.0][(next() * 3.0) as usize % 3];
+                let p = DVec2::new(
+                    (next() - 0.25) * 2.0 * reach.max(0.7),
+                    (next() - 0.25) * 2.0 * reach.max(0.5),
+                );
+                let (j, b) = index.find(p).expect("a panel with triangles");
+                let found = distance(flat_triangle(panel, j), p);
+                let best = nearest_by_looking_at_all(panel, p);
+                assert!(
+                    (found - best).abs() <= 1e-12 * (1.0 + best),
+                    "{p:?}: triangle {j} is {found} away, the nearest is {best}"
+                );
+                assert_eq!(b, bary(flat_triangle(panel, j), p));
+                off += usize::from(best > 0.0);
+            }
+            assert!(off > 100, "{off} of the points were off the fabric");
+        }
+        // Nothing to find in a panel without triangles, whatever the point.
+        assert!(
+            Index::new(&panel_of(vec![], vec![]))
+                .find(DVec2::new(1e300, -1e300))
+                .is_none()
+        );
+        // A wild point is still the nearest triangle, not a panic or a hang.
+        let index = Index::new(&holed);
+        for p in [
+            DVec2::new(f64::MAX, 0.0),
+            DVec2::new(-1e300, 1e300),
+            DVec2::new(f64::NAN, 0.0),
+        ] {
+            assert!(index.find(p).is_some());
+        }
+    }
+
+    #[test]
+    fn a_point_off_a_big_panel_finds_its_nearest_triangle_without_looking_at_them_all() {
+        // A 75 × 60 cm panel of 9,000 triangles, and the points of a strip of new fabric below
+        // it (a hem made longer), none of them in a triangle of the old fabric. Looking at
+        // every triangle for every point takes about a second here; the grid, a few ms.
+        let panel = lattice(75, 60, 0.01);
+        assert_eq!(panel.triangles.len(), 9_000);
+        let points: Vec<DVec2> = (0..40)
+            .flat_map(|r| {
+                (0..100).map(move |c| DVec2::new(0.0075 * c as f64, -0.0015 * (r + 1) as f64))
+            })
+            .collect();
+        let start = std::time::Instant::now();
+        let index = Index::new(&panel);
+        let found: Vec<(usize, [f64; 3])> = points
+            .iter()
+            .map(|p| index.find(*p).expect("a triangle"))
+            .collect();
+        let took = start.elapsed();
+        assert!(
+            took < std::time::Duration::from_millis(250),
+            "4,000 points off a 9,000-triangle panel took {took:?}"
+        );
+        // And they found the right ones: the bottom row of the lattice, directly above.
+        for (p, (j, b)) in points.iter().zip(&found) {
+            let t = flat_triangle(&panel, *j);
+            assert!(t.iter().all(|v| v.y <= 0.01 + 1e-12), "{p:?} found {t:?}");
+            assert!(
+                b.iter().any(|v| *v < 0.0),
+                "outside, so a negative coordinate"
+            );
+        }
+    }
+
+    #[test]
+    fn a_piece_dragged_and_reshaped_in_one_rebuild_keeps_its_fabric_within_a_few_mm() {
+        let stage = Stage::shared();
+        let pr = hanging(300.0);
+        let mut old = Drape::new(Arc::new(pr.clone()), &stage);
+        run(&mut old, &stage, 90);
+        let b = pr.pieces[1].id;
+        // Piece B is dragged 250 mm right and 40 up (its pin goes with it), and its top right
+        // corner is moved out 3 mm and up 2: one rebuild after both (edits made in quick
+        // succession are made once, as is fast Undo over a drag and a reshape).
+        let mut project = pr.clone();
+        let d = Point2::new(250.0, 40.0);
+        project.piece_mut(b).unwrap().translate(d);
+        project.move_pins(b, d);
+        project
+            .piece_mut(b)
+            .unwrap()
+            .move_vertex(2, Point2::new(403.0, 302.0) + d);
+        assert_eq!(project.check(), Ok(()));
+        let drape = old.rebuilt(Arc::new(project), &stage);
+        // Every spot of B on the pattern is where it was, a little further right on the table.
+        let mut worst: f64 = 0.0;
+        for i in 0..=8 {
+            for j in 0..=6 {
+                let at = Point2::new(200.0 + 25.0 * i as f64, 50.0 * j as f64);
+                worst = worst.max((spot(&old, b, at) - spot(&drape, b, at + d)).length());
+            }
+        }
+        assert!(worst < 0.005, "{:.1} mm", worst * 1000.0);
     }
 }
