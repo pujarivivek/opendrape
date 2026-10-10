@@ -84,6 +84,8 @@ pub struct GarmentMesh {
     pub panels: Vec<PanelMesh>,
     /// Every pair of points sewn together, in seam order.
     pub stitches: Vec<Stitch>,
+    /// For each stitch, the seam it sews and whether that is the seam's mirror image.
+    pub stitch_seams: Vec<(SeamId, bool)>,
     pub notes: Vec<MeshNote>,
     /// The edge length (mm) the fabric was made with.
     pub edge_mm: f64,
@@ -207,6 +209,7 @@ fn samples(breaks: &[f64], steps: &[usize], corners: &[f64]) -> Vec<f64> {
 struct Made {
     panels: Vec<PanelMesh>,
     stitches: Vec<Stitch>,
+    stitch_seams: Vec<(SeamId, bool)>,
     /// Whether each shape became a panel.
     meshed: Vec<bool>,
     /// What went wrong with shapes and their cut-outs, in shape order.
@@ -254,6 +257,7 @@ pub fn build(project: &Project, params: &MeshParams) -> GarmentMesh {
     GarmentMesh {
         panels: made.panels,
         stitches: made.stitches,
+        stitch_seams: made.stitch_seams,
         notes,
         edge_mm: h,
     }
@@ -327,6 +331,7 @@ fn mesh_shapes(shapes: &[Shape], seams: &[SeamPlan], h: f64, max_particles: usiz
     // sides within each shape matches the order they were handed to `panel` above.
     let mut next_side = vec![0usize; shapes.len()];
     let mut stitches = Vec::new();
+    let mut stitch_seams = Vec::new();
     for (plan, (at_a, _)) in seams.iter().zip(&layouts) {
         let (sa, sb) = (plan.shape_a, plan.shape_b);
         let side_a = next_side[sa];
@@ -336,12 +341,14 @@ fn mesh_shapes(shapes: &[Shape], seams: &[SeamPlan], h: f64, max_particles: usiz
         if let (Some((pa, a)), Some((pb, b))) = (&made[sa], &made[sb]) {
             for k in 0..at_a.len() {
                 stitches.push(((*pa, a[side_a][k]), (*pb, b[side_b][k])));
+                stitch_seams.push((plan.seam.id, plan.mirrored));
             }
         }
     }
     Made {
         panels,
         stitches,
+        stitch_seams,
         meshed: made.iter().map(Option::is_some).collect(),
         notes,
         complete,

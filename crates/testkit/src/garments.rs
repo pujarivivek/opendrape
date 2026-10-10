@@ -273,7 +273,7 @@ pub(crate) fn tube(y0: f64, y1: f64, zc: f64, body: &BodyCollider) -> Solver {
         builder.build(),
         Params {
             gravity_delay: 0.0,
-            weld_time: None,
+            weld_timeout: None,
             ..Params::default()
         },
     )

@@ -14,11 +14,8 @@ use glam::{DVec2, DVec3};
 use opendrape_core::{Edge, Point2};
 use opendrape_geom::Shape;
 use opendrape_mesh::PanelMesh;
-use opendrape_sim::{Cloth, Params};
+use opendrape_sim::Params;
 
-/// Stitches whose two ends start this close (m) are already sewn. When every stitch of the
-/// new cloth is, they are all welded at once.
-pub const SEWN_GAP_M: f64 = 0.001;
 /// The old fabric's triangles are sorted into a grid of square cells to find a point's triangle
 /// quickly. The cells are as wide as the triangles are, but the grid never has more than this
 /// many cells for each triangle, however far the piece reaches.
@@ -398,20 +395,14 @@ pub(crate) fn warm_positions(
         .collect()
 }
 
-/// How a drape made again while draping runs: gravity at once (it was already hanging), and its
-/// seams welded at once when every stitch starts closed; otherwise they close and weld as at
-/// Play.
-pub(crate) fn warm_params(cloth: &Cloth) -> Params {
-    let x = cloth.positions();
-    let closed = cloth
-        .stitch_pairs()
-        .all(|(a, b)| (x[a] - x[b]).length() <= SEWN_GAP_M);
-    let play = Params::default();
+/// How a drape made again while draping runs: gravity at once (it was already hanging). Its
+/// seams weld as at Play, each by its gap: one that starts closed welds on the first frame,
+/// one sewn since closes first.
+pub(crate) fn warm_params() -> Params {
     Params {
         gravity_delay: 0.0,
         gravity_ramp: 0.0,
-        weld_time: if closed { Some(0.0) } else { play.weld_time },
-        ..play
+        ..Params::default()
     }
 }
 
@@ -503,7 +494,13 @@ mod tests {
         let c = new.solver.cloth();
         assert!(c.velocities().iter().all(|v| *v == DVec3::ZERO));
         let params = new.solver.params();
-        assert_eq!((params.weld_time, params.gravity_delay), (Some(0.0), 0.0));
+        assert_eq!(params.gravity_delay, 0.0);
+        assert!(
+            c.open_seam_gaps()
+                .iter()
+                .all(|&(_, gap)| gap <= params.weld_gap),
+            "the closed seam welds on the first frame"
+        );
         assert_eq!(new.fabric, old.fabric, "the same fabric");
     }
 
@@ -586,7 +583,10 @@ mod tests {
             .map(|(a, b)| (x[a] - x[b]).length())
             .fold(0.0, f64::max);
         assert!(widest > 0.05, "{widest}");
-        assert_eq!(new.solver.params().weld_time, Params::default().weld_time);
+        assert_eq!(
+            new.solver.params().weld_timeout,
+            Params::default().weld_timeout
+        );
     }
 
     #[test]

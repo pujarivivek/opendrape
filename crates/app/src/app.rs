@@ -1237,6 +1237,7 @@ fn note_text(note: &DrapeNote, project: &Project) -> String {
             difference = project.units.format(by_mm)
         ),
         DrapeNote::StartsInside(id) => tr!("note-starts-inside", name = name(id)),
+        DrapeNote::SeamDidNotClose(seam) => tr!("note-seam-did-not-close", number = seam.0),
     }
 }
 

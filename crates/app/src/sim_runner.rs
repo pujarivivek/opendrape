@@ -271,6 +271,12 @@ impl Drape {
     /// renderer will get it (single precision: a double too big for one counts too). Every
     /// frame, the first included, goes through here before anyone sees it.
     fn frame(&mut self, seq: u64, step_ms: f64) -> Option<SimFrame> {
+        let found = self.made.take_notes();
+        if !found.is_empty() {
+            let mut notes = (*self.notes).clone();
+            notes.extend(found);
+            self.notes = Arc::new(notes);
+        }
         let c = self.made.solver.cloth();
         let positions: Vec<Vec3> = c.positions().iter().map(|p| p.as_vec3()).collect();
         if positions

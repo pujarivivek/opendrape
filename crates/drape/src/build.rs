@@ -19,6 +19,8 @@ pub enum DrapeNote {
     Mesh(MeshNote),
     /// Part of this piece starts inside the form.
     StartsInside(PieceId),
+    /// This seam hadn't closed when the drape stopped waiting for it, so it was pulled shut.
+    SeamDidNotClose(opendrape_core::SeamId),
 }
 
 /// One panel of a drape's fabric: the shape it was made from, its flat points (m, on the
@@ -113,6 +115,9 @@ pub struct Drape {
     pub fabric: Arc<Fabric>,
     pub project: Arc<Project>,
     pins: Vec<AttachmentId>,
+    /// The seam each of the solver's stitch groups sews (a mirror image shares its original's
+    /// id).
+    seams: Vec<opendrape_core::SeamId>,
 }
 
 impl Drape {
@@ -132,6 +137,22 @@ impl Drape {
     /// benchmarks and quality presets).
     pub fn with(project: Arc<Project>, stage: &Stage, mesh: &MeshParams, params: Params) -> Self {
         Self::make(project, stage, None, mesh, params)
+    }
+
+    /// What the solver has found since the last call: a seam that would not close by itself
+    /// and was pulled shut.
+    pub fn take_notes(&mut self) -> Vec<DrapeNote> {
+        let mut out = Vec::new();
+        for note in self.solver.take_notes() {
+            let opendrape_sim::SolverNote::SeamForcedShut { group, .. } = note;
+            if let Some(&seam) = self.seams.get(group as usize) {
+                let n = DrapeNote::SeamDidNotClose(seam);
+                if !out.contains(&n) {
+                    out.push(n);
+                }
+            }
+        }
+        out
     }
 
     /// The drape of `project`, an edit of this drape's project, carrying on from where this one
@@ -201,13 +222,19 @@ impl Drape {
                 1.0,
             ));
         }
-        for &((pa, a), (pb, b)) in &mesh.stitches {
-            builder.stitch((ids[pa], a), (ids[pb], b));
+        // Each seam (and each mirror image) is a stitch group of its own: it welds on its own.
+        let mut seams: Vec<(opendrape_core::SeamId, bool)> = Vec::new();
+        for (&((pa, a), (pb, b)), &seam) in mesh.stitches.iter().zip(&mesh.stitch_seams) {
+            let group = seams.iter().position(|s| *s == seam).unwrap_or_else(|| {
+                seams.push(seam);
+                seams.len() - 1
+            });
+            builder.stitch_in((ids[pa], a), (ids[pb], b), group as u32);
         }
         let cloth = builder.build();
         let params = match from {
             None => params,
-            Some(_) => live::warm_params(&cloth),
+            Some(_) => live::warm_params(),
         };
         let mut drape = Self {
             solver: Solver::new(cloth, params),
@@ -215,6 +242,7 @@ impl Drape {
             fabric: Arc::new(fabric),
             project,
             pins: Vec::new(),
+            seams: seams.into_iter().map(|(id, _)| id).collect(),
         };
         drape.hold_pins();
         drape

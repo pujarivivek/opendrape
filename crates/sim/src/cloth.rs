@@ -1,5 +1,5 @@
 use glam::{DVec2, DVec3};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// One piece of fabric: a triangle mesh, its initial 3D placement, and optionally its flat
 /// pattern shape (metres), which defines rest lengths and mass. Without `flat`, the 3D
@@ -35,6 +35,10 @@ pub struct Cloth {
     pub(crate) bend: Vec<Link>,
     /// `rest` = distance when the seam was made; it shrinks to 0 while the seam closes.
     pub(crate) stitches: Vec<Link>,
+    /// The seam each stitch belongs to (welded together once every stitch of it is closed).
+    pub(crate) stitch_group: Vec<u32>,
+    /// Whether each particle has been through a weld (it lies on a welded seam).
+    pub(crate) welded: Vec<bool>,
     pub(crate) topology_version: u64,
     /// Points of the cloth pulled to targets (see `attach.rs`); a removed one leaves None.
     pub(crate) attachments: Vec<Option<crate::attach::Attachment>>,
@@ -62,8 +66,18 @@ fn unique_edges(triangles: &[[u32; 3]]) -> Vec<(u32, u32)> {
     e
 }
 
-/// For every edge shared by exactly two triangles, the two vertices opposite it (sorted by edge).
-fn bending_pairs(triangles: &[[u32; 3]]) -> Vec<(u32, u32)> {
+/// An edge `u`–`v` shared by exactly two triangles, and the vertices `p` and `q` opposite it in
+/// each: the fabric bends about the edge, and a distance link `p`–`q` resists it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Hinge {
+    u: u32,
+    v: u32,
+    p: u32,
+    q: u32,
+}
+
+/// Every edge shared by exactly two triangles, sorted by edge.
+fn hinges(triangles: &[[u32; 3]]) -> Vec<Hinge> {
     let mut opposite: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
     for t in triangles {
         for k in 0..3 {
@@ -76,11 +90,36 @@ fn bending_pairs(triangles: &[[u32; 3]]) -> Vec<(u32, u32)> {
     let mut keys: Vec<_> = opposite.keys().copied().collect();
     keys.sort_unstable();
     keys.into_iter()
-        .filter_map(|k| match opposite[&k].as_slice() {
-            [p, q] => Some((*p, *q)),
+        .filter_map(|(u, v)| match opposite[&(u, v)].as_slice() {
+            [p, q] => Some(Hinge { u, v, p: *p, q: *q }),
             _ => None,
         })
         .collect()
+}
+
+/// How far apart a hinge's opposite vertices lie with both its triangles laid flat in one
+/// plane, from the rest lengths of the five edges alone (the law of cosines twice: the
+/// angles at `u`, added). None if a length is missing or the lengths make no triangle.
+fn unfolded(rest: &HashMap<(u32, u32), f64>, h: &Hinge) -> Option<f64> {
+    let len = |a, b| rest.get(&edge_key(a, b)).copied();
+    let (uv, up, vp, uq, vq) = (
+        len(h.u, h.v)?,
+        len(h.u, h.p)?,
+        len(h.v, h.p)?,
+        len(h.u, h.q)?,
+        len(h.v, h.q)?,
+    );
+    // The angle between sides `a` and `b`, with `c` opposite it.
+    let angle = |a: f64, b: f64, c: f64| {
+        if a <= 0.0 || b <= 0.0 {
+            return None;
+        }
+        let cos = (a * a + b * b - c * c) / (2.0 * a * b);
+        (cos.abs() <= 1.0 + 1e-9).then(|| cos.clamp(-1.0, 1.0).acos())
+    };
+    let at_u = angle(uv, up, vp)? + angle(uv, uq, vq)?;
+    let d2 = up * up + uq * uq - 2.0 * up * uq * at_u.cos();
+    (d2 > 0.0).then(|| d2.sqrt())
 }
 
 impl ClothBuilder {
@@ -116,6 +155,7 @@ impl ClothBuilder {
                 .inv_mass
                 .push(if m > 0.0 { 1.0 / m } else { 0.0 });
             self.cloth.alive.push(m > 0.0);
+            self.cloth.welded.push(false);
         }
         // Links to such a vertex would turn it into an invisible pin holding the cloth up.
         let has_mass = |&(a, b): &(u32, u32)| mass[a as usize] > 0.0 && mass[b as usize] > 0.0;
@@ -131,8 +171,9 @@ impl ClothBuilder {
                 .map(link),
         );
         self.cloth.bend.extend(
-            bending_pairs(&panel.triangles)
+            hinges(&panel.triangles)
                 .into_iter()
+                .map(|h| (h.p, h.q))
                 .filter(has_mass)
                 .map(link),
         );
@@ -142,11 +183,19 @@ impl ClothBuilder {
         PanelId(base)
     }
 
-    /// Sews particle `a` to particle `b`: pulled together over `Params::stitch_close_time`.
+    /// Sews particle `a` to particle `b`: pulled together over `Params::stitch_close_time`, as
+    /// part of seam 0 (see [`Self::stitch_in`]).
     pub fn stitch(&mut self, a: (PanelId, u32), b: (PanelId, u32)) {
+        self.stitch_in(a, b, 0);
+    }
+
+    /// Sews particle `a` to particle `b` as part of seam `group`: the seam welds once every
+    /// stitch of it has closed.
+    pub fn stitch_in(&mut self, a: (PanelId, u32), b: (PanelId, u32), group: u32) {
         let (i, j) = (a.0.0 + a.1, b.0.0 + b.1);
         let rest = self.cloth.x[i as usize].distance(self.cloth.x[j as usize]);
         self.cloth.stitches.push(Link { a: i, b: j, rest });
+        self.cloth.stitch_group.push(group);
     }
 
     /// Fixes a particle in space.
@@ -206,6 +255,21 @@ impl Cloth {
     pub fn bend_link_count(&self) -> usize {
         self.bend.len()
     }
+    pub fn bend_links(&self) -> impl Iterator<Item = (usize, usize, f64)> + '_ {
+        self.bend
+            .iter()
+            .map(|l| (l.a as usize, l.b as usize, l.rest))
+    }
+    /// The widest gap (m) of every seam still open, by seam, in seam order.
+    pub fn open_seam_gaps(&self) -> Vec<(u32, f64)> {
+        let mut worst: BTreeMap<u32, f64> = BTreeMap::new();
+        for (l, &g) in self.stitches.iter().zip(&self.stitch_group) {
+            let d = self.x[l.a as usize].distance(self.x[l.b as usize]);
+            let w = worst.entry(g).or_insert(0.0);
+            *w = w.max(d);
+        }
+        worst.into_iter().collect()
+    }
     pub fn stitch_pairs(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
         self.stitches.iter().map(|l| (l.a as usize, l.b as usize))
     }
@@ -228,12 +292,34 @@ impl Cloth {
         &self.seam_edges
     }
 
-    /// Merges each stitched pair into one particle and rebuilds the constraints on the welded
-    /// mesh, so a closed seam behaves like continuous fabric with zero gap.
-    pub fn weld_stitches(&mut self) {
-        if self.stitches.is_empty() {
-            return;
+    /// Welds every seam whose stitches are all within `gap` (m): each stitched pair merges
+    /// into one particle and the constraints are rebuilt on the welded mesh, so a closed seam
+    /// behaves like continuous fabric with zero gap. Returns the seams welded.
+    pub fn weld_closed(&mut self, gap: f64) -> Vec<u32> {
+        let closed: Vec<u32> = self
+            .open_seam_gaps()
+            .into_iter()
+            .filter(|&(_, d)| d <= gap)
+            .map(|(g, _)| g)
+            .collect();
+        if closed.is_empty() {
+            return closed;
         }
+        let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.stitches)
+            .into_iter()
+            .zip(std::mem::take(&mut self.stitch_group))
+            .partition(|(_, g)| closed.binary_search(g).is_ok());
+        (self.stitches, self.stitch_group) = later.into_iter().unzip();
+        self.merge(now.into_iter().map(|(l, _)| l));
+        closed
+    }
+
+    /// Welds every seam, closed or not.
+    pub fn weld_stitches(&mut self) {
+        self.weld_closed(f64::INFINITY);
+    }
+
+    fn merge(&mut self, stitches: impl Iterator<Item = Link>) {
         let mut map: Vec<u32> = (0..self.x.len() as u32).collect();
         fn root(map: &[u32], mut k: u32) -> u32 {
             while map[k as usize] != k {
@@ -241,10 +327,9 @@ impl Cloth {
             }
             k
         }
-        let mut stitched = vec![false; self.x.len()];
-        for s in std::mem::take(&mut self.stitches) {
+        for s in stitches {
             let (a, b) = (root(&map, s.a) as usize, root(&map, s.b) as usize);
-            stitched[a] = true;
+            self.welded[a] = true;
             if a == b {
                 continue;
             }
@@ -256,7 +341,12 @@ impl Cloth {
             } else {
                 (self.x[a] + self.x[b]) * 0.5
             };
-            self.v[a] = (self.v[a] + self.v[b]) * 0.5;
+            // Momentum is kept: the merged particle moves as the two did together.
+            self.v[a] = if wa == 0.0 || wb == 0.0 {
+                DVec3::ZERO
+            } else {
+                (self.v[a] / wa + self.v[b] / wb) / (1.0 / wa + 1.0 / wb)
+            };
             self.inv_mass[a] = if wa == 0.0 || wb == 0.0 {
                 0.0
             } else {
@@ -269,42 +359,77 @@ impl Cloth {
             self.v[b] = DVec3::ZERO;
         }
         let m = |k: u32| root(&map, k);
+        // Seams still open follow their merged particles; a pair this weld has already joined
+        // (through a seam that meets it at a corner) is done.
+        let open: Vec<(Link, u32)> = std::mem::take(&mut self.stitches)
+            .into_iter()
+            .zip(std::mem::take(&mut self.stitch_group))
+            .map(|(l, g)| {
+                (
+                    Link {
+                        a: m(l.a),
+                        b: m(l.b),
+                        rest: l.rest,
+                    },
+                    g,
+                )
+            })
+            .filter(|(l, _)| l.a != l.b)
+            .collect();
+        (self.stitches, self.stitch_group) = open.into_iter().unzip();
         for t in &mut self.triangles {
             *t = t.map(m);
         }
+        // Rest lengths of the welded mesh's edges. Where the two sides of a seam differ (ease),
+        // the shared edge takes their mean.
+        let mut sums: HashMap<(u32, u32), (f64, f64)> = HashMap::new();
+        for l in &self.stretch {
+            let (a, b) = (m(l.a), m(l.b));
+            if a != b {
+                let e = sums.entry(edge_key(a, b)).or_insert((0.0, 0.0));
+                e.0 += l.rest;
+                e.1 += 1.0;
+            }
+        }
+        let rest_of: HashMap<(u32, u32), f64> =
+            sums.into_iter().map(|(k, (sum, n))| (k, sum / n)).collect();
         let mut seen = HashSet::new();
         self.stretch = std::mem::take(&mut self.stretch)
             .into_iter()
-            .map(|l| Link {
-                a: m(l.a),
-                b: m(l.b),
-                rest: l.rest,
+            .map(|l| (m(l.a), m(l.b)))
+            .filter(|&(a, b)| a != b && seen.insert(edge_key(a, b)))
+            .map(|(a, b)| Link {
+                a,
+                b,
+                rest: rest_of[&edge_key(a, b)],
             })
-            .filter(|l| l.a != l.b && seen.insert(edge_key(l.a, l.b)))
             .collect();
-        self.seam_edges.extend(
-            self.stretch
-                .iter()
-                .filter(|l| stitched[l.a as usize] && stitched[l.b as usize])
-                .map(|l| edge_key(l.a, l.b)),
-        );
+        let welded = &self.welded;
+        self.seam_edges = self
+            .stretch
+            .iter()
+            .filter(|l| welded[l.a as usize] && welded[l.b as usize])
+            .map(|l| edge_key(l.a, l.b))
+            .collect();
         self.seam_edges.sort_unstable();
-        self.seam_edges.dedup();
+        // Hinges that were there keep their rest. A hinge across the seam rests where the
+        // pattern lays flat, not where the fabric happens to be as it welds.
         let old: HashMap<(u32, u32), f64> = self
             .bend
             .iter()
             .map(|l| (edge_key(m(l.a), m(l.b)), l.rest))
             .collect();
         let x = &self.x;
-        self.bend = bending_pairs(&self.triangles)
+        self.bend = hinges(&self.triangles)
             .into_iter()
-            .map(|(a, b)| Link {
-                a,
-                b,
+            .map(|h| Link {
+                a: h.p,
+                b: h.q,
                 rest: old
-                    .get(&edge_key(a, b))
+                    .get(&edge_key(h.p, h.q))
                     .copied()
-                    .unwrap_or_else(|| x[a as usize].distance(x[b as usize])),
+                    .or_else(|| unfolded(&rest_of, &h))
+                    .unwrap_or_else(|| x[h.p as usize].distance(x[h.q as usize])),
             })
             .collect();
         self.topology_version += 1;
@@ -385,5 +510,57 @@ mod tests {
         // The two triangles now share the welded edge, so a bending link spans it.
         assert_eq!(c.bend_link_count(), 1);
         assert_eq!(c.seam_edges(), &[(0, 1)], "the welded edge is the seam");
+    }
+
+    #[test]
+    fn a_welded_seam_rests_where_the_pattern_lays_flat() {
+        // Two right triangles sewn along their vertical legs (corners 0 and 2), the second
+        // folded up 90° in 3D: their far corners are 14 cm apart as they weld, 20 cm apart
+        // with the pattern laid flat.
+        let mut b = ClothBuilder::new(0.15);
+        let p = b.add_panel(&tri_panel(1.0, DVec3::ZERO), 1.0);
+        let folded = Panel {
+            positions: vec![
+                DVec3::ZERO,
+                DVec3::new(0.0, 0.0, 0.1),
+                DVec3::new(0.0, 0.1, 0.0),
+            ],
+            ..tri_panel(1.0, DVec3::ZERO)
+        };
+        let q = b.add_panel(&folded, 1.0);
+        b.stitch((p, 0), (q, 0));
+        b.stitch((p, 2), (q, 2));
+        let mut c = b.build();
+        c.weld_stitches();
+        let rests: Vec<f64> = c.bend_links().map(|(_, _, r)| r).collect();
+        assert_eq!(rests.len(), 1);
+        assert!((rests[0] - 0.2).abs() < 1e-9, "unfolded: {}", rests[0]);
+    }
+
+    #[test]
+    fn seams_weld_one_at_a_time_as_each_closes_and_the_rest_follow() {
+        // A and B lie on each other, sewn as seam 1; C is sewn to B as seam 2 but 5 cm away.
+        // The two seams meet at corner 0.
+        let mut b = ClothBuilder::new(0.15);
+        let a = b.add_panel(&tri_panel(1.0, DVec3::ZERO), 1.0);
+        let p = b.add_panel(&tri_panel(1.0, DVec3::ZERO), 1.0);
+        let c = b.add_panel(&tri_panel(1.0, DVec3::new(0.0, 0.0, 0.05)), 1.0);
+        b.stitch_in((a, 0), (p, 0), 1);
+        b.stitch_in((a, 2), (p, 2), 1);
+        b.stitch_in((p, 0), (c, 0), 2);
+        b.stitch_in((p, 1), (c, 1), 2);
+        let mut cloth = b.build();
+        assert_eq!(cloth.open_seam_gaps(), vec![(1, 0.0), (2, 0.05)]);
+        assert_eq!(cloth.weld_closed(0.002), vec![1]);
+        assert!(cloth.has_open_stitches(), "seam 2 is still open");
+        // B's corner 0 merged into A's: seam 2's first stitch now reaches A's corner.
+        let pairs: Vec<_> = cloth.stitch_pairs().collect();
+        assert_eq!(pairs, vec![(0, 6), (4, 7)]);
+        assert_eq!(cloth.open_seam_gaps(), vec![(2, 0.05)]);
+        assert_eq!(cloth.weld_closed(0.002), vec![], "not closed yet");
+        cloth.weld_stitches();
+        assert!(!cloth.has_open_stitches());
+        assert_eq!((0..cloth.len()).filter(|&i| cloth.is_alive(i)).count(), 5);
+        assert_eq!(cloth.topology_version(), 2);
     }
 }

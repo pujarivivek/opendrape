@@ -76,13 +76,16 @@ fn a_drafted_skirt_drapes_on_the_form_without_poking_through_and_settles() {
         solver.step(Some(collider));
     }
     let (time, (gap_max, gap_mean)) = before_weld.expect("the seams were open at the start");
-    // The step that welds starts at the weld time, so that is the state measured.
-    let weld = solver.params().weld_time.expect("seams weld");
-    assert!(
-        time >= weld && time < weld + FRAME_DT,
-        "measured at {time:.4} s, the weld is at {weld} s"
+    eprintln!(
+        "seam gaps before welding: max {gap_max:.2} mm, mean {gap_mean:.2} mm at {time:.3} s"
     );
-    eprintln!("seam gaps before welding: max {gap_max:.2} mm, mean {gap_mean:.2} mm");
+    // Seams weld once they have closed: at the end of the stitch ramp, and well before the
+    // drape would give up waiting and pull them shut.
+    let close = solver.params().stitch_close_time;
+    assert!(
+        time >= close - 2.0 * FRAME_DT && time < solver.params().weld_timeout.unwrap(),
+        "measured at {time:.4} s, the seams close over {close} s"
+    );
     assert!(
         gap_max <= 4.0 && gap_mean <= 1.0,
         "seams didn't close: {gap_max:.2} / {gap_mean:.2} mm"
@@ -96,11 +99,7 @@ fn a_drafted_skirt_drapes_on_the_form_without_poking_through_and_settles() {
     );
     // Welding drops the stitches (so the gap measured now is always 0): the gap above is the
     // seam's quality. What this checks is that the weld happened to every stitched pair.
-    assert!(
-        !r.open_stitches,
-        "welded after {:.1} s",
-        solver.params().weld_time.unwrap()
-    );
+    assert!(!r.open_stitches, "welded within {:.1} s", solver.time());
     let cloth = solver.cloth();
     let unwelded: Vec<_> = stitched
         .iter()

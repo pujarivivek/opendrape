@@ -19,8 +19,13 @@ pub struct Params {
     pub gravity_ramp: f64,
     /// Seconds over which stitched seams pull shut.
     pub stitch_close_time: f64,
-    /// When to weld closed seams (None: never).
-    pub weld_time: Option<f64>,
+    /// A seam welds (its stitched pairs merge) once every stitch of it is within this gap (m).
+    /// A seam under tension (fabric tight over the body) keeps a small gap however long it
+    /// pulls, since the fabric's own constraints have the last word in every pass: a third of
+    /// an edge length is the tension a weld takes over as strain.
+    pub weld_gap: f64,
+    /// When seams that still haven't closed are welded anyway, with a note (None: never).
+    pub weld_timeout: Option<f64>,
     /// XPBD compliance (m/N) of fabric edges and of bending.
     pub stretch_compliance: f64,
     pub bend_compliance: f64,
@@ -43,7 +48,8 @@ impl Default for Params {
             gravity_delay: 0.6,
             gravity_ramp: 0.3,
             stitch_close_time: 0.5,
-            weld_time: Some(0.8),
+            weld_gap: 0.004,
+            weld_timeout: Some(3.0),
             stretch_compliance: 1e-6,
             bend_compliance: 1.0,
             damping: 1.0,
@@ -55,11 +61,20 @@ impl Default for Params {
     }
 }
 
+/// Something the solver wants the student to know.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SolverNote {
+    /// Seam `group` had not closed by `Params::weld_timeout` and was pulled shut from a gap of
+    /// `gap_mm`.
+    SeamForcedShut { group: u32, gap_mm: f64 },
+}
+
 pub struct Solver {
     cloth: Cloth,
     params: Params,
     time: f64,
     phases: PhaseTimes,
+    notes: Vec<SolverNote>,
 }
 
 impl Solver {
@@ -69,7 +84,12 @@ impl Solver {
             params,
             time: 0.0,
             phases: PhaseTimes::default(),
+            notes: Vec::new(),
         }
+    }
+    /// The notes made since the last call.
+    pub fn take_notes(&mut self) -> Vec<SolverNote> {
+        std::mem::take(&mut self.notes)
     }
     pub fn cloth(&self) -> &Cloth {
         &self.cloth
@@ -96,8 +116,20 @@ impl Solver {
         let t = self.time;
         let mut ph = PhaseTimes::default();
         let mut lap = Lap::start();
-        if p.weld_time.is_some_and(|tw| t >= tw) && self.cloth.has_open_stitches() {
-            self.cloth.weld_stitches();
+        if self.cloth.has_open_stitches() {
+            if p.weld_timeout.is_some_and(|tw| t >= tw) {
+                for (group, gap) in self.cloth.open_seam_gaps() {
+                    if gap > p.weld_gap {
+                        self.notes.push(SolverNote::SeamForcedShut {
+                            group,
+                            gap_mm: gap * 1000.0,
+                        });
+                    }
+                }
+                self.cloth.weld_stitches();
+            } else {
+                self.cloth.weld_closed(p.weld_gap);
+            }
         }
         lap.lap(&mut ph.weld);
         let gravity = if t < p.gravity_delay {
@@ -317,20 +349,65 @@ mod tests {
         b.stitch((p, 0), (q, 0));
         b.stitch((p, 1), (q, 1));
         let mut s = Solver::new(b.build(), no_gravity());
-        for _ in 0..36 {
-            s.step(None); // 0.6 s: past stitch_close_time 0.5 s, so the seam has closed
+        for _ in 0..24 {
+            s.step(None); // 0.4 s: the 10 cm seam is still closing, about 2 cm to go
         }
+        assert!(s.cloth().has_open_stitches());
         let x = s.cloth().positions();
         assert!(
             s.cloth()
                 .stitch_pairs()
-                .all(|(a, b)| (x[a] - x[b]).length() < 1e-3)
+                .all(|(a, b)| (0.01..0.03).contains(&(x[a] - x[b]).length()))
         );
-        for _ in 0..24 {
-            s.step(None); // 1.0 s: past weld_time 0.8 s
+        for _ in 0..12 {
+            s.step(None); // 0.6 s: past stitch_close_time 0.5 s, so within weld_gap, so welded
         }
         assert!(!s.cloth().has_open_stitches());
         assert!(s.cloth().positions().iter().all(|p| p.is_finite()));
+        assert_eq!(s.take_notes(), vec![], "it closed on its own");
+    }
+
+    #[test]
+    fn a_seam_that_cannot_close_is_pulled_shut_at_the_timeout_with_a_note() {
+        let mut b = ClothBuilder::new(0.15);
+        let flat = vec![
+            DVec2::new(0.0, 0.0),
+            DVec2::new(0.1, 0.0),
+            DVec2::new(0.0, 0.1),
+        ];
+        let panel = |z: f64| Panel {
+            positions: flat.iter().map(|p| p.extend(z)).collect(),
+            flat: Some(flat.clone()),
+            triangles: vec![[0, 1, 2]],
+        };
+        let (p, q) = (b.add_panel(&panel(0.0), 1.0), b.add_panel(&panel(0.1), 1.0));
+        b.stitch_in((p, 0), (q, 0), 7);
+        b.stitch_in((p, 1), (q, 1), 7);
+        // Every corner pinned: the seam can't close.
+        for k in 0..3 {
+            b.pin((p, k));
+            b.pin((q, k));
+        }
+        let params = Params {
+            weld_timeout: Some(0.2),
+            ..no_gravity()
+        };
+        let mut s = Solver::new(b.build(), params);
+        for _ in 0..11 {
+            s.step(None); // the last of these starts at 0.167 s
+        }
+        assert!(s.cloth().has_open_stitches());
+        assert_eq!(s.take_notes(), vec![]);
+        for _ in 0..3 {
+            s.step(None); // the last of these starts at 0.217 s, past the timeout
+        }
+        assert!(!s.cloth().has_open_stitches());
+        let notes = s.take_notes();
+        assert_eq!(notes.len(), 1);
+        let SolverNote::SeamForcedShut { group, gap_mm } = notes[0];
+        assert_eq!(group, 7);
+        assert!((gap_mm - 100.0).abs() < 1e-6, "{gap_mm}");
+        assert_eq!(s.take_notes(), vec![], "told once");
     }
 
     #[test]

@@ -41,3 +41,25 @@ What the baseline says:
   2-core laptop it stays near the 1-thread figure.
 - The T-shirt's seams are creased at 59° on average and its fabric crosses itself 12 times
   (the sleeves through the bodice): the two things the next phases fix.
+
+## Phase 1 — seams weld flat, each when it has closed (2026-10-11)
+
+A hinge across a welded seam now rests where the pattern lays flat (unfolded from rest edge
+lengths), not where the fabric happened to be as it welded; each seam welds on its own once
+every stitch of it is within 4 mm, and a seam that can't close is pulled shut at 3 s with a
+note.
+
+| Scene | Particles | ms/frame (14 threads) | ms/frame (1 thread) | Penetration | Strain p99 | Crossings | Seam crease |
+|---|---|---|---|---|---|---|---|
+| skirt (demo grid) | 4,700 | 12.7 | 15.1 | 0.00 mm | 7.6 % | 0 | 8.9° (was 17.3°) |
+| tube (demo grid) | 1,440 | 3.9 | 4.2 | 0.00 mm | 3.1 % | 0 | — |
+| drafted-skirt | 5,668 | 15.1 | 18.0 | 0.00 mm | 6.6 % | 0 | 9.2° (was 16.7°) |
+| drafted-tshirt | 7,407 | 19.6 | 24.9 | 0.00 mm | 4.8 % | 28 (was 12) | 28.9° (was 59.5°) |
+
+- The skirts' seams now read 9°, about the floor for a flat seam round a 10 cm curve. The
+  T-shirt's halve; what is left is the sleeve seams, where a sleeve tube really does meet the
+  bodice at an angle, and the sleeves still passing through the bodice.
+- Crossings rise on the T-shirt because flatter seams push the sleeve further into the
+  bodice, which nothing stops yet: Phase 3's job.
+- The timings are within run-to-run noise of the baseline (the solver's work is unchanged);
+  about ±10 % between runs on this machine.

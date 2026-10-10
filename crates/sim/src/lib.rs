@@ -10,5 +10,5 @@ mod timing;
 pub use attach::AttachmentId;
 pub use cloth::{Cloth, ClothBuilder, Panel, PanelId};
 pub use collide::{BodyCollider, Collider, ColliderError, CompoundCollider, Plane, Solid};
-pub use solver::{FRAME_DT, Params, Solver};
+pub use solver::{FRAME_DT, Params, Solver, SolverNote};
 pub use timing::PhaseTimes;

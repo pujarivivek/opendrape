@@ -197,6 +197,7 @@ note-unmeshable = { $name } couldn't be made into fabric.
 note-cutout-left-out = A cut-out in { $name } touches its outline or another cut-out, or lies outside the piece, so it was left out.
 note-lengths-differ = Seam { $number }: the sides' lengths differ by { $difference }; the longer one gathers as ease.
 note-starts-inside = { $name } starts inside the form; move it out first.
+note-seam-did-not-close = Seam { $number } couldn't close on its own and was pulled shut. Check whether it pulls a piece through the form.
 note-more = …and { $count } more
 note-went-wrong = The drape went wrong and was reset. Check for seams that pull pieces through the form.
 note-view-failed = The 3D view couldn't show this pattern. Your work is safe; save it and send it to the OpenDrape team.
