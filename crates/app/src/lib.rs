@@ -2,6 +2,7 @@
 
 mod app;
 pub mod arrange;
+pub mod assets;
 pub mod cli;
 pub mod diagnostics;
 pub mod draping;

@@ -1,4 +1,5 @@
 use crate::arrange::{ArrangedScene, Arranger, SceneCache, ScreenCamera};
+use crate::assets;
 use crate::diagnostics::Diagnostics;
 use crate::draping::{Draper, MenuAt, Pull};
 use crate::editor::{self, PatternEditor};
@@ -151,6 +152,10 @@ pub struct OpenDrapeApp {
     offered: Option<(Project, Option<PathBuf>)>,
     /// The workspace tab open; screen state only, never saved or undone.
     workspace: Workspace,
+    /// The Assets section is shown where the pattern usually is (screen state only).
+    assets_open: bool,
+    /// While Assets is open in Modeling, the left area shows the pattern, not the 3D view.
+    left_2d: bool,
     /// How the 3D view should look (View → 3D quality), remembered between launches.
     view_settings: ViewSettings,
 }
@@ -204,6 +209,8 @@ impl OpenDrapeApp {
             recovery,
             offered,
             workspace: Workspace::default(),
+            assets_open: false,
+            left_2d: false,
         }
     }
 
@@ -220,6 +227,58 @@ impl OpenDrapeApp {
     /// The workspace tab open.
     pub fn workspace(&self) -> Workspace {
         self.workspace
+    }
+
+    /// The Assets section is open, where the pattern usually is.
+    pub fn assets_open(&self) -> bool {
+        self.assets_open
+    }
+
+    /// Opens or closes the Assets section. Closing it puts the 3D view back on the left.
+    pub fn set_assets_open(&mut self, open: bool) {
+        self.assets_open = open;
+        if !open {
+            self.left_2d = false;
+        }
+    }
+
+    /// The left area shows the pattern (Assets is open in Modeling, switched to 2D).
+    pub fn left_shows_pattern(&self) -> bool {
+        self.left_2d && self.area_switch_shown()
+    }
+
+    /// Switches the left area to the pattern (true) or the 3D view, while the switch is shown.
+    pub fn set_left_shows_pattern(&mut self, on: bool) {
+        self.left_2d = on && self.area_switch_shown();
+    }
+
+    /// The 3D | 2D switch is shown: Assets is open in Modeling, the only tab with a pattern.
+    fn area_switch_shown(&self) -> bool {
+        self.assets_open && self.workspace == Workspace::Modeling
+    }
+
+    /// Shows the workspace `ws`: a tab is a stage to look at, so Assets closes.
+    fn show_workspace(&mut self, ws: Workspace) {
+        self.workspace = ws;
+        self.set_assets_open(false);
+    }
+
+    /// The 3D | 2D switch along the top of the left area. Its buttons read "3D" and "2D", like
+    /// the tool strips' captions, and are named for what they show.
+    fn area_switch(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            for (pattern, text, name) in [
+                (false, tr!("area-3d"), tr!("area-3d-name")),
+                (true, tr!("area-2d"), tr!("area-2d-name")),
+            ] {
+                let button = ui.add(egui::Button::selectable(self.left_2d == pattern, text));
+                ui.ctx()
+                    .accesskit_node_builder(button.id, |node| node.set_label(name));
+                if button.clicked() {
+                    self.left_2d = pattern;
+                }
+            }
+        });
     }
 
     pub fn set_workspace(&mut self, workspace: Workspace) {
@@ -782,9 +841,10 @@ impl OpenDrapeApp {
 
     /// The menus, then the workspace tabs. Returns the file action chosen and the workspace
     /// picked (from the View menu or a tab).
-    fn menu_bar(&mut self, ui: &mut egui::Ui) -> (Option<FileAction>, Option<Workspace>) {
+    fn menu_bar(&mut self, ui: &mut egui::Ui) -> (Option<FileAction>, Option<Workspace>, bool) {
         let mut action = None;
         let mut picked = None;
+        let mut toggle_assets = false;
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button(tr!("menu-file"), |ui| {
                 let items = [
@@ -826,6 +886,12 @@ impl OpenDrapeApp {
                 self.quality_menu(ui);
                 self.lighting_menu(ui);
             });
+            toggle_assets = ui
+                .add(egui::Button::selectable(
+                    self.assets_open,
+                    tr!("menu-assets"),
+                ))
+                .clicked();
             ui.menu_button(tr!("menu-help"), |ui| {
                 if ui.button(tr!("menu-about")).clicked() {
                     self.show_about = true;
@@ -847,7 +913,7 @@ impl OpenDrapeApp {
                 picked = Some(ws);
             }
         });
-        (action, picked)
+        (action, picked, toggle_assets)
     }
 
     /// View → 3D quality: Auto (saying which level it picked), Basic, Medium, High. The choice
@@ -1329,15 +1395,15 @@ impl eframe::App for OpenDrapeApp {
         self.guard_close(&ctx);
         let shortcut = self.file_shortcut(&ctx);
         let workspace_key = self.workspace_shortcut(&ctx);
-        let (menu, picked) = egui::Panel::top("menu_bar")
+        let (menu, picked, toggle_assets) = egui::Panel::top("menu_bar")
             .show(ui, |ui| self.menu_bar(ui))
             .inner;
         // A key switches at once: it is never taken while something is being typed. A tab
         // or View menu click switches at the end of the frame, after the pattern table has seen
         // it as a click elsewhere (so a field being typed in keeps its text, and an open
-        // number box closes) like any other.
+        // number box closes) like any other. So does the Assets button.
         if let Some(ws) = workspace_key {
-            self.workspace = ws;
+            self.show_workspace(ws);
         }
         if let Some(action) = menu.or(shortcut).or(self.queued.take()) {
             self.file_action(action, frame, &ctx);
@@ -1354,16 +1420,38 @@ impl eframe::App for OpenDrapeApp {
         // gizmo handle, a pin, the fabric), or an Undo or Delete typed while one is held, is not
         // also the pattern table's.
         let view_drag = self.arranger.is_dragging() || self.draper.is_dragging();
+        // Decided before the question or message box below has run: when one of them is closed
+        // by Escape this frame, that Escape must not reach the pattern table too.
+        let keys_free = |app: &Self| {
+            app.pending.is_none() && app.error.is_none() && app.offered.is_none() && !view_drag
+        };
+        let pattern_left = self.left_shows_pattern();
+        let keys_left = keys_free(self);
         egui::Panel::left("view_3d")
             .resizable(true)
             .default_size(width * 0.42)
             .size_range(240.0..=(width - 360.0).max(240.0))
-            .show(ui, |ui| self.view_3d(ui, frame));
-        // Decided here, before the question or message box below has run: when one of them is
-        // closed by Escape this frame, that Escape must not reach the pattern table too.
-        let keys_for_pattern =
-            self.pending.is_none() && self.error.is_none() && self.offered.is_none() && !view_drag;
+            .show(ui, |ui| {
+                if self.area_switch_shown() {
+                    egui::Panel::top("area_switch").show(ui, |ui| self.area_switch(ui));
+                }
+                if pattern_left {
+                    self.editor.ui_with_keys(ui, keys_left);
+                } else {
+                    self.view_3d(ui, frame);
+                }
+            });
+        let keys_for_pattern = keys_free(self);
+        let mut close_assets = false;
         match self.workspace {
+            _ if self.assets_open => {
+                // The pattern table isn't on the right: Undo and Redo are the app's, unless the
+                // pattern is on the left (where its own keys are).
+                if keys_for_pattern && !pattern_left {
+                    self.app_undo_redo(&ctx);
+                }
+                egui::CentralPanel::default().show(ui, |ui| close_assets = assets::header(ui));
+            }
             Workspace::Modeling => {
                 egui::CentralPanel::default()
                     .show(ui, |ui| self.editor.ui_with_keys(ui, keys_for_pattern));
@@ -1375,8 +1463,12 @@ impl eframe::App for OpenDrapeApp {
                 egui::CentralPanel::default().show(ui, |ui| workspace::coming_soon(ui, ws));
             }
         }
+        if close_assets || toggle_assets {
+            self.set_assets_open(!self.assets_open && !close_assets);
+            ctx.request_repaint();
+        }
         if let Some(ws) = picked {
-            self.workspace = ws;
+            self.show_workspace(ws);
             ctx.request_repaint(); // show it now, not on the next input
         }
         self.unsaved_changes_modal(frame, &ctx);

@@ -264,3 +264,13 @@ lighting-soft = Soft
 lighting-balanced = Balanced
 lighting-sculpted = Sculpted
 lighting-tip = How strongly the studio's main light models shapes and folds. Fabric facing you keeps its true colour in all three.
+
+## Assets: what can be put on the stage, shown where the pattern usually is.
+menu-assets = Assets
+assets-dress-forms = Dress forms
+assets-close = Close assets
+assets-close-tip = Back to the pattern
+area-3d = 3D
+area-2d = 2D
+area-3d-name = Show the 3D view
+area-2d-name = Show the pattern
