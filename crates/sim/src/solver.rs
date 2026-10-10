@@ -26,9 +26,11 @@ pub struct Params {
     pub weld_gap: f64,
     /// When seams that still haven't closed are welded anyway, with a note (None: never).
     pub weld_timeout: Option<f64>,
-    /// XPBD compliance (m/N) of fabric edges and of bending.
+    /// XPBD compliance (m/N) of fabric edges along the warp and weft, of bending, and of the
+    /// bias (the diagonals of the fabric's cells, and the hinges across them).
     pub stretch_compliance: f64,
     pub bend_compliance: f64,
+    pub shear_compliance: f64,
     /// Velocity damping per second.
     pub damping: f64,
     pub friction: f64,
@@ -52,6 +54,7 @@ impl Default for Params {
             weld_timeout: Some(3.0),
             stretch_compliance: 1e-6,
             bend_compliance: 1.0,
+            shear_compliance: 0.05,
             damping: 1.0,
             friction: 0.4,
             thickness: 0.003,
@@ -171,6 +174,15 @@ impl Solver {
                 lap.lap(&mut ph.stitches);
                 solve_links(&mut c.x, &c.inv_mass, &c.bend, p.bend_compliance, 1.0, sdt);
                 lap.lap(&mut ph.bend);
+                solve_links(
+                    &mut c.x,
+                    &c.inv_mass,
+                    &c.shear,
+                    p.shear_compliance,
+                    1.0,
+                    sdt,
+                );
+                lap.lap(&mut ph.shear);
                 solve_links(
                     &mut c.x,
                     &c.inv_mass,

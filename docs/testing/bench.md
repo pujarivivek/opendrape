@@ -63,3 +63,29 @@ note.
   bodice, which nothing stops yet: Phase 3's job.
 - The timings are within run-to-run noise of the baseline (the solver's work is unchanged);
   about ±10 % between runs on this machine.
+
+## Phase 2 — fabric on the grain (2026-10-11)
+
+Each panel is filled with a lattice of points on its grainline (rows along the warp, the
+spacing the edge length), refined only in the band where the lattice meets the outline.
+Edges along the warp or weft are structural and hold their length; the cells' diagonals, and
+the hinges across them, are the bias and shear softly (`Params::shear_compliance`, 0.05).
+The strain p99 is now the structural edges'; the bias has its own figure. The demo grids
+(skirt, tube) have no grain, so they are unchanged.
+
+| Scene | Particles | ms/frame (14 threads) | ms/frame (1 thread) | Penetration | Strain p99 | Bias p99 | Crossings | Seam crease |
+|---|---|---|---|---|---|---|---|---|
+| skirt (demo grid) | 4,700 | 12.9 | 15.5 | 0.00 mm | 7.6 % | — | 0 | 8.9° |
+| tube (demo grid) | 1,440 | 3.9 | 4.3 | 0.00 mm | 3.1 % | — | 0 | — |
+| drafted-skirt | 3,868 (was 5,668) | 7.2 (was 15.1) | 9.5 (was 18.0) | 0.00 mm | 4.8 % (was 6.6 %) | 7.6 % | 0 | 11.4° |
+| drafted-tshirt | 5,050 (was 7,407) | 9.2 (was 19.6) | 12.8 (was 24.9) | 0.00 mm | 3.4 % (was 4.8 %) | 6.4 % | 8 (was 28) | 26.6° |
+
+- A square lattice at 12 mm has about 0.6 of the points a refined near-equilateral mesh has,
+  and uniform spacing, so the drafted garments run about twice as fast at the same edge
+  length, and the cache-friendly row order helps the link solve too (the T-shirt's stretch
+  pass: 14.4 → 5.1 ms for 0.68 × the particles).
+- Structural strain falls because the bias gives (6–8 % at p99 on the diagonals), as fabric
+  does; fewer crossings for the same reason.
+- The skirts' crease reads 2° higher: a lattice's diagonal hinges are longer than a
+  refined mesh's, so the same curve bends in slightly bigger steps. The floor for a flat seam
+  on a curve is now about 9–11°.

@@ -9,7 +9,9 @@ mod holes;
 pub mod place;
 mod triangulate;
 
-pub use triangulate::{ANGLE_LIMIT_DEG, TriangulateError, Triangulated, triangulate};
+pub use triangulate::{
+    ANGLE_LIMIT_DEG, Grid, TriangulateError, Triangulated, triangulate, triangulate_with,
+};
 
 use opendrape_core::{PieceId, Point2, Project, Seam, SeamId, SeamSide};
 use opendrape_geom::{self as geom, Shape};
@@ -57,6 +59,11 @@ pub struct PanelMesh {
     /// The middle of the shape's bounding box on the pattern table (mm): the point placements
     /// put at their position.
     pub centre: Point2,
+    /// The grain as a unit direction on the pattern table: the fabric's warp. Inside the panel
+    /// the triangles' edges run along it and across it, with their diagonals on the bias.
+    pub grain: [f64; 2],
+    /// The lattice spacing (mm) the panel was filled at.
+    pub cell_mm: f64,
 }
 
 /// Something the student should know about the fabric.
@@ -417,12 +424,21 @@ fn panel(
     let corners: Vec<[f64; 2]> = outline.points.iter().map(|p| [p.x, p.y]).collect();
     let holes = holes::holes(shape, &corners, h);
     let boundary_points = corners.len() + holes.loops.iter().map(Vec::len).sum::<usize>();
-    let mesh = triangulate(
+    let centre = place::centre_of(shape);
+    let grain_deg = shape.piece.grain_deg;
+    let grid = Grid {
+        origin: [centre.x, centre.y],
+        angle_deg: grain_deg,
+        spacing: h,
+    };
+    let mesh = triangulate_with(
         &corners,
         &holes.loops,
         h,
+        Some(grid),
         budget.saturating_sub(boundary_points),
     )?;
+    let (s, c) = grain_deg.to_radians().sin_cos();
     Ok(Done {
         mesh: PanelMesh {
             shape: shape.id,
@@ -433,7 +449,9 @@ fn panel(
                 .collect(),
             triangles: mesh.triangles,
             edges: outline.edges,
-            centre: place::centre_of(shape),
+            centre,
+            grain: [c, s],
+            cell_mm: h,
         },
         sides: outline.sides,
         complete: mesh.refinement_complete,

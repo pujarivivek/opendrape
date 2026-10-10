@@ -11,10 +11,12 @@ pub struct DrapeReport {
     pub particles_inside: usize,
     pub open_stitches: bool,
     pub seam_gap_max_mm: f64,
-    /// Fractions (0.05 = 5%) of edge stretch beyond rest length.
+    /// Fractions (0.05 = 5%) of edge stretch beyond rest length, along the warp and weft.
     pub strain_mean: f64,
     pub strain_p99: f64,
     pub strain_max: f64,
+    /// The same on the bias (the cells' diagonals), which is meant to give.
+    pub shear_p99: f64,
     pub kinetic_energy: f64,
     pub lowest_y: f64,
     pub highest_y: f64,
@@ -39,6 +41,11 @@ pub fn measure(cloth: &Cloth, collider: &dyn Solid) -> DrapeReport {
         .map(|(a, b, r)| ((x[a] - x[b]).length() - r) / r)
         .collect();
     strain.sort_by(f64::total_cmp);
+    let mut shear: Vec<f64> = cloth
+        .shear_links()
+        .map(|(a, b, r)| ((x[a] - x[b]).length() - r) / r)
+        .collect();
+    shear.sort_by(f64::total_cmp);
     let (lowest_y, highest_y) = live.iter().fold((f64::MAX, f64::MIN), |(lo, hi), &i| {
         (lo.min(x[i].y), hi.max(x[i].y))
     });
@@ -56,6 +63,11 @@ pub fn measure(cloth: &Cloth, collider: &dyn Solid) -> DrapeReport {
         strain_mean: strain.iter().sum::<f64>() / strain.len() as f64,
         strain_p99: pct(&strain, 0.99),
         strain_max: strain[strain.len() - 1],
+        shear_p99: if shear.is_empty() {
+            0.0
+        } else {
+            pct(&shear, 0.99)
+        },
         kinetic_energy: cloth.kinetic_energy(),
         lowest_y,
         highest_y,

@@ -1,6 +1,9 @@
-//! One panel's fabric: a constrained Delaunay triangulation of its outline (and holes),
-//! refined until no triangle is too big or too thin. Every boundary point is kept, in order,
-//! so the points sampled along a seam are exactly the points that get stitched.
+//! One panel's fabric: a constrained Delaunay triangulation of its outline (and holes), filled
+//! with a lattice of points on the fabric's grain and refined where the lattice meets the
+//! outline until no triangle is too big or too thin. Every boundary point is kept, in order,
+//! so the points sampled along a seam are exactly the points that get stitched. The lattice
+//! points follow, row by row along the grain, so the fabric's warp and weft run along the
+//! triangles' edges and the bias along their diagonals.
 
 use spade::{
     AngleLimit, ConstrainedDelaunayTriangulation, Point2 as SPoint, RefinementParameters,
@@ -13,14 +16,32 @@ pub const ANGLE_LIMIT_DEG: f64 = 25.0;
 /// The largest triangle refinement leaves is this many squared edge lengths: 0.5 h² keeps edges
 /// between 0.6 and 1.5 h (an equilateral triangle of side h is 0.433 h²).
 const MAX_AREA_PER_H2: f64 = 0.5;
+/// With a lattice inside, each cell is two right triangles of exactly 0.5 h²: refinement must
+/// leave those alone and only tidy the band where the lattice meets the outline.
+const MAX_AREA_PER_H2_WITH_GRID: f64 = 0.56;
 /// Triangles smaller than this many squared edge lengths are never split further.
 const MIN_AREA_PER_H2: f64 = 0.02;
+/// Lattice points closer than this many edge lengths to the outline are left out: the band
+/// between the outline's points and the first lattice row is then between half and one and a
+/// half edge lengths wide, which makes well-shaped triangles.
+const CLEARANCE_PER_H: f64 = 0.6;
+
+/// A lattice of points to fill a panel with, on the fabric's grain: rows along the grain and
+/// columns across it, `spacing` apart, laid out from `origin`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Grid {
+    /// A point of the lattice (in the units of the outline).
+    pub origin: [f64; 2],
+    /// The grain: degrees anticlockwise from +x.
+    pub angle_deg: f64,
+    pub spacing: f64,
+}
 
 /// A triangulated panel, in the units of its input.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Triangulated {
-    /// The boundary points first, exactly as given (outline, then each hole), then the points
-    /// added inside.
+    /// The boundary points first, exactly as given (outline, then each hole), then the lattice
+    /// points row by row along the grain, then the points refinement added.
     pub points: Vec<[f64; 2]>,
     /// Anticlockwise triangles (indices into `points`) covering the inside of the outline and
     /// none of its holes.
@@ -50,6 +71,18 @@ pub fn triangulate(
     h: f64,
     max_added: usize,
 ) -> Result<Triangulated, TriangulateError> {
+    triangulate_with(outline, holes, h, None, max_added)
+}
+
+/// As [`triangulate`], filled with the lattice `grid` first when there is one (its spacing
+/// should be `h`), so that only the band along the outline is left to refinement.
+pub fn triangulate_with(
+    outline: &[[f64; 2]],
+    holes: &[Vec<[f64; 2]>],
+    h: f64,
+    grid: Option<Grid>,
+    max_added: usize,
+) -> Result<Triangulated, TriangulateError> {
     if outline.len() < 3 {
         return Err(TriangulateError::TooFewPoints);
     }
@@ -65,8 +98,6 @@ pub fn triangulate(
             if !(p[0].is_finite() && p[1].is_finite()) {
                 return Err(TriangulateError::NotFinite);
             }
-            // spade refuses coordinates below 2^-142 in size: such a number is zero here.
-            let tidy = |v: f64| if v.abs() < 1e-9 { 0.0 } else { v };
             let before = cdt.num_vertices();
             let v = cdt
                 .insert(SPoint::new(tidy(p[0]), tidy(p[1])))
@@ -90,15 +121,34 @@ pub fn triangulate(
         }
     }
     let boundary = cdt.num_vertices();
+    // The lattice counts against `max_added` too; one cut short leaves the fill to refinement,
+    // which then has nothing left either, and the result says so.
+    let mut lattice_cut_short = false;
+    if let Some(g) = grid {
+        for p in lattice(&loops, &g, CLEARANCE_PER_H * h) {
+            if cdt.num_vertices() - boundary >= max_added {
+                lattice_cut_short = true;
+                break;
+            }
+            // A lattice point on an existing point is merged away by spade: nothing lost.
+            cdt.insert(SPoint::new(tidy(p[0]), tidy(p[1])))
+                .map_err(|_| TriangulateError::NotFinite)?;
+        }
+    }
+    let max_area = if grid.is_some() {
+        MAX_AREA_PER_H2_WITH_GRID
+    } else {
+        MAX_AREA_PER_H2
+    };
     let params = RefinementParameters::<f64>::new()
         .with_angle_limit(AngleLimit::from_deg(ANGLE_LIMIT_DEG))
-        .with_max_allowed_area(MAX_AREA_PER_H2 * h * h)
+        .with_max_allowed_area(max_area * h * h)
         .with_min_required_area(MIN_AREA_PER_H2 * h * h)
         .keep_constraint_edges()
         .exclude_outer_faces(true)
-        .with_max_additional_vertices(max_added);
+        .with_max_additional_vertices(max_added - (cdt.num_vertices() - boundary));
     let result = cdt.refine(params);
-    let refinement_complete = result.refinement_complete;
+    let refinement_complete = result.refinement_complete && !lattice_cut_short;
     let outside: std::collections::HashSet<_> = result.excluded_faces.into_iter().collect();
     let mut used = vec![false; cdt.num_vertices()];
     let mut faces = Vec::new();
@@ -131,6 +181,79 @@ pub fn triangulate(
     })
 }
 
+/// spade refuses coordinates below 2^-142 in size: such a number is zero here.
+fn tidy(v: f64) -> f64 {
+    if v.abs() < 1e-9 { 0.0 } else { v }
+}
+
+/// The lattice's points inside the first of `loops` (the outline) and outside the others (the
+/// holes), at least `clearance` from every loop, row by row along the grain.
+fn lattice(loops: &[&[[f64; 2]]], g: &Grid, clearance: f64) -> Vec<[f64; 2]> {
+    let (s, c) = g.angle_deg.to_radians().sin_cos();
+    let (along, across) = ([c, s], [-s, c]);
+    let outline = loops[0];
+    // The outline's extent along and across the grain, in lattice steps from the origin.
+    let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+    for p in outline {
+        let d = [p[0] - g.origin[0], p[1] - g.origin[1]];
+        for (k, axis) in [along, across].iter().enumerate() {
+            let t = (d[0] * axis[0] + d[1] * axis[1]) / g.spacing;
+            lo[k] = lo[k].min(t);
+            hi[k] = hi[k].max(t);
+        }
+    }
+    let mut out = Vec::new();
+    for j in (lo[1].floor() as i64)..=(hi[1].ceil() as i64) {
+        for i in (lo[0].floor() as i64)..=(hi[0].ceil() as i64) {
+            let (u, v) = (i as f64 * g.spacing, j as f64 * g.spacing);
+            let p = [
+                g.origin[0] + u * along[0] + v * across[0],
+                g.origin[1] + u * along[1] + v * across[1],
+            ];
+            if inside(p, outline)
+                && loops[1..].iter().all(|hole| !inside(p, hole))
+                && loops.iter().all(|l| distance_to(p, l) >= clearance)
+            {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+/// Whether `p` is inside the closed polygon `ring` (even–odd rule).
+fn inside(p: [f64; 2], ring: &[[f64; 2]]) -> bool {
+    let mut inside = false;
+    for k in 0..ring.len() {
+        let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+        if (a[1] > p[1]) != (b[1] > p[1]) {
+            let x = a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]);
+            if p[0] < x {
+                inside = !inside;
+            }
+        }
+    }
+    inside
+}
+
+/// The distance from `p` to the nearest segment of the closed polygon `ring`.
+fn distance_to(p: [f64; 2], ring: &[[f64; 2]]) -> f64 {
+    let mut best = f64::MAX;
+    for k in 0..ring.len() {
+        let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let len2 = dx * dx + dy * dy;
+        let t = if len2 > 0.0 {
+            (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let (qx, qy) = (a[0] + t * dx, a[1] + t * dy);
+        best = best.min((p[0] - qx).hypot(p[1] - qy));
+    }
+    best
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,27 +284,102 @@ mod tests {
                 [200.0 + 60.0 * a.cos(), 200.0 + 60.0 * a.sin()]
             })
             .collect();
-        let t = triangulate(&outline, std::slice::from_ref(&hole), 12.0, 100_000).unwrap();
-        let given: Vec<[f64; 2]> = outline.iter().chain(&hole).copied().collect();
-        assert_eq!(
-            &t.points[..given.len()],
-            &given[..],
-            "boundary first and unchanged"
-        );
-        for tri in &t.triangles {
-            let c = tri.map(|k| t.points[k as usize]);
-            let (x, y) = (
-                (c[0][0] + c[1][0] + c[2][0]) / 3.0,
-                (c[0][1] + c[1][1] + c[2][1]) / 3.0,
+        let grid = Grid {
+            origin: [200.0, 200.0],
+            angle_deg: 90.0,
+            spacing: 12.0,
+        };
+        for grid in [None, Some(grid)] {
+            let t = triangulate_with(&outline, std::slice::from_ref(&hole), 12.0, grid, 100_000)
+                .unwrap();
+            let given: Vec<[f64; 2]> = outline.iter().chain(&hole).copied().collect();
+            assert_eq!(
+                &t.points[..given.len()],
+                &given[..],
+                "boundary first and unchanged"
             );
-            assert!(
-                (x - 200.0).hypot(y - 200.0) > 58.0,
-                "a triangle in the hole"
-            );
-            let twice_area = (c[1][0] - c[0][0]) * (c[2][1] - c[0][1])
-                - (c[2][0] - c[0][0]) * (c[1][1] - c[0][1]);
-            assert!(twice_area > 0.0, "anticlockwise");
+            for tri in &t.triangles {
+                let c = tri.map(|k| t.points[k as usize]);
+                let (x, y) = (
+                    (c[0][0] + c[1][0] + c[2][0]) / 3.0,
+                    (c[0][1] + c[1][1] + c[2][1]) / 3.0,
+                );
+                assert!(
+                    (x - 200.0).hypot(y - 200.0) > 58.0,
+                    "a triangle in the hole"
+                );
+                let twice_area = (c[1][0] - c[0][0]) * (c[2][1] - c[0][1])
+                    - (c[2][0] - c[0][0]) * (c[1][1] - c[0][1]);
+                assert!(twice_area > 0.0, "anticlockwise");
+            }
         }
+    }
+
+    #[test]
+    fn a_lattice_fills_the_inside_on_the_grain_and_keeps_clear_of_the_outline() {
+        let outline = sampled(
+            &[[0.0, 0.0], [240.0, 0.0], [240.0, 120.0], [0.0, 120.0]],
+            12.0,
+        );
+        let hole: Vec<[f64; 2]> = (0..16)
+            .map(|k| {
+                let a = -(k as f64) / 16.0 * std::f64::consts::TAU;
+                [120.0 + 24.0 * a.cos(), 60.0 + 24.0 * a.sin()]
+            })
+            .collect();
+        let grid = Grid {
+            origin: [6.0, 6.0],
+            angle_deg: 0.0,
+            spacing: 12.0,
+        };
+        let points = lattice(&[&outline, &hole], &grid, 6.0);
+        // Rows 6, 18, …, 114 (10 of them) by columns 6, 18, …, 234 (20), less the hole.
+        assert!(points.len() < 200 && points.len() > 160, "{}", points.len());
+        for p in &points {
+            assert!(
+                ((p[0] - 6.0) / 12.0).fract().abs() < 1e-9
+                    && ((p[1] - 6.0) / 12.0).fract().abs() < 1e-9,
+                "on the lattice: {p:?}"
+            );
+            assert!(distance_to(*p, &outline) >= 6.0 - 1e-9);
+            assert!(distance_to(*p, &hole) >= 6.0 - 1e-9 && !inside(*p, &hole));
+        }
+        // Row by row along the grain: y never decreases, x increases within a row.
+        for w in points.windows(2) {
+            assert!(w[1][1] > w[0][1] - 1e-9);
+            assert!(w[1][1] > w[0][1] + 1e-9 || w[1][0] > w[0][0]);
+        }
+        // Rotated 90°, the rows run up the piece instead, and the rows follow each other
+        // across the grain (leftwards, as the grain's left-hand side is).
+        let up = lattice(
+            &[&outline],
+            &Grid {
+                angle_deg: 90.0,
+                ..grid
+            },
+            6.0,
+        );
+        assert!(up.windows(2).all(|w| w[1][0] < w[0][0] + 1e-9));
+        assert!(
+            up.windows(2)
+                .all(|w| w[1][0] < w[0][0] - 1e-9 || w[1][1] > w[0][1])
+        );
+        // The triangles inside are the lattice's right isosceles cells, and the lattice's
+        // points come right after the boundary's, in order.
+        let t = triangulate_with(&outline, &[], 12.0, Some(grid), 100_000).unwrap();
+        let only_outline = lattice(&[&outline], &grid, CLEARANCE_PER_H * 12.0);
+        assert_eq!(
+            &t.points[outline.len()..outline.len() + only_outline.len()],
+            &only_outline[..]
+        );
+        // Rows 18 … 102 (8) by columns 18 … 222 (18) stay clear of the outline: 7 × 17 cells.
+        assert_eq!(only_outline.len(), 8 * 18);
+        let cells = t
+            .triangles
+            .iter()
+            .filter(|tri| tri.iter().all(|&k| k as usize >= outline.len()))
+            .count();
+        assert!(cells >= 2 * 7 * 17 - 20, "{cells} cells inside");
     }
 
     #[test]
@@ -255,9 +453,14 @@ mod tests {
                 [3.0 + 150.0 * a.cos(), 7.0 + 150.0 * a.sin()]
             })
             .collect();
+        let grid = Some(Grid {
+            origin: [3.0, 7.0],
+            angle_deg: 30.0,
+            spacing: 12.0,
+        });
         assert_eq!(
-            triangulate(&disk, &[], 12.0, 100_000),
-            triangulate(&disk, &[], 12.0, 100_000)
+            triangulate_with(&disk, &[], 12.0, grid, 100_000),
+            triangulate_with(&disk, &[], 12.0, grid, 100_000)
         );
     }
 }

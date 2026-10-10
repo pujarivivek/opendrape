@@ -213,13 +213,14 @@ impl Drape {
                 }
                 positions
             });
-            ids.push(builder.add_panel(
+            ids.push(builder.add_grain_panel(
                 &Panel {
                     positions,
                     flat: Some(panel.flat.iter().map(|f| DVec2::from_array(*f)).collect()),
                     triangles: panel.triangles.clone(),
                 },
                 1.0,
+                DVec2::from_array(panel.grain),
             ));
         }
         // Each seam (and each mirror image) is a stitch group of its own: it welds on its own.

@@ -73,11 +73,12 @@ fn report(name: &str, ms: f64, avg: PhaseTimes, cloth: &Cloth, solid: &dyn Solid
     let crossings = cloth_crossings(cloth);
     let crease = seam_crease_deg(cloth);
     println!(
-        "{name}: {} particles, {ms:.2} ms/frame, penetration max {:.2} mm, strain p99 {:.1}%, \
-         {crossings} crossings, seam crease {}",
+        "{name}: {} particles, {ms:.2} ms/frame, penetration max {:.2} mm, strain p99 {:.1}% \
+         (bias {:.1}%), {crossings} crossings, seam crease {}",
         r.particles,
         r.penetration_max_mm,
         r.strain_p99 * 100.0,
+        r.shear_p99 * 100.0,
         crease.map_or("n/a".to_string(), |c| format!("{c:.1}°")),
     );
     let phases: Vec<String> = PhaseTimes::NAMES
@@ -89,10 +90,11 @@ fn report(name: &str, ms: f64, avg: PhaseTimes, cloth: &Cloth, solid: &dyn Solid
     println!("  phases (ms): {}", phases.join(" | "));
     println!(
         "BENCH scene={name} particles={} ms={ms:.3} penetration_mm={:.3} strain_p99={:.4} \
-         crossings={crossings} crease_deg={:.2} ke={:.2e}",
+         shear_p99={:.4} crossings={crossings} crease_deg={:.2} ke={:.2e}",
         r.particles,
         r.penetration_max_mm,
         r.strain_p99,
+        r.shear_p99,
         crease.unwrap_or(-1.0),
         r.kinetic_energy
     );

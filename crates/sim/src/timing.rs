@@ -15,6 +15,7 @@ pub struct PhaseTimes {
     pub predict: f64,
     pub stitches: f64,
     pub bend: f64,
+    pub shear: f64,
     pub stretch: f64,
     /// Pins and grabs.
     pub attach: f64,
@@ -27,12 +28,13 @@ pub struct PhaseTimes {
 }
 
 impl PhaseTimes {
-    pub const NAMES: [&'static str; 10] = [
+    pub const NAMES: [&'static str; 11] = [
         "weld",
         "body query",
         "predict",
         "stitches",
         "bend",
+        "shear",
         "stretch",
         "attach",
         "self-collide",
@@ -41,13 +43,14 @@ impl PhaseTimes {
     ];
 
     /// The phases in the order of [`Self::NAMES`].
-    pub fn values(&self) -> [f64; 10] {
+    pub fn values(&self) -> [f64; 11] {
         [
             self.weld,
             self.body_query,
             self.predict,
             self.stitches,
             self.bend,
+            self.shear,
             self.stretch,
             self.attach,
             self.self_collide,
@@ -67,6 +70,7 @@ impl PhaseTimes {
         self.predict += other.predict;
         self.stitches += other.stitches;
         self.bend += other.bend;
+        self.shear += other.shear;
         self.stretch += other.stretch;
         self.attach += other.attach;
         self.self_collide += other.self_collide;
@@ -81,6 +85,7 @@ impl PhaseTimes {
             predict: self.predict * by,
             stitches: self.stitches * by,
             bend: self.bend * by,
+            shear: self.shear * by,
             stretch: self.stretch * by,
             attach: self.attach * by,
             self_collide: self.self_collide * by,

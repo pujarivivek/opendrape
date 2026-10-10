@@ -31,8 +31,13 @@ pub struct Cloth {
     pub(crate) inv_mass: Vec<f64>,
     pub(crate) alive: Vec<bool>,
     pub(crate) triangles: Vec<[u32; 3]>,
+    /// Edges along the warp or the weft: they hold their length.
     pub(crate) stretch: Vec<Link>,
+    /// Hinges across structural edges: the fabric's resistance to folding.
     pub(crate) bend: Vec<Link>,
+    /// Edges on the bias, and the hinges across them (a cell's other diagonal): the fabric
+    /// shears along these, softly.
+    pub(crate) shear: Vec<Link>,
     /// `rest` = distance when the seam was made; it shrinks to 0 while the seam closes.
     pub(crate) stitches: Vec<Link>,
     /// The seam each stitch belongs to (welded together once every stitch of it is closed).
@@ -54,6 +59,11 @@ pub struct ClothBuilder {
 fn edge_key(a: u32, b: u32) -> (u32, u32) {
     (a.min(b), a.max(b))
 }
+
+/// An edge within 22.5° of the warp or the weft is structural; the rest are on the bias.
+/// cos 22.5° and sin 22.5°.
+const ALONG_GRAIN_COS: f64 = 0.923_879_532_511_286_7;
+const ACROSS_GRAIN_COS: f64 = 0.382_683_432_365_089_8;
 
 /// Unique edges of a triangle list, sorted.
 fn unique_edges(triangles: &[[u32; 3]]) -> Vec<(u32, u32)> {
@@ -132,7 +142,20 @@ impl ClothBuilder {
     }
 
     /// Adds a panel; its rest lengths are multiplied by `rest_scale` (< 1 pre-tensions it).
+    /// Every edge is structural: the fabric has no bias.
     pub fn add_panel(&mut self, panel: &Panel, rest_scale: f64) -> PanelId {
+        self.add(panel, rest_scale, None)
+    }
+
+    /// Adds a panel of fabric with a grain, `grain` being the warp's direction on its flat
+    /// pattern. Edges along the warp or the weft (within 22.5°) are structural and hold their
+    /// length; the rest run on the bias and shear softly (`Params::shear_compliance`), as do
+    /// the hinges across them. Without `flat` every edge is structural, as in [`Self::add_panel`].
+    pub fn add_grain_panel(&mut self, panel: &Panel, rest_scale: f64, grain: DVec2) -> PanelId {
+        self.add(panel, rest_scale, Some(grain))
+    }
+
+    fn add(&mut self, panel: &Panel, rest_scale: f64, grain: Option<DVec2>) -> PanelId {
         let base = self.cloth.x.len() as u32;
         let rest_pos = |k: u32| -> DVec3 {
             match &panel.flat {
@@ -164,19 +187,36 @@ impl ClothBuilder {
             b: b + base,
             rest: rest_pos(a).distance(rest_pos(b)) * rest_scale,
         };
-        self.cloth.stretch.extend(
-            unique_edges(&panel.triangles)
-                .into_iter()
-                .filter(has_mass)
-                .map(link),
-        );
-        self.cloth.bend.extend(
-            hinges(&panel.triangles)
-                .into_iter()
-                .map(|h| (h.p, h.q))
-                .filter(has_mass)
-                .map(link),
-        );
+        // Whether the edge a–b runs on the bias: neither along the warp nor along the weft.
+        let on_bias = |a: u32, b: u32| match (grain, &panel.flat) {
+            (Some(g), Some(f)) if g.length_squared() > 0.0 => {
+                let d = f[b as usize] - f[a as usize];
+                let len = d.length();
+                if len <= 0.0 {
+                    return false;
+                }
+                let c = (d.dot(g) / (len * g.length())).abs();
+                c < ALONG_GRAIN_COS && c > ACROSS_GRAIN_COS
+            }
+            _ => false,
+        };
+        for e in unique_edges(&panel.triangles).into_iter().filter(has_mass) {
+            if on_bias(e.0, e.1) {
+                self.cloth.shear.push(link(e));
+            } else {
+                self.cloth.stretch.push(link(e));
+            }
+        }
+        for h in hinges(&panel.triangles) {
+            if !has_mass(&(h.p, h.q)) {
+                continue;
+            }
+            if on_bias(h.u, h.v) {
+                self.cloth.shear.push(link((h.p, h.q)));
+            } else {
+                self.cloth.bend.push(link((h.p, h.q)));
+            }
+        }
         self.cloth
             .triangles
             .extend(panel.triangles.iter().map(|t| t.map(|k| k + base)));
@@ -257,6 +297,12 @@ impl Cloth {
     }
     pub fn bend_links(&self) -> impl Iterator<Item = (usize, usize, f64)> + '_ {
         self.bend
+            .iter()
+            .map(|l| (l.a as usize, l.b as usize, l.rest))
+    }
+    /// The bias edges and the hinges across them.
+    pub fn shear_links(&self) -> impl Iterator<Item = (usize, usize, f64)> + '_ {
+        self.shear
             .iter()
             .map(|l| (l.a as usize, l.b as usize, l.rest))
     }
@@ -380,10 +426,10 @@ impl Cloth {
         for t in &mut self.triangles {
             *t = t.map(m);
         }
-        // Rest lengths of the welded mesh's edges. Where the two sides of a seam differ (ease),
-        // the shared edge takes their mean.
+        // Rest lengths of the welded mesh's edges (and the links across the bias). Where the
+        // two sides of a seam differ (ease), the shared edge takes their mean.
         let mut sums: HashMap<(u32, u32), (f64, f64)> = HashMap::new();
-        for l in &self.stretch {
+        for l in self.stretch.iter().chain(&self.shear) {
             let (a, b) = (m(l.a), m(l.b));
             if a != b {
                 let e = sums.entry(edge_key(a, b)).or_insert((0.0, 0.0));
@@ -394,16 +440,21 @@ impl Cloth {
         let rest_of: HashMap<(u32, u32), f64> =
             sums.into_iter().map(|(k, (sum, n))| (k, sum / n)).collect();
         let mut seen = HashSet::new();
-        self.stretch = std::mem::take(&mut self.stretch)
-            .into_iter()
-            .map(|l| (m(l.a), m(l.b)))
-            .filter(|&(a, b)| a != b && seen.insert(edge_key(a, b)))
-            .map(|(a, b)| Link {
-                a,
-                b,
-                rest: rest_of[&edge_key(a, b)],
-            })
-            .collect();
+        let mut remap = |links: Vec<Link>| -> Vec<Link> {
+            links
+                .into_iter()
+                .map(|l| (m(l.a), m(l.b)))
+                .filter(|&(a, b)| a != b && seen.insert(edge_key(a, b)))
+                .map(|(a, b)| Link {
+                    a,
+                    b,
+                    rest: rest_of[&edge_key(a, b)],
+                })
+                .collect()
+        };
+        self.stretch = remap(std::mem::take(&mut self.stretch));
+        self.shear = remap(std::mem::take(&mut self.shear));
+        let on_bias: HashSet<(u32, u32)> = self.shear.iter().map(|l| edge_key(l.a, l.b)).collect();
         let welded = &self.welded;
         self.seam_edges = self
             .stretch
@@ -412,8 +463,9 @@ impl Cloth {
             .map(|l| edge_key(l.a, l.b))
             .collect();
         self.seam_edges.sort_unstable();
-        // Hinges that were there keep their rest. A hinge across the seam rests where the
-        // pattern lays flat, not where the fabric happens to be as it welds.
+        // Hinges that were there keep their rest (those across the bias are still among the
+        // shear links). A hinge across the seam rests where the pattern lays flat, not where
+        // the fabric happens to be as it welds.
         let old: HashMap<(u32, u32), f64> = self
             .bend
             .iter()
@@ -422,6 +474,7 @@ impl Cloth {
         let x = &self.x;
         self.bend = hinges(&self.triangles)
             .into_iter()
+            .filter(|h| !on_bias.contains(&edge_key(h.p, h.q)))
             .map(|h| Link {
                 a: h.p,
                 b: h.q,
@@ -510,6 +563,78 @@ mod tests {
         // The two triangles now share the welded edge, so a bending link spans it.
         assert_eq!(c.bend_link_count(), 1);
         assert_eq!(c.seam_edges(), &[(0, 1)], "the welded edge is the seam");
+    }
+
+    /// One lattice cell: a 10 cm square split along one diagonal.
+    fn cell() -> Panel {
+        let flat = vec![
+            DVec2::new(0.0, 0.0),
+            DVec2::new(0.1, 0.0),
+            DVec2::new(0.1, 0.1),
+            DVec2::new(0.0, 0.1),
+        ];
+        Panel {
+            positions: flat.iter().map(|p| p.extend(0.0)).collect(),
+            flat: Some(flat),
+            triangles: vec![[0, 1, 2], [0, 2, 3]],
+        }
+    }
+
+    #[test]
+    fn a_grain_panel_holds_the_warp_and_weft_and_shears_on_the_bias() {
+        // Grain along x: the four sides are structural; the diagonal, and the hinge across
+        // it (the other diagonal), shear.
+        let mut b = ClothBuilder::new(0.15);
+        b.add_grain_panel(&cell(), 1.0, DVec2::X);
+        let c = b.build();
+        assert_eq!(c.stretch_links().count(), 4);
+        assert_eq!(c.bend_link_count(), 0);
+        let shear: Vec<_> = c.shear_links().collect();
+        assert_eq!(shear.len(), 2);
+        assert!(
+            shear
+                .iter()
+                .all(|&(_, _, r)| (r - 0.1f64.hypot(0.1)).abs() < 1e-12)
+        );
+        // Grain on the diagonal: the sides are on the bias, the diagonal is structural and the
+        // hinge across it bends.
+        let mut b = ClothBuilder::new(0.15);
+        b.add_grain_panel(&cell(), 1.0, DVec2::new(1.0, 1.0));
+        let c = b.build();
+        assert_eq!(c.stretch_links().count(), 1);
+        assert_eq!(c.shear_links().count(), 4);
+        assert_eq!(c.bend_link_count(), 1);
+        // No grain: everything structural, as before.
+        let mut b = ClothBuilder::new(0.15);
+        b.add_panel(&cell(), 1.0);
+        let c = b.build();
+        assert_eq!((c.stretch_links().count(), c.shear_links().count()), (5, 0));
+    }
+
+    #[test]
+    fn welding_keeps_the_bias_links_and_bends_across_the_seam() {
+        // Two cells side by side on the x grain, sewn along the edge between them.
+        let mut b = ClothBuilder::new(0.15);
+        let p = b.add_grain_panel(&cell(), 1.0, DVec2::X);
+        let moved = Panel {
+            positions: cell()
+                .positions
+                .iter()
+                .map(|q| *q + DVec3::X * 0.1)
+                .collect(),
+            ..cell()
+        };
+        let q = b.add_grain_panel(&moved, 1.0, DVec2::X);
+        b.stitch((p, 1), (q, 0));
+        b.stitch((p, 2), (q, 3));
+        let mut c = b.build();
+        c.weld_stitches();
+        assert_eq!(c.stretch_links().count(), 7, "the shared edge once");
+        assert_eq!(c.shear_links().count(), 4, "each cell's two diagonals");
+        // The one hinge across the welded (structural) edge, resting flat: 20 cm apart.
+        let bend: Vec<_> = c.bend_links().collect();
+        assert_eq!(bend.len(), 1);
+        assert!((bend[0].2 - 0.2).abs() < 1e-9 || (bend[0].2 - 0.1f64.hypot(0.2)).abs() < 1e-9);
     }
 
     #[test]
