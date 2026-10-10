@@ -48,6 +48,8 @@ pub struct Viewport {
     pieces: Vec<(PieceId, StudioMesh)>,
     pieces_of: Option<Rc<ArrangedScene>>,
     pub frames_drawn: u64,
+    /// A mouse button was held down on the image last frame.
+    pointer_held: bool,
 }
 
 impl Viewport {
@@ -81,6 +83,7 @@ impl Viewport {
             pieces: Vec::new(),
             pieces_of: None,
             frames_drawn: 0,
+            pointer_held: false,
         }
     }
 
@@ -115,11 +118,14 @@ impl Viewport {
 
     /// Draws the form and `show`, and returns the image's response with the camera that drew
     /// it; None when the panel is too small to draw in.
+    /// `moving`: something the image can't show yet is moving (the drape plays, a drag is
+    /// held), so the view shouldn't start building its finished still image.
     pub fn ui(
         &mut self,
         ui: &mut egui::Ui,
         rs: &egui_wgpu::RenderState,
         show: Show,
+        moving: bool,
     ) -> Option<Drawn> {
         let size = ui.available_size();
         let max_dim = rs.device.limits().max_texture_dimension_2d;
@@ -142,6 +148,8 @@ impl Viewport {
         let mut meshes = vec![&self.body];
         meshes.extend(self.cloth.as_ref().map(|c| &c.mesh));
         meshes.extend(self.pieces.iter().map(|(_, m)| m));
+        // A button held on the view (as it was last frame) is a drag in progress too.
+        self.renderer.set_moving(moving || self.pointer_held);
         let rendered = self
             .renderer
             .render(&rs.device, &rs.queue, target, &self.camera, &meshes);
@@ -155,6 +163,7 @@ impl Viewport {
         }
         let image = egui::Image::new(egui::load::SizedTexture::new(texture_id, size));
         let response = ui.add(image.sense(egui::Sense::click_and_drag()));
+        self.pointer_held = response.is_pointer_button_down_on();
         let rect = response.rect;
         let camera = ScreenCamera::new(
             &self.camera,

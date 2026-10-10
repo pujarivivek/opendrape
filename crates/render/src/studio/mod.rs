@@ -61,7 +61,13 @@ pub struct Stats {
     pub shadow_redraws: u64,
     /// Times an image was drawn.
     pub frames_drawn: u64,
+    /// Of those, still frames (added to the average).
+    pub still_frames: u64,
 }
+
+/// Unchanged frames to wait after a change before still frames start: a gap between two drape
+/// frames, or a pause in a drag, doesn't start them.
+pub const SETTLE_FRAMES: u32 = 2;
 
 /// How dark the contact shadow is right under something touching the floor.
 const CONTACT_OPACITY: f32 = 0.75;
@@ -130,6 +136,11 @@ pub struct StudioRenderer {
     frames_drawn: u64,
     /// The last frame's signature: the same again means the view is still.
     last_signature: Option<u64>,
+    /// Something the renderer can't see is moving (the drape plays, a drag is held).
+    held: bool,
+    /// Unchanged frames since the last change.
+    unchanged: u32,
+    still_frames: u64,
     /// Still frames averaged so far, and whether that's all of them.
     still_count: u32,
     still_done: bool,
@@ -286,6 +297,9 @@ impl StudioRenderer {
             shadows: Shadows::new(device),
             frames_drawn: 0,
             last_signature: None,
+            held: false,
+            unchanged: 0,
+            still_frames: 0,
             still_count: 0,
             still_done: false,
             pipelines: None,
@@ -538,7 +552,14 @@ impl StudioRenderer {
         Stats {
             shadow_redraws: self.shadows.redraws,
             frames_drawn: self.frames_drawn,
+            still_frames: self.still_frames,
         }
+    }
+
+    /// Something the renderer can't see is moving: the drape plays, or a drag is held. Until
+    /// it stops, frames that bring nothing new aren't drawn again or counted as still.
+    pub fn set_moving(&mut self, moving: bool) {
+        self.held = moving;
     }
 
     /// Binds the textures the main pass reads, the real ones where they exist: one set per
@@ -651,13 +672,29 @@ impl StudioRenderer {
         let signature = self.signature(camera, target, meshes);
         let still = self.last_signature == Some(signature);
         self.last_signature = Some(signature);
-        if still && self.still_done {
-            return Rendered {
-                drew: false,
-                still_done: true,
-            };
-        }
-        if !still {
+        let nothing_new = Rendered {
+            drew: false,
+            still_done: false,
+        };
+        if still {
+            if self.still_done {
+                return Rendered {
+                    drew: false,
+                    still_done: true,
+                };
+            }
+            // While something moves, or just after it did, there's nothing new to draw: the
+            // last moving frame stays up.
+            if self.held {
+                self.unchanged = 0;
+                return nothing_new;
+            }
+            self.unchanged += 1;
+            if self.unchanged <= SETTLE_FRAMES {
+                return nothing_new;
+            }
+        } else {
+            self.unchanged = 0;
             self.still_count = 0;
             self.still_done = false;
         }
@@ -788,6 +825,7 @@ impl StudioRenderer {
             self.output
                 .accumulate(queue, &mut encoder, into, &targets.averages[into], weight);
             self.still_count += 1;
+            self.still_frames += 1;
             self.still_done = self.still_count >= settings.still_frames;
             Source::Average(into)
         } else {

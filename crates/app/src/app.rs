@@ -427,7 +427,10 @@ impl OpenDrapeApp {
                 selected: self.editor.selection.piece(),
             },
         };
-        let drawn = viewport.ui(ui, rs, show);
+        let moving = self.runner.as_ref().is_some_and(SimRunner::is_playing)
+            || self.arranger.is_dragging()
+            || self.draper.is_dragging();
+        let drawn = viewport.ui(ui, rs, show, moving);
         match (&drawn, &sim) {
             (Some(drawn), _) if !draping => {
                 // The drape ended (Reset, or it went wrong) under a held grab or pin move: the

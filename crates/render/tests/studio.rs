@@ -536,12 +536,13 @@ fn a_still_view_finishes_and_then_does_nothing() {
     let c = mesh(&mut r, &g, card(1.0, 0.0, 0.6), [0.5; 3], Material::Cloth);
     let camera = front_camera(1.5);
     let n = still_frames(Quality::Medium);
-    // One moving frame, then n still ones.
-    for call in 1..=n + 1 {
+    // One moving frame, a short settle with nothing drawn, then n still ones.
+    let last = 1 + opendrape_render::studio::SETTLE_FRAMES + n;
+    for call in 1..=last {
         let done = r
             .render(&g.device, &g.queue, &target, &camera, &[&c])
             .still_done;
-        assert_eq!(done, call == n + 1, "call {call}");
+        assert_eq!(done, call == last, "call {call}");
     }
     let drawn = r.stats().frames_drawn;
     let again = r.render(&g.device, &g.queue, &target, &camera, &[&c]);
@@ -697,4 +698,49 @@ fn the_studio_draws_on_opengl() {
         let error = pollster::block_on(scope.pop());
         assert!(error.is_none(), "{quality:?} on GL: {error:?}");
     }
+}
+
+/// While the drape plays or a drag is held, frames where nothing new arrived are not "still":
+/// no still frames start (they would flicker against the moving ones).
+#[test]
+fn held_motion_never_starts_still_frames() {
+    let g = gpu();
+    let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::Basic);
+    let target = RenderTarget::new(&g.device, 64, 64);
+    let (p, t) = crease();
+    let mut cloth = r.create_mesh(&g.device, &g.queue, &p, &t, [0.5; 3], Material::Cloth);
+    let camera = front_camera(1.5);
+    r.set_moving(true);
+    for call in 0..20 {
+        if call % 2 == 0 {
+            let moved: Vec<Vec3> = p
+                .iter()
+                .map(|v| *v + Vec3::Y * 0.001 * call as f32)
+                .collect();
+            r.update_mesh(&g.device, &g.queue, &mut cloth, &moved, None);
+        }
+        let frame = r.render(&g.device, &g.queue, &target, &camera, &[&cloth]);
+        assert!(!frame.still_done);
+    }
+    assert_eq!(r.stats().still_frames, 0, "no still frames while held");
+    r.set_moving(false);
+    render_still(&mut r, &g, &target, &camera, &[&cloth]);
+    assert!(r.stats().still_frames > 0, "still frames once let go");
+}
+
+/// A gap of a frame between two drape frames doesn't start still frames either.
+#[test]
+fn a_short_pause_does_not_start_still_frames() {
+    let g = gpu();
+    let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::Basic);
+    let target = RenderTarget::new(&g.device, 64, 64);
+    let mut camera = front_camera(1.5);
+    let c = mesh(&mut r, &g, card(1.0, 0.0, 0.6), [0.5; 3], Material::Cloth);
+    for _ in 0..10 {
+        camera.yaw += 0.01;
+        r.render(&g.device, &g.queue, &target, &camera, &[&c]);
+        let pause = r.render(&g.device, &g.queue, &target, &camera, &[&c]);
+        assert!(!pause.drew, "nothing new to draw");
+    }
+    assert_eq!(r.stats().still_frames, 0);
 }

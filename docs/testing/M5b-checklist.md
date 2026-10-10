@@ -24,9 +24,11 @@ second and the view goes quiet.
       garment get smoother and the shadows get cleaner. Your laptop's fan should quieten
       once it's done (the view stops redrawing).
 - [ ] **Smooth while moving.** Turn the view and let the cloth drape: it stays smooth.
-- [ ] **Colours you can trust.** Give a piece a colour you know (for example a swatch from a
-      fabric card) and compare it on screen with the same colour in another app: the piece
-      facing you shows that colour.
+- [ ] **Colours you can trust.** Pieces are still one fixed fabric blue (colour choice comes
+      with Texturing). Place a piece at the front, view from the front (the first little
+      form in the 3D view's corner), wait a second, and open **Digital Color Meter**
+      (Applications → Utilities) set to "Display in sRGB". Point at the middle of the piece:
+      it reads close to **115, 162, 218** (within about 5 on each).
 - [ ] **View → 3D quality.** It lists Auto (with the level it picked, e.g. "Auto (High)"),
       Basic, Medium and High. Try each: Basic is plainest while moving and still gets
       shadows and soft darkening once still; High is the fullest. Quit and reopen: your
