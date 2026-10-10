@@ -1700,6 +1700,12 @@ fn the_camera_stays_put_while_a_handle_is_held_scroll_zoom_included() {
     let (cam, g) = piece_with_gizmo(&mut h);
     let before = h.state().orbit_camera().unwrap();
     let from = near_tip(&cam, &g, 1);
+    eprintln!(
+        "PROBE from {from:?} centre {:?} rect {:?} hit {:?}",
+        cam.project(g.centre),
+        cam,
+        g.hit(&cam, from)
+    );
     grab_and_pull(&mut h, from, from + DVec2::new(0.0, -30.0));
     assert!(h.state().arranger().is_dragging());
     for _ in 0..3 {
@@ -1907,6 +1913,19 @@ fn a_gizmo_drag_in_the_real_view_is_one_undo_step() {
 fn a_gizmo_drag_still_held_when_play_is_pressed_ends_where_it_is() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    // Zoomed out, so the big piece's handles are on screen.
+    let play = h.get_by_label("Play").rect();
+    h.hover_at(egui::pos2(play.min.x - 150.0, play.max.y + 200.0));
+    for _ in 0..10 {
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -60.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.step();
+    }
     h.run();
     h.state_mut().editor_mut().doc.edit(|p| {
         p.add_piece(Piece::rectangle(

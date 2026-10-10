@@ -2,9 +2,21 @@
 
 use crate::garments::{DENSITY, EDGE, grid_panel, skirt_cut, skirt_grid, tube};
 use glam::{DVec2, DVec3};
-use opendrape_body::form::BuiltForm;
+use opendrape_body::form::{BuiltForm, Chart, Form, Quality};
 use opendrape_sim::{BodyCollider, ClothBuilder, CompoundCollider, Params, Solver};
 use std::f64::consts::{FRAC_PI_2, TAU};
+
+/// The default form (women's Classic US 8), built once.
+pub fn default_form() -> &'static BuiltForm {
+    static FORM: std::sync::OnceLock<BuiltForm> = std::sync::OnceLock::new();
+    FORM.get_or_init(|| {
+        let form = Form::bundled("women-torso").expect("a bundled form");
+        let chart = Chart::for_form("women-torso").remove(0);
+        let us8 = &chart.size("US 8").expect("the base size").mm;
+        form.build(us8, Quality::Standard)
+            .expect("the base size builds")
+    })
+}
 
 /// The torso, then the floor at y = 0.
 pub fn collider(form: &BuiltForm) -> CompoundCollider {

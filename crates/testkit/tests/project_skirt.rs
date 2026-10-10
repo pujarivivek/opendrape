@@ -1,6 +1,6 @@
 //! M4a's drape gate: a skirt drafted the way a student would (a front cut on the fold, a
 //! mirrored pair of back panels, the side seams and the centre back sewn, each piece moved to
-//! waist height and Placed at the front or back of the form) is draped on the bundled body
+//! waist height and Placed at the front or back of the form) is draped on the default dress form
 //! through the same code the app runs (`opendrape-drape`: its `Stage` for the form, its frame,
 //! its floor and its surface-distance ray, and its `build_drape` for the fabric, the
 //! placements and the stitches).
@@ -16,8 +16,12 @@ use opendrape_testkit::metrics::{measure, position_hash};
 const WAIST_Y: f64 = 1.03;
 /// The skirt's length (mm).
 const LENGTH_MM: f64 = 550.0;
+/// A quarter of the skirt's waist and of its hem (mm): the front half's width at each (the
+/// fold is the other half). Drafted for the default form's hips (93 cm), with room over them.
+const WAIST_QUARTER_MM: f64 = 177.5;
+const HEM_QUARTER_MM: f64 = 440.0;
 
-/// The skirt: a front half on the fold (hem 300, waist 177.5, 550 long, the fold its left edge),
+/// The skirt: a front half on the fold (hem 440, waist 177.5, 550 long, the fold its left edge),
 /// a "Back left" (side seam slanted on its left, centre back straight on its right) and its
 /// mirror image to its right. Side seams: the front's right edge to the back's slanted edge,
 /// both starting at the hem (the mirror image sews the other side). Centre back: the back to
@@ -28,7 +32,7 @@ fn skirt(stage: &Stage) -> Project {
     let mut front = Piece::polygon(
         PieceId(0),
         "Front",
-        &[p(0.0, 0.0), p(300.0, 0.0), p(177.5, 550.0), p(0.0, 550.0)],
+        &[p(0.0, 0.0), p(440.0, 0.0), p(177.5, 550.0), p(0.0, 550.0)],
     );
     front.fold = Some(3);
     let front = pr.add_piece(front);
@@ -36,10 +40,10 @@ fn skirt(stage: &Stage) -> Project {
         PieceId(0),
         "Back left",
         &[
-            p(400.0, 0.0),
-            p(700.0, 0.0),
-            p(700.0, 550.0),
-            p(522.5, 550.0),
+            p(500.0, 0.0),
+            p(940.0, 0.0),
+            p(940.0, 550.0),
+            p(762.5, 550.0),
         ],
     ));
     let twin = pr
@@ -88,7 +92,7 @@ fn cloth(stage: &Stage) -> (Solver, usize) {
 /// The form alone, for measuring how far the cloth is inside it.
 fn body(stage: &Stage) -> BodyCollider {
     let (positions, triangles) = stage.render_mesh();
-    BodyCollider::new(positions, triangles).expect("the bundled body is closed")
+    BodyCollider::new(positions, triangles).expect("the form is closed")
 }
 
 /// The largest and mean distance (mm) between the particles the solver stitches.
@@ -178,9 +182,14 @@ fn a_drafted_skirt_drapes_on_the_form_without_poking_through_and_settles() {
         "still moving: {} J",
         r.kinetic_energy
     );
+    // Held up at the waist, and no lower at the hem than its slanted side seams reach (61 cm
+    // from the waist, where the centre is 55: the hem dips at the sides, as on an A-line whose
+    // hem hasn't been trued), with a little give.
+    let side_seam = (LENGTH_MM.powi(2) + (HEM_QUARTER_MM - WAIST_QUARTER_MM).powi(2)).sqrt();
+    let lowest = WAIST_Y - side_seam / 1000.0 - 0.04;
     assert!(
-        r.lowest_y > 0.4 && r.highest_y > 1.0,
-        "slid down: {}..{}",
+        r.lowest_y > lowest && r.highest_y > 1.0,
+        "slid down: {}..{} (lowest allowed {lowest:.3})",
         r.lowest_y,
         r.highest_y
     );

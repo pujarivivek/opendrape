@@ -8,7 +8,6 @@ publish.workspace = true
 
 [dependencies]
 image = { workspace = true, features = ["hdr"] }
-opendrape-body.workspace = true
 glam.workspace = true
 
 [lints]

@@ -68,7 +68,8 @@ impl Viewport {
             Material::Form,
         );
         let camera = OrbitCamera {
-            target: glam::Vec3::new(0.0, 0.95, 0.0),
+            // The form's waist, in the middle of the view.
+            target: glam::Vec3::new(0.0, stage.waist_y() as f32, 0.0),
             yaw: 0.5,
             pitch: 0.12,
             distance: 2.6,
