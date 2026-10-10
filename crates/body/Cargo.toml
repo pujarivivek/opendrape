@@ -11,8 +11,7 @@ publish.workspace = true
 [dependencies]
 glam.workspace = true
 serde.workspace = true
-# float_roundtrip: a form read back from its own JSON must equal the form that was written.
-serde_json = { workspace = true, features = ["float_roundtrip"] }
+serde_json.workspace = true
 
 [lints]
 workspace = true

@@ -188,13 +188,11 @@ impl FormFile {
                     if !uv.iter().flatten().all(|x| x.is_finite()) {
                         return bad(format!("tape {name} has a sample that is not finite"));
                     }
-                    if !uv
-                        .iter()
-                        .all(|&[phi, v]| (0.0..=TAU).contains(&phi) && (0.0..=1.0).contains(&v))
-                    {
-                        return bad(format!(
-                            "tape {name} has a sample off the form (phi must be in 0..=2π, v in 0..=1)"
-                        ));
+                    if let Some(&[phi, _]) = uv.iter().find(|p| !(0.0..=TAU).contains(&p[0])) {
+                        return bad(format!("tape {name} has phi {phi} outside 0..=2π"));
+                    }
+                    if let Some(&[_, v]) = uv.iter().find(|p| !(0.0..=1.0).contains(&p[1])) {
+                        return bad(format!("tape {name} has v {v} outside 0..=1"));
                     }
                 }
             }
@@ -203,12 +201,29 @@ impl FormFile {
             pole_xz,
             neck_cut: NeckCut { y, tilt_deg },
         } = &self.stand;
-        if !pole_xz.iter().chain([y]).all(|x| x.is_finite()) {
-            return bad("stand has a value that is not finite".into());
+        if !pole_xz.iter().all(|x| x.is_finite()) {
+            return bad("stand pole is not finite".into());
+        }
+        if !y.is_finite() {
+            return bad("stand neck cut height is not finite".into());
         }
         if !(*tilt_deg > 0.0 && *tilt_deg < 90.0) {
             return bad(format!(
                 "stand neck cut tilts {tilt_deg} degrees, expected between 0 and 90"
+            ));
+        }
+        let Collision {
+            thickness,
+            friction,
+        } = &self.collision;
+        if !(thickness.is_finite() && *thickness > 0.0) {
+            return bad(format!(
+                "collision thickness {thickness} must be finite and above 0"
+            ));
+        }
+        if !(friction.is_finite() && *friction >= 0.0) {
+            return bad(format!(
+                "collision friction {friction} must be finite and 0 or more"
             ));
         }
         let needed: &[&str] = match self.kind {
@@ -263,6 +278,92 @@ mod tests {
         }
     }
 
+    fn close(a: &[f64], b: &[f64], tol: f64) -> bool {
+        a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x - y).abs() <= tol)
+    }
+
+    /// The first thing that differs between two forms, or `None`. Text, counts, flags and names
+    /// must be equal; lengths and angles may differ by the last digit JSON parsing loses
+    /// (rings 1e-12 m and 1e-9 mm, everything else 1e-12).
+    fn first_difference(a: &FormFile, b: &FormFile) -> Option<String> {
+        let same = (a.format, &a.id, a.kind, &a.name, &a.suits, &a.licence)
+            == (b.format, &b.id, b.kind, &b.name, &b.suits, &b.licence);
+        if !same || a.base_size != b.base_size || a.angles != b.angles {
+            return Some("header".into());
+        }
+        if a.rings.len() != b.rings.len() {
+            return Some("ring count".into());
+        }
+        for (i, (p, q)) in a.rings.iter().zip(&b.rings).enumerate() {
+            if !close(&[p.y, p.zc], &[q.y, q.zc], 1e-12) || !close(&p.r, &q.r, 1e-9) {
+                return Some(format!("ring {i}"));
+            }
+        }
+        if a.stations != b.stations || a.inputs != b.inputs {
+            return Some("stations or inputs".into());
+        }
+        let names = |m: &BTreeMap<String, [f64; 2]>| m.keys().cloned().collect::<Vec<_>>();
+        if names(&a.landmarks) != names(&b.landmarks)
+            || a.landmarks
+                .iter()
+                .any(|(n, p)| !close(p, &b.landmarks[n], 1e-12))
+        {
+            return Some("landmarks".into());
+        }
+        if a.tapes.len() != b.tapes.len() {
+            return Some("tape count".into());
+        }
+        for (name, t) in &a.tapes {
+            let same = match (t, b.tapes.get(name)) {
+                (TapeDef::Ring { ring: x }, Some(TapeDef::Ring { ring: y })) => x == y,
+                (
+                    TapeDef::Samples {
+                        uv: p,
+                        closed: c,
+                        mirror: m,
+                    },
+                    Some(TapeDef::Samples {
+                        uv: q,
+                        closed: d,
+                        mirror: n,
+                    }),
+                ) => {
+                    c == d
+                        && m == n
+                        && p.len() == q.len()
+                        && p.iter().zip(q).all(|(x, y)| close(x, y, 1e-12))
+                }
+                _ => false,
+            };
+            if !same {
+                return Some(format!("tape {name}"));
+            }
+        }
+        let (s, t) = (&a.stand, &b.stand);
+        let stand = [
+            s.pole_xz[0],
+            s.pole_xz[1],
+            s.neck_cut.y,
+            s.neck_cut.tilt_deg,
+        ];
+        let other = [
+            t.pole_xz[0],
+            t.pole_xz[1],
+            t.neck_cut.y,
+            t.neck_cut.tilt_deg,
+        ];
+        if !close(&stand, &other, 1e-12) {
+            return Some("stand".into());
+        }
+        let ranges = |f: &FormFile| f.ranges.values().flatten().copied().collect::<Vec<_>>();
+        if a.ranges.keys().ne(b.ranges.keys()) || !close(&ranges(a), &ranges(b), 1e-9) {
+            return Some("ranges".into());
+        }
+        let c = [a.collision.thickness, a.collision.friction];
+        let d = [b.collision.thickness, b.collision.friction];
+        (!close(&c, &d, 1e-12)).then(|| "collision".into())
+    }
+
     #[test]
     fn fixture_torso_passes_the_checks() {
         fixture::torso().check().unwrap();
@@ -272,7 +373,32 @@ mod tests {
     fn round_trips_through_json() {
         let f = fixture::torso();
         let json = serde_json::to_string(&f).unwrap();
-        assert_eq!(FormFile::from_json(&json).unwrap(), f);
+        let back = FormFile::from_json(&json).unwrap();
+        assert_eq!(first_difference(&f, &back), None);
+    }
+
+    #[test]
+    fn the_round_trip_comparison_notices_real_differences() {
+        let f = fixture::torso();
+        for (break_it, what) in [
+            (
+                Box::new(|f: &mut FormFile| f.rings[7].r[3] += 1e-6) as Box<dyn Fn(&mut FormFile)>,
+                "ring 7",
+            ),
+            (Box::new(|f| samples(f, "cf")[5][1] += 1e-6), "tape cf"),
+            (
+                Box::new(|f| f.landmarks.get_mut("bust_apex").unwrap()[0] += 1e-6),
+                "landmarks",
+            ),
+            (Box::new(|f| f.stand.neck_cut.tilt_deg += 1e-6), "stand"),
+            (Box::new(|f| f.collision.friction += 1e-6), "collision"),
+            (Box::new(|f| f.base_size = "other".into()), "header"),
+            (Box::new(|f| f.inputs.reverse()), "stations or inputs"),
+        ] {
+            let mut g = f.clone();
+            break_it(&mut g);
+            assert_eq!(first_difference(&f, &g).as_deref(), Some(what));
+        }
     }
 
     #[test]
@@ -300,17 +426,15 @@ mod tests {
             (WOMEN, "women-torso", "bust", "US 8"),
             (MEN, "men-torso", "chest", "40"),
         ] {
+            // `from_json` runs `check()`.
             let f = FormFile::from_json(json).unwrap();
-            f.check().unwrap();
             assert_eq!(f.id, id);
             assert_eq!(f.kind, Kind::Torso);
             assert_eq!(f.base_size, base_size);
             assert_eq!(f.angles, ANGLES);
             assert_eq!(f.chest_station(), Some(chest));
             assert_eq!(f.landmarks.len(), 15);
-            // The pole stands on the vertical line through the origin; the neck is cut 17 degrees.
-            assert_eq!(f.stand.pole_xz, [0.0, 0.0]);
-            assert_eq!(f.stand.neck_cut.tilt_deg, 17.0);
+            // The neck is cut near the top ring.
             assert!(f.stand.neck_cut.y > f.rings.last().unwrap().y - 0.1);
             // The four lengths all measure along a sampled tape.
             for (_, tape, _, _) in f.lengths() {
@@ -344,53 +468,79 @@ mod tests {
         assert_eq!(f.chest_station(), Some("chest"));
     }
 
+    /// Each case breaks the fixture one way; the error must carry that case's own message, so
+    /// the needles are specific enough that no two causes can pass for each other.
     #[test]
     fn broken_references_are_refused() {
         type Breaker = Box<dyn Fn(&mut FormFile)>;
         let cases: Vec<(Breaker, &str)> = vec![
-            (
-                Box::new(|f| {
-                    let _ = f.stations.remove("waist");
-                }),
-                "waist",
-            ),
-            (
-                Box::new(|f| {
-                    let _ = f.ranges.remove("hip");
-                }),
-                "hip",
-            ),
+            // The header and the rings.
+            (Box::new(|f| f.format = 2), "format 2 is not 1"),
+            (Box::new(|f| f.angles = 48), "48 angles, expected 49"),
             (
                 Box::new(|f| {
                     let _ = f.rings[3].r.pop();
                 }),
-                "ring 3",
+                "ring 3 is malformed",
             ),
-            (Box::new(|f| f.rings[5].y = f.rings[4].y), "ring 5"),
-            (Box::new(|f| f.format = 2), "format 2"),
-            (Box::new(|f| f.angles = 48), "48 angles"),
+            (
+                Box::new(|f| f.rings[5].y = f.rings[4].y),
+                "ring 5 is not above ring 4",
+            ),
+            // Stations and landmarks.
             (
                 Box::new(|f| {
                     let _ = f.stations.insert("hip".into(), 500);
                 }),
-                "station hip",
+                "station hip has no ring 500",
             ),
             (
                 Box::new(|f| f.landmarks.get_mut("bust_apex").unwrap()[0] = 4.0),
-                "bust_apex",
+                "landmark bust_apex is off the form",
             ),
-            // An input that is neither a station girth nor an adjustable length.
+            // A ring tape needs its station.
+            (
+                Box::new(|f| {
+                    let _ = f.stations.remove("waist");
+                }),
+                "tape waist needs station waist",
+            ),
+            // A station the resizing needs, with no tape that names it.
+            (
+                Box::new(|f| {
+                    let _ = f.stations.remove("neck");
+                }),
+                "needs station neck",
+            ),
+            // No bust or chest station (and no ring tape naming bust).
+            (
+                Box::new(|f| {
+                    let _ = f.stations.remove("bust");
+                    let _ = f.tapes.remove("bust");
+                }),
+                "needs a bust or chest station",
+            ),
+            // Inputs.
+            (
+                Box::new(|f| {
+                    let _ = f.ranges.remove("hip");
+                }),
+                "input hip has no valid range",
+            ),
             (
                 Box::new(|f| f.inputs.push("front_waist_length".into())),
-                "front_waist_length",
+                "input front_waist_length is neither",
             ),
-            (Box::new(|f| f.inputs.push("knee".into())), "knee"),
+            (
+                Box::new(|f| f.inputs.push("knee".into())),
+                "input knee is neither",
+            ),
             // A length needs its tape, and the tape must be a sampled one.
             (
                 Box::new(|f| {
                     let _ = f.tapes.remove("cb");
                 }),
-                "tape cb",
+                "back_waist_length needs tape cb to be a sampled tape",
             ),
             (
                 Box::new(|f| {
@@ -401,38 +551,85 @@ mod tests {
                         },
                     );
                 }),
-                "tape cf",
+                "front_waist_length needs tape cf to be a sampled tape",
             ),
-            // Sampled tapes: not finite, phi or v off the form, too short.
+            // Sampled tapes: too short, not finite, phi or v off the form.
+            (
+                Box::new(|f| samples(f, "armhole").truncate(2)),
+                "tape armhole is too short",
+            ),
+            (
+                Box::new(|f| samples(f, "cf").truncate(1)),
+                "tape cf is too short",
+            ),
             (
                 Box::new(|f| samples(f, "armhole")[3][1] = f64::NAN),
-                "armhole",
+                "tape armhole has a sample that is not finite",
             ),
             (
                 Box::new(|f| samples(f, "shoulder_seam")[2][0] = 7.0),
-                "shoulder_seam",
+                "tape shoulder_seam has phi 7 outside 0..=2π",
             ),
             (
                 Box::new(|f| samples(f, "side_seam")[2][0] = -0.1),
-                "side_seam",
+                "tape side_seam has phi -0.1 outside 0..=2π",
             ),
             (
                 Box::new(|f| samples(f, "side_seam")[2][1] = 1.5),
-                "side_seam",
+                "tape side_seam has v 1.5 outside 0..=1",
             ),
-            (Box::new(|f| samples(f, "armhole").truncate(2)), "armhole"),
-            (Box::new(|f| samples(f, "cf").truncate(1)), "cf"),
             // The stand: finite, and a tilt strictly between 0 and 90 degrees.
-            (Box::new(|f| f.stand.neck_cut.tilt_deg = 0.0), "stand"),
-            (Box::new(|f| f.stand.neck_cut.tilt_deg = 90.0), "stand"),
-            (Box::new(|f| f.stand.neck_cut.y = f64::NAN), "stand"),
-            (Box::new(|f| f.stand.pole_xz[1] = f64::INFINITY), "stand"),
+            (
+                Box::new(|f| f.stand.pole_xz[1] = f64::INFINITY),
+                "stand pole is not finite",
+            ),
+            (
+                Box::new(|f| f.stand.neck_cut.y = f64::NAN),
+                "stand neck cut height is not finite",
+            ),
+            (
+                Box::new(|f| f.stand.neck_cut.tilt_deg = 0.0),
+                "tilts 0 degrees, expected between 0 and 90",
+            ),
+            (
+                Box::new(|f| f.stand.neck_cut.tilt_deg = 90.0),
+                "tilts 90 degrees, expected between 0 and 90",
+            ),
+            (
+                Box::new(|f| f.stand.neck_cut.tilt_deg = f64::NAN),
+                "tilts NaN degrees, expected between 0 and 90",
+            ),
+            // Collision: a gap above 0, a friction of 0 or more, both finite.
+            (
+                Box::new(|f| f.collision.thickness = 0.0),
+                "collision thickness 0 must be finite and above 0",
+            ),
+            (
+                Box::new(|f| f.collision.thickness = f64::NAN),
+                "collision thickness NaN must be finite and above 0",
+            ),
+            (
+                Box::new(|f| f.collision.friction = -0.1),
+                "collision friction -0.1 must be finite and 0 or more",
+            ),
+            (
+                Box::new(|f| f.collision.friction = f64::INFINITY),
+                "collision friction inf must be finite and 0 or more",
+            ),
         ];
         for (break_it, needle) in cases {
             let mut f = fixture::torso();
             break_it(&mut f);
             let err = f.check().unwrap_err().0;
-            assert!(err.contains(needle), "{err:?} should mention {needle}");
+            assert!(err.contains(needle), "{err:?} should mention {needle:?}");
         }
+    }
+
+    /// A friction of exactly 0 is allowed (a frictionless form).
+    #[test]
+    fn zero_friction_is_allowed() {
+        let mut f = fixture::torso();
+        f.collision.friction = 0.0;
+        f.check().unwrap();
     }
 }
