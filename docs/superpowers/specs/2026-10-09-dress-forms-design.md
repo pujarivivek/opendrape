@@ -297,3 +297,12 @@ them, and it adds new APIs beside the old ones, so `main` keeps working with the
    Blender pictures for the user's approval. **I'll ask before opening Blender** for the live
    session; headless renders open no window.
 3. After M2b merges, write and run the Track B plan.
+
+## Status
+
+- **Track A: complete (2026-10-10)** on branch `dress-forms`.
+  - Two CC0 forms are built in Blender and exported as ring files: the women's torso and the men's torso. Arms wait for a later task (see "Changes after the forms were approved").
+  - Four size charts ship: Classic and Everyday, for women and men.
+  - The form engine in `crates/body` resizes forms, re-cuts the neck, and builds the tapes and the stand. `CompoundCollider` and `Solid` in `crates/sim` add the floor.
+  - Drape gates pass on every chart extreme. The form skirt is cut to the form's waist, high hip and hip and pinned at the waist.
+- **Track B** (app panel, project field, retiring MakeHuman) can start now that M2b is on `main`.
