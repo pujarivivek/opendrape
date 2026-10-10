@@ -2,6 +2,7 @@
 //! shows in its 3D panel, and that tests (and later PNG export) read back.
 
 mod camera;
+pub mod colour;
 mod headless;
 mod mesh;
 mod target;
