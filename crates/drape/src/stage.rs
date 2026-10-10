@@ -30,6 +30,9 @@ pub const FORM_ARM_LEAN_DEG: f64 = 20.0;
 /// ...and is this long (m).
 pub const FORM_ARM_LENGTH_M: f64 = 0.6;
 
+/// A pin inside a bigger form is moved out in steps of this (m).
+const PIN_STEP_M: f64 = 0.005;
+
 /// A mesh to draw: positions and triangles.
 type Mesh = (Vec<Vec3>, Vec<[u32; 3]>);
 
@@ -193,14 +196,15 @@ impl Stage {
 
     /// Every piece and twin with a placement of its own, moved straight out of this form where
     /// it would start inside it or touching it: away from the centre line (see
-    /// `place::moved_clear`). A twin that mirrors its piece follows the piece. Run after the
-    /// form changes, as part of the same edit.
+    /// `place::moved_clear`). A twin that mirrors its piece follows the piece. Pins inside it
+    /// move out too. Run after the form changes, as part of the same edit.
     pub fn reseat(&self, project: &mut Project) {
         let moved: Vec<(PieceId, Placement)> = geom::shapes(project)
             .iter()
             .filter_map(|s| {
                 let own = project.placement_of(s.id)?;
-                let away = self.away_from_centre_line(DVec3::from_array(own.position), &own);
+                let facing = place::rotation(&own) * DVec3::Z;
+                let away = self.away_from_centre_line(DVec3::from_array(own.position), facing);
                 let m = place::moved_clear(s, &own, away, &|q| self.signed_distance(q));
                 (m != own).then_some((s.id, m))
             })
@@ -208,15 +212,31 @@ impl Stage {
         for (id, m) in moved {
             project.set_placement(id, Some(m));
         }
+        // A pin holds its spot of fabric where it draped, on the old form's surface: one now
+        // inside the form, or touching it, moves straight out to just clear of it.
+        let steps = (place::RESEAT_MAX_M / PIN_STEP_M).round() as usize;
+        for pin in &mut project.pins {
+            let at = DVec3::from_array(pin.target);
+            if self.signed_distance(at) >= place::RESEAT_GAP_M {
+                continue;
+            }
+            let away = self.away_from_centre_line(at, DVec3::Z);
+            if let Some(out) = (1..=steps)
+                .map(|k| at + away * (k as f64 * PIN_STEP_M))
+                .find(|q| self.signed_distance(*q) >= place::RESEAT_GAP_M)
+            {
+                pin.target = out.to_array();
+            }
+        }
     }
 
     /// The level direction from the centre line out through `p`; for a point on the centre
-    /// line, the way placement `facing` faces (level), or the front.
-    fn away_from_centre_line(&self, p: DVec3, facing: &Placement) -> DVec3 {
+    /// line, `fallback` (made level), or the front.
+    fn away_from_centre_line(&self, p: DVec3, fallback: DVec3) -> DVec3 {
         let (x, z) = self.centre_line();
         let level = |v: DVec3| DVec3::new(v.x, 0.0, v.z).try_normalize();
         level(DVec3::new(p.x - x, 0.0, p.z - z))
-            .or_else(|| level(place::rotation(facing) * DVec3::Z))
+            .or_else(|| level(fallback))
             .unwrap_or(DVec3::Z)
     }
 
@@ -705,5 +725,53 @@ mod tests {
             );
             assert_eq!(after.rotation, before.rotation);
         }
+    }
+    #[test]
+    fn going_up_sizes_moves_pins_out_of_the_bigger_form_too() {
+        use opendrape_core::{Half, Piece, Pin, Point2};
+        let small = form_stage(&FormChoice::default());
+        let big =
+            form_stage(&crate::choice::chart_choice("women-torso", "classic", "US 18").unwrap());
+        let mut pr = Project::new();
+        let front = pr.add_piece(Piece::rectangle(
+            PieceId(0),
+            "Front",
+            Point2::new(0.0, 0.0),
+            380.0,
+            600.0,
+        ));
+        let p = small.place_at(&pr, front, PlaceAt::Front).unwrap();
+        pr.set_placement(front, Some(p));
+        // Pinned where the fabric draped, 2 mm off the small form: at the front waist, and at
+        // the side of the bust.
+        let y = small.waist_y();
+        let on = |angle: f64, y: f64| {
+            let d = small.surface_distance(angle, y).unwrap() + 0.002;
+            [angle.sin() * d, y, angle.cos() * d]
+        };
+        for target in [on(0.0, y), on(std::f64::consts::FRAC_PI_2, y + 0.17)] {
+            pr.pins.push(Pin {
+                shape: front,
+                half: Half::Drawn,
+                at: Point2::new(190.0, 300.0),
+                target,
+            });
+        }
+        assert!(
+            pr.pins
+                .iter()
+                .all(|p| big.signed_distance(DVec3::from_array(p.target)) < 0.0),
+            "the test needs pins inside the bigger form"
+        );
+        big.reseat(&mut pr);
+        for p in &pr.pins {
+            let d = big.signed_distance(DVec3::from_array(p.target));
+            assert!(
+                (place::RESEAT_GAP_M - 1e-9..0.03).contains(&d),
+                "{:?} is {d} m from the form",
+                p.target
+            );
+        }
+        assert_eq!(pr.check(), Ok(()));
     }
 }
