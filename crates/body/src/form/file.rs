@@ -2,6 +2,7 @@
 //! horizontal rings, with its stations, landmarks, sampled tape lines, stand, measurement inputs
 //! and ranges.
 
+use super::cut;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{PI, TAU};
@@ -311,6 +312,10 @@ impl FormFile {
                 Some(&[lo, hi]) if lo > 0.0 && lo < hi => {}
                 _ => return bad(format!("input {m} has no valid range")),
             }
+        }
+        // The neck cut ends the neck at the top of the rings.
+        if let Some(why) = cut::misfit(self) {
+            return bad(why);
         }
         Ok(())
     }
@@ -744,6 +749,61 @@ mod tests {
         f.check().unwrap();
         for json in [WOMEN, MEN] {
             FormFile::from_json(json).unwrap();
+        }
+    }
+
+    /// `f` with its neck cut moved `mm` millimetres along the cut plane's normal, up if positive.
+    fn cut_moved(f: &FormFile, mm: f64) -> FormFile {
+        let mut g = f.clone();
+        g.stand.neck_cut.y += mm / 1000.0 / g.stand.neck_cut.tilt_deg.to_radians().cos();
+        g
+    }
+
+    /// A neck cut well clear of the neck, above or below, is refused, and the error names the
+    /// cut and how far off it is. The shipped forms (cut within 0.02 mm of their top ring) pass.
+    #[test]
+    fn a_neck_cut_far_from_the_neck_is_refused() {
+        for json in [WOMEN, MEN] {
+            let f = FormFile::from_json(json).unwrap();
+            // 20 cm up: the cap would float far above the neck.
+            let err = cut_moved(&f, 200.0).check().unwrap_err().0;
+            assert!(
+                err.starts_with(&format!("form {}: the neck cut (at ", f.id))
+                    && err.contains("lies 200.0 mm above the top ring's highest point"),
+                "{err:?}"
+            );
+            // 20 cm down: the neck would stand 20 cm out through the cut.
+            let err = cut_moved(&f, -200.0).check().unwrap_err().0;
+            assert!(
+                err.starts_with(&format!("form {}: the neck cut (at ", f.id))
+                    && err.contains("lies 200.0 mm under the form's highest vertex"),
+                "{err:?}"
+            );
+        }
+        // The fixture's rings stop 4.5 mm short of its cut, which is allowed.
+        let f = fixture::torso();
+        f.check().unwrap();
+        for mm in [200.0, -200.0] {
+            let err = cut_moved(&f, mm).check().unwrap_err().0;
+            assert!(err.contains("the neck cut (at "), "{err:?}");
+        }
+    }
+
+    /// The limits: 0.5 mm of the form may stand above the cut, and the cap may float 5 mm off the
+    /// top ring's highest point.
+    #[test]
+    fn a_neck_cut_may_miss_the_neck_by_a_few_millimetres_not_more() {
+        for json in [WOMEN, MEN] {
+            let f = FormFile::from_json(json).unwrap();
+            cut_moved(&f, -0.4).check().unwrap();
+            cut_moved(&f, 4.9).check().unwrap();
+            let err = cut_moved(&f, -0.6).check().unwrap_err().0;
+            assert!(err.contains("under the form's highest vertex"), "{err:?}");
+            let err = cut_moved(&f, 5.1).check().unwrap_err().0;
+            assert!(
+                err.contains("above the top ring's highest point"),
+                "{err:?}"
+            );
         }
     }
 

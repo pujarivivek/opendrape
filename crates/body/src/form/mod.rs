@@ -261,7 +261,8 @@ mod tests {
     }
 
     /// Landmarks are the file's, placed on the built torso: each lies on its triangles (within
-    /// 1 mm; in fact a micrometre) and the right-hand copies mirror the left exactly.
+    /// 0.5 mm, as the spec says; in fact a micrometre) and the right-hand copies mirror the left
+    /// exactly.
     fn assert_landmarks_on_the_torso(id: &str, f: &Form, b: &BuiltForm) {
         assert_eq!(
             b.landmarks.len(),
@@ -276,7 +277,7 @@ mod tests {
                 if let Some(&p) = b.landmarks.get(key) {
                     let off = distance_to_mesh(p, &b.torso);
                     assert!(
-                        off < 1e-3,
+                        off < 5e-4,
                         "{id}: {key} is {:.3} mm off the torso",
                         off * 1e3
                     );

@@ -18,6 +18,12 @@ use std::f64::consts::PI;
 const ON_PLANE: f64 = 0.0001;
 /// No radius shrinks below this when it is trimmed.
 const MIN_RADIUS: f64 = 0.0005;
+/// A form file is refused when any of its vertices is more than this far (metres) on the
+/// cut-away side of its neck cut: the cut would slice the neck, not end it.
+const MAX_ABOVE_CUT: f64 = 0.0005;
+/// A form file is refused when even the highest point of its top ring is more than this far
+/// (metres) under its neck cut: the cap, which hugs the cut, would float clear of the neck.
+const MAX_BELOW_CUT: f64 = 0.005;
 
 /// The plane the neck is cut by: through the pole at the cut's height, lower at the front.
 pub(super) struct Plane {
@@ -54,6 +60,43 @@ pub(super) fn base_plane(file: &FormFile) -> Plane {
     Plane::new(file, file.stand.neck_cut.y)
 }
 
+/// Why a form file's neck cut does not fit its neck, if it does not: the cut must meet the
+/// top of the rings, not slice through the neck below it or float above it. Judged on the base
+/// form with the plane `base_plane` makes, in metres along the plane's normal. The message names
+/// the cut (its height at the pole and its tilt) and the distance.
+pub(super) fn misfit(file: &FormFile) -> Option<String> {
+    let (plane, rings) = (base_plane(file), Rings::from_file(file));
+    let highest = |i: usize| {
+        (0..rings.around())
+            .map(|j| plane.height(rings.vertex(i, j)))
+            .fold(f64::MIN, f64::max)
+    };
+    let last = rings.len() - 1;
+    let any = (0..=last).map(highest).fold(f64::MIN, f64::max);
+    let top = highest(last);
+    let cut = format!(
+        "the neck cut (at {} m, tilted {} degrees)",
+        file.stand.neck_cut.y, file.stand.neck_cut.tilt_deg
+    );
+    if any > MAX_ABOVE_CUT {
+        Some(format!(
+            "{cut} lies {:.1} mm under the form's highest vertex, but at most {:.1} mm of the \
+             form may stand above it",
+            any * 1000.0,
+            MAX_ABOVE_CUT * 1000.0
+        ))
+    } else if top < -MAX_BELOW_CUT {
+        Some(format!(
+            "{cut} lies {:.1} mm above the top ring's highest point, but the cap would float \
+             more than {:.1} mm clear of the neck",
+            -top * 1000.0,
+            MAX_BELOW_CUT * 1000.0
+        ))
+    } else {
+        None
+    }
+}
+
 /// The plane on the sized form. Everything above the back neck moves rigidly when a form is
 /// resized, so the cut moves with the top ring.
 pub(super) fn sized_plane(file: &FormFile, base: &Rings, rings: &Rings) -> Plane {
@@ -79,7 +122,7 @@ pub(super) struct Trim {
 /// true samples (seen from above, the polygon of the vertices at `neck`), clipped where the ray
 /// from the ring's centre meets the new plane when the ray heads out through it. A larger neck
 /// is thus cut back to the plane, and a smaller one meets it lower down. Any other vertex left
-/// on the cut-away side is moved along its ray onto the plane.
+/// on the cut-away side is moved inwards along its ray onto the plane (never outwards).
 ///
 /// The wall is taken in plan, not as the radius of the last sample, because the rings' centres
 /// slide back as they rise through the cut: one radius reused about a moving centre leans the
@@ -137,8 +180,12 @@ pub(super) fn recut(file: &FormFile, base: &Rings, rings: &Rings) -> Trim {
                     r = r.min(meets).max(MIN_RADIUS);
                 }
             }
+            // Any vertex still on the cut-away side is moved along its ray onto the plane, and
+            // only ever inwards: where the ray heads down through the plane (the ring's centre
+            // is above it) the plane lies further out, and a longer radius would bulge the
+            // neck, so such a vertex stays as it is.
             if new.height(centre + dir * r) > 0.0 {
-                r = meets.unwrap_or(0.0).max(MIN_RADIUS);
+                r = r.min(meets.unwrap_or(0.0)).max(MIN_RADIUS);
             }
             out.r[i][k] = r;
         }
@@ -431,6 +478,40 @@ mod tests {
             (r - wall).abs() < 0.1 * wall,
             "radius {r} m, the wall's {wall} m"
         );
+    }
+
+    /// Where the plane slices through a neck whose rings are still there above it, the rings'
+    /// centres are above the plane, and at the back the plane lies further out along the ray
+    /// than the vertex does. Clipping moved those vertices out to the plane, bulging the neck's
+    /// back; a vertex is only ever moved inwards.
+    #[test]
+    fn a_clipped_vertex_is_never_moved_outwards() {
+        let mut file = fixture::torso();
+        // Lower the cut by 6 cm so that it slices the neck, the rings left as they are.
+        file.stand.neck_cut.y = 1.46;
+        let base = Rings::from_file(&file);
+        let plane = base_plane(&file);
+        let top = base.len() - 1;
+        let centre = DVec3::new(0.0, base.y[top], base.zc[top]);
+        let back = base.around() / 2;
+        assert!(
+            plane.height(centre) > 0.0,
+            "the top ring's centre is above the plane"
+        );
+        assert!(plane.height(base.vertex(top, back)) > 0.0, "so is its back");
+        let trim = recut(&file, &base, &base);
+        let grown: Vec<_> = (0..base.len())
+            .flat_map(|i| (0..base.half()).map(move |k| (i, k)))
+            .filter(|&(i, k)| trim.rings.r[i][k] > base.r[i][k])
+            .collect();
+        assert!(
+            grown.is_empty(),
+            "{} radii grew, the first at (ring, angle) {:?}",
+            grown.len(),
+            grown[0]
+        );
+        // The ring is still trimmed where it can be: its front is pulled in to the plane.
+        assert!(trim.rings.r[top][0] < base.r[top][0] - 0.001);
     }
 
     #[test]
