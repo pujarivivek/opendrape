@@ -29,7 +29,7 @@ fn reach(form: &BuiltForm, zc: f64, y0: f64, y1: f64) -> f64 {
 }
 
 /// How much bigger than the form's waist girth the skirt is at the waist (m).
-const WAIST_EASE: f64 = 0.03;
+const WAIST_EASE: f64 = 0.04;
 /// How much bigger than the form's girth the skirt is at the high hip and at the hip (m).
 const HIP_EASE: f64 = 0.06;
 
@@ -44,15 +44,20 @@ const HIP_EASE: f64 = 0.06;
 /// it flares hard just under the waist, and its seams stretch there.
 pub fn skirt(form: &BuiltForm, collider: &CompoundCollider) -> Solver {
     let (waist_y, zc, length) = (form.stations["waist"], axis_z(form), 0.55);
+    let station = |name: &str, missing: &str| *form.stations.get(name).expect(missing);
     let (high_hip, hip) = (
-        waist_y - form.stations["high_hip"],
-        waist_y - form.stations["hip"],
+        waist_y - station("high_hip", "the form has a high_hip station"),
+        waist_y - station("hip", "the form has a hip station"),
     );
     let girth = |name: &str| form.measured[name] / 1000.0;
     let (c0, c1, c2) = (
         girth("waist") + WAIST_EASE,
         girth("high_hip") + HIP_EASE,
         girth("hip") + HIP_EASE,
+    );
+    assert!(
+        c1 > c0 && c2 >= c1,
+        "the skirt must not narrow going down: waist {c0:.3} m, high hip {c1:.3} m, hip {c2:.3} m"
     );
     // The skirt's circumference at depth `d` below the waist.
     let circumference = |d: f64| {

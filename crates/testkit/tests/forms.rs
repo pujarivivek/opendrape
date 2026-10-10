@@ -70,6 +70,9 @@ fn skirt_gates(chart: &str, which: Which) {
         "still moving: {} J",
         r.kinetic_energy
     );
+    // The form skirt's top ring is pinned at the waist, so "stayed up" holds by construction:
+    // these two are structural, kept for parity with the body skirt's gates. The strain, energy
+    // and penetration gates above are the ones that bite.
     assert!(
         r.highest_y > waist - 0.05 && r.lowest_y > waist - 0.65,
         "skirt slid down: {}..{}",
