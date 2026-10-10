@@ -7,7 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-image.workspace = true
+image = { workspace = true, features = ["hdr"] }
 opendrape-body.workspace = true
 glam.workspace = true
 

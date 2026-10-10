@@ -2,13 +2,15 @@
 //! `cargo xtask body` builds the bundled body from CC0 MakeHuman data.
 
 mod makehuman;
+mod studio;
 
 fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("icons") => icons(),
         Some("body") => body(),
+        Some("studio") => studio::run(std::env::args().skip(2).collect()),
         _ => {
-            eprintln!("usage: cargo xtask <icons|body>");
+            eprintln!("usage: cargo xtask <icons|body|studio>");
             std::process::exit(2);
         }
     }

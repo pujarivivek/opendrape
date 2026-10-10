@@ -5,6 +5,7 @@ mod camera;
 pub mod colour;
 mod headless;
 mod mesh;
+pub mod studio;
 mod target;
 
 pub use camera::OrbitCamera;

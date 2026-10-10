@@ -56,3 +56,8 @@ jobs:
           ./scripts/fetch-makehuman.sh
           cargo xtask body target/makehuman target/female_average.odb
           cmp target/female_average.odb assets/body/female_average.odb
+      - name: Re-bake the studio lighting from its CC0 HDRI and compare with the committed file
+        run: |
+          ./scripts/fetch-studio-hdri.sh
+          cargo xtask studio target/studio/studio_small_08_1k.hdr target/environment_data.rs
+          cmp target/environment_data.rs crates/render/src/studio/environment_data.rs
