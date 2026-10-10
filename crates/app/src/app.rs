@@ -9,7 +9,7 @@ use crate::recovery::Recovery;
 use crate::sim_runner::{DrapeNote, SimFrame, SimRunner};
 use crate::tr;
 use crate::view_picker::view_picker;
-use crate::view_settings::{QualityChoice, ViewSettings};
+use crate::view_settings::{LightingChoice, QualityChoice, ViewSettings};
 use crate::viewport::{Show, Viewport};
 use crate::workspace::{self, Workspace};
 use egui::{Key, KeyboardShortcut, Modifiers, ViewportCommand};
@@ -169,7 +169,7 @@ impl OpenDrapeApp {
         let offered = recovery.take();
         let view_settings = ViewSettings::load(startup.store.dir());
         Self {
-            viewport: render_state.map(|rs| Viewport::new(rs, &stage, view_settings.quality)),
+            viewport: render_state.map(|rs| Viewport::new(rs, &stage, view_settings)),
             view_settings,
             diagnostics: Diagnostics::collect(info.as_ref(), startup.decision),
             startup,
@@ -195,6 +195,11 @@ impl OpenDrapeApp {
             offered,
             workspace: Workspace::default(),
         }
+    }
+
+    /// How the 3D view's studio is lit; None without a 3D view.
+    pub fn viewport_lighting(&self) -> Option<opendrape_render::studio::Lighting> {
+        self.viewport.as_ref().map(Viewport::lighting)
     }
 
     /// The quality level the 3D view draws at; None without a 3D view.
@@ -755,6 +760,7 @@ impl OpenDrapeApp {
                 }
                 ui.separator();
                 self.quality_menu(ui);
+                self.lighting_menu(ui);
             });
             ui.menu_button(tr!("menu-help"), |ui| {
                 if ui.button(tr!("menu-about")).clicked() {
@@ -809,6 +815,30 @@ impl OpenDrapeApp {
             }
         });
         response.response.on_hover_text(tr!("quality-tip"));
+    }
+
+    /// View → Lighting: Soft, Balanced, Sculpted. Applies at once and is remembered.
+    fn lighting_menu(&mut self, ui: &mut egui::Ui) {
+        let Some(viewport) = self.viewport.as_mut() else {
+            return;
+        };
+        let response = ui.menu_button(tr!("menu-lighting"), |ui| {
+            for choice in LightingChoice::ALL {
+                let label = match choice {
+                    LightingChoice::Soft => tr!("lighting-soft"),
+                    LightingChoice::Balanced => tr!("lighting-balanced"),
+                    LightingChoice::Sculpted => tr!("lighting-sculpted"),
+                };
+                let current = self.view_settings.lighting == choice;
+                if ui.radio(current, label).clicked() && !current {
+                    self.view_settings.lighting = choice;
+                    viewport.set_lighting_choice(choice);
+                    self.view_settings.save(self.startup.store.dir());
+                    ui.close();
+                }
+            }
+        });
+        response.response.on_hover_text(tr!("lighting-tip"));
     }
 
     /// Cmd+1…5 (Ctrl on Windows). Not while a text field or the number box has the keyboard, a

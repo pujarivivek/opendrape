@@ -7,6 +7,54 @@ pub const FORM_SRGB: [u8; 3] = [188, 168, 153];
 pub(crate) const HORIZON_SRGB: [u8; 3] = [218, 218, 220];
 pub(crate) const TOP_SRGB: [u8; 3] = [198, 199, 203];
 
+/// How the studio balances its key light against its soft fill: a softbox's even light, or
+/// a stronger key and less fill so shapes and folds read more clearly. Each is calibrated so a
+/// fabric facing the camera still shows its own colour.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Lighting {
+    Soft,
+    Balanced,
+    #[default]
+    Sculpted,
+}
+
+/// What a lighting choice does: the key, fill and rim light scaled, and how dark the key's
+/// shadow makes the floor.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LightScale {
+    pub key: f32,
+    pub fill: f32,
+    pub rim: f32,
+    pub floor_shadow: f32,
+}
+
+impl Lighting {
+    pub const ALL: [Self; 3] = [Self::Soft, Self::Balanced, Self::Sculpted];
+
+    pub fn scale(self) -> LightScale {
+        match self {
+            Self::Soft => LightScale {
+                key: 1.0,
+                fill: 1.0,
+                rim: 1.0,
+                floor_shadow: 0.35,
+            },
+            Self::Balanced => LightScale {
+                key: 1.5,
+                fill: 0.8,
+                rim: 1.15,
+                floor_shadow: 0.45,
+            },
+            Self::Sculpted => LightScale {
+                key: 2.4,
+                fill: 0.5,
+                rim: 1.3,
+                floor_shadow: 0.55,
+            },
+        }
+    }
+}
+
 /// The rim light: opposite the key (behind, to the left), lower, and softer; it outlines the
 /// figure against the backdrop and lights the fabric's sheen at its edges. No shadows.
 pub(crate) const RIM_AZIMUTH_DEG: f32 = 220.0;

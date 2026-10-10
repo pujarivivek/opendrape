@@ -43,8 +43,6 @@ struct Draw {
 const CLOTH: u32 = 0u;
 const FORM: u32 = 1u;
 const LINING: f32 = 0.8;
-// How dark the key light's shadow makes the floor (the soft light still reaches it).
-const KEY_ON_FLOOR: f32 = 0.35;
 // How much the folds' darkening also takes from the key light.
 const AO_ON_KEY: f32 = 0.5;
 
@@ -277,7 +275,8 @@ fn fs_mesh(v: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
         // studio's cove. Out past the form the shading fades away.
         let from_centre = length(v.world.xz);
         let near = 1.0 - smoothstep(frame.params.z, frame.params.w, from_centre);
-        let shade = ao * contact_shadow(v.world) * (1.0 - KEY_ON_FLOOR * (1.0 - shadow));
+        // The key's shadow darkens the floor this much (the soft light still reaches it).
+        let shade = ao * contact_shadow(v.world) * (1.0 - frame.key_box.z * (1.0 - shadow));
         // The grid: faint lines every 10 cm, stronger every metre, fading out with distance.
         let grid_near = 1.0 - smoothstep(frame.grid_fade.x, frame.grid_fade.y, from_centre);
         let lines = max(

@@ -27,7 +27,8 @@ pub(crate) struct FrameUniforms {
     pub screen: [f32; 4],
     /// x shadow taps, y AO samples, z shadow-map texel size (world metres), w contact opacity.
     pub extra: [f32; 4],
-    /// The key shadow map's square (x, metres) and depth range (y, metres).
+    /// The key shadow map's square (x, metres) and depth range (y, metres); how dark the key's
+    /// shadow makes the floor (z).
     pub key_box: [f32; 4],
     /// Unit vector towards the rim light, and its colour (irradiance/π, 0 when off).
     pub rim_dir: [f32; 4],

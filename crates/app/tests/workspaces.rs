@@ -512,3 +512,22 @@ fn the_3d_view_stops_drawing_when_still() {
         "turning the view draws again"
     );
 }
+
+/// View → Lighting switches between soft and sculpted studio light, and is remembered.
+#[test]
+fn the_lighting_menu_switches_and_remembers() {
+    use opendrape_render::studio::Lighting;
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path());
+    assert_eq!(h.state().viewport_lighting(), Some(Lighting::Sculpted));
+    h.get_by_label("View").click();
+    h.run();
+    h.get_by_label_contains("Lighting").click();
+    h.run();
+    h.get_by_label("Soft").click();
+    h.run();
+    assert_eq!(h.state().viewport_lighting(), Some(Lighting::Soft));
+    drop(h);
+    let again = harness(dir.path());
+    assert_eq!(again.state().viewport_lighting(), Some(Lighting::Soft));
+}

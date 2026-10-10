@@ -33,6 +33,12 @@ second and the view goes quiet.
       Basic, Medium and High. Try each: Basic is plainest while moving and still gets
       shadows and soft darkening once still; High is the fullest. Quit and reopen: your
       choice is remembered.
+- [ ] **View → Lighting.** Soft, Balanced and Sculpted (the default). Sculpted shows the
+      shape of the form and the folds most strongly; Soft is the even softbox look. The
+      fabric facing you stays the same colour in all three. Your choice is remembered.
+- [ ] **Floor grid and shadow.** Faint lines every 10 cm, stronger every metre, fading into
+      the backdrop; the form's shadow falls behind-left, about as long as the form is tall,
+      with no cut-off end.
 - [ ] **On a weak laptop** (if you can try one): Auto picks Basic or Medium, and turning the
       view stays smooth.
 

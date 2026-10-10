@@ -59,7 +59,12 @@ pub fn luminance(c: Vec3) -> f32 {
 /// The exposure that makes the light on the front of a cloth piece seen from the front come
 /// out at 1, so a matte fabric facing the camera shows its own colour.
 pub fn exposure() -> f32 {
-    let front = irradiance(Vec3::Z) + key_colour() * wrap(Vec3::Z.dot(key_dir()));
+    exposure_with(1.0, 1.0)
+}
+
+/// [`exposure`] with the key light scaled by `key` and the soft fill by `fill`.
+pub fn exposure_with(key: f32, fill: f32) -> f32 {
+    let front = irradiance(Vec3::Z) * fill + key_colour() * key * wrap(Vec3::Z.dot(key_dir()));
     1.0 / luminance(front)
 }
 

@@ -866,3 +866,99 @@ fn the_floor_shows_a_grid() {
     );
     assert!(major < minor, "1 m line {major} vs 10 cm line {minor}");
 }
+
+/// A sphere of `radius` m centred on `centre`, smooth-shaded.
+fn sphere(centre: Vec3, radius: f32) -> (Vec<Vec3>, Vec<[u32; 3]>) {
+    let (rings, segments) = (32u32, 64u32);
+    let mut p = Vec::new();
+    for i in 0..=rings {
+        let theta = std::f32::consts::PI * i as f32 / rings as f32;
+        for j in 0..segments {
+            let phi = std::f32::consts::TAU * j as f32 / segments as f32;
+            p.push(
+                centre
+                    + radius
+                        * Vec3::new(
+                            theta.sin() * phi.sin(),
+                            theta.cos(),
+                            theta.sin() * phi.cos(),
+                        ),
+            );
+        }
+    }
+    let mut t = Vec::new();
+    for i in 0..rings {
+        for j in 0..segments {
+            let (a, b) = (i * segments + j, i * segments + (j + 1) % segments);
+            let (c, d) = (a + segments, b + segments);
+            t.extend([[a, c, b], [b, c, d]]);
+        }
+    }
+    (p, t)
+}
+
+/// Fabric facing the camera shows its own colour under every lighting choice.
+#[test]
+fn every_lighting_keeps_colours_true() {
+    use opendrape_render::studio::Lighting;
+    let g = gpu();
+    for lighting in Lighting::ALL {
+        let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::Medium);
+        r.set_overrides(plain());
+        r.set_lighting(lighting);
+        let target = RenderTarget::new(&g.device, 128, 128);
+        for swatch in SWATCHES {
+            let m = mesh(
+                &mut r,
+                &g,
+                card(1.0, 0.0, 0.6),
+                srgb8_to_linear(swatch),
+                Material::Cloth,
+            );
+            let img = render_still(&mut r, &g, &target, &front_camera(1.2), &[&m]);
+            let got = centre_mean(&img, 16);
+            let de = delta_e2000(swatch, got);
+            assert!(
+                de <= 3.0,
+                "{lighting:?}: {swatch:?} shows as {got:?} (ΔE {de:.2})"
+            );
+        }
+    }
+}
+
+/// Sculpted lighting models shapes more strongly than soft: the side of a ball facing the key
+/// light is brighter against its far side.
+#[test]
+fn sculpted_lighting_has_more_contrast_than_soft() {
+    use opendrape_render::studio::Lighting;
+    let contrast = |lighting| {
+        let g = gpu();
+        let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::Medium);
+        r.set_overrides(plain());
+        r.set_lighting(lighting);
+        let target = RenderTarget::new(&g.device, 200, 200);
+        let ball = mesh(
+            &mut r,
+            &g,
+            sphere(Vec3::new(0.0, 1.0, 0.0), 0.25),
+            [0.6; 3],
+            Material::Form,
+        );
+        let img = render_still(&mut r, &g, &target, &front_camera(1.5), &[&ball]);
+        // The key comes from the front-right (the viewer's right): the ball's right side is
+        // lit, its left side in shade (the ball spans x 47..153).
+        let lit = mean_light(&img, 135..145, 95..105);
+        let shade = mean_light(&img, 55..65, 95..105);
+        lit / shade
+    };
+    let (soft, balanced, sculpted) = (
+        contrast(Lighting::Soft),
+        contrast(Lighting::Balanced),
+        contrast(Lighting::Sculpted),
+    );
+    assert!(
+        soft < balanced && balanced < sculpted,
+        "soft {soft}, balanced {balanced}, sculpted {sculpted}"
+    );
+    assert!(sculpted >= 1.5 * soft, "sculpted {sculpted} vs soft {soft}");
+}

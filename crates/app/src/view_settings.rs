@@ -1,6 +1,7 @@
 //! How the 3D view should look, remembered between launches in `view.json` beside the GPU
 //! state. Like that file, it is read and written quietly: a locked-down lab PC still starts.
 
+use opendrape_render::studio::Lighting;
 use opendrape_render::studio::quality::Quality;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -32,10 +33,34 @@ impl QualityChoice {
     }
 }
 
+/// How the studio balances its key light against its soft fill (View → Lighting).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LightingChoice {
+    Soft,
+    Balanced,
+    #[default]
+    Sculpted,
+}
+
+impl LightingChoice {
+    pub const ALL: [Self; 3] = [Self::Soft, Self::Balanced, Self::Sculpted];
+
+    pub fn lighting(self) -> Lighting {
+        match self {
+            Self::Soft => Lighting::Soft,
+            Self::Balanced => Lighting::Balanced,
+            Self::Sculpted => Lighting::Sculpted,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ViewSettings {
     #[serde(default)]
     pub quality: QualityChoice,
+    #[serde(default)]
+    pub lighting: LightingChoice,
 }
 
 impl ViewSettings {
@@ -68,6 +93,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = ViewSettings {
             quality: QualityChoice::Basic,
+            lighting: LightingChoice::Soft,
         };
         assert!(s.save(Some(dir.path())));
         assert_eq!(ViewSettings::load(Some(dir.path())), s);
@@ -89,6 +115,20 @@ mod tests {
         );
         assert_eq!(ViewSettings::load(None).quality, QualityChoice::Auto);
         assert!(!ViewSettings::default().save(None), "nowhere to save");
+    }
+
+    #[test]
+    fn lighting_is_sculpted_unless_chosen_and_old_files_still_load() {
+        use opendrape_render::studio::Lighting;
+        assert_eq!(ViewSettings::default().lighting, LightingChoice::Sculpted);
+        assert_eq!(LightingChoice::Soft.lighting(), Lighting::Soft);
+        assert_eq!(LightingChoice::Balanced.lighting(), Lighting::Balanced);
+        let dir = tempfile::tempdir().unwrap();
+        // Saved before lighting was a setting.
+        std::fs::write(dir.path().join("view.json"), r#"{ "quality": "basic" }"#).unwrap();
+        let s = ViewSettings::load(Some(dir.path()));
+        assert_eq!(s.quality, QualityChoice::Basic);
+        assert_eq!(s.lighting, LightingChoice::Sculpted);
     }
 
     #[test]

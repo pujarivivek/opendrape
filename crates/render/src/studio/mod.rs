@@ -12,6 +12,7 @@ pub mod quality;
 mod shadow;
 mod targets;
 
+pub use look::{LightScale, Lighting};
 use mesh::MeshGpu;
 pub use mesh::{Material, StudioMesh};
 
@@ -140,6 +141,7 @@ pub struct StudioRenderer {
     last_signature: Option<u64>,
     /// Something the renderer can't see is moving (the drape plays, a drag is held).
     held: bool,
+    lighting: Lighting,
     /// Unchanged frames since the last change.
     unchanged: u32,
     still_frames: u64,
@@ -300,6 +302,7 @@ impl StudioRenderer {
             frames_drawn: 0,
             last_signature: None,
             held: false,
+            lighting: Lighting::default(),
             unchanged: 0,
             still_frames: 0,
             still_count: 0,
@@ -543,7 +546,13 @@ impl StudioRenderer {
             v.to_bits().hash(&mut h);
         }
         (target.width, target.height).hash(&mut h);
-        (self.quality, self.overrides, self.geometry_epoch).hash(&mut h);
+        (
+            self.quality,
+            self.overrides,
+            self.lighting,
+            self.geometry_epoch,
+        )
+            .hash(&mut h);
         for m in meshes {
             (m.id, m.colour.map(f32::to_bits), m.material).hash(&mut h);
         }
@@ -556,6 +565,21 @@ impl StudioRenderer {
             frames_drawn: self.frames_drawn,
             still_frames: self.still_frames,
         }
+    }
+
+    pub fn lighting(&self) -> Lighting {
+        self.lighting
+    }
+
+    /// How the studio balances its key light against its fill (from the next frame).
+    pub fn set_lighting(&mut self, lighting: Lighting) {
+        self.lighting = lighting;
+    }
+
+    /// The exposure for the lighting chosen: fabric facing the camera shows its own colour.
+    fn exposure(&self) -> f32 {
+        let s = self.lighting.scale();
+        environment::exposure_with(s.key, s.fill)
     }
 
     /// Something the renderer can't see is moving: the drape plays, or a drag is held. Until
@@ -619,7 +643,8 @@ impl StudioRenderer {
         let proj = shift * camera.proj(w / h);
         let view = camera.view();
         let view_proj = proj * view;
-        let exposure = environment::exposure();
+        let exposure = self.exposure();
+        let light = self.lighting.scale();
         // The backdrop shows as `look` says: PBR Neutral takes 4 % off, and exposure scales.
         let displayed = |srgb: [u8; 3]| {
             let [r, g, b] = srgb8_to_linear(srgb).map(|c| (c + 0.04) / exposure);
@@ -657,8 +682,9 @@ impl StudioRenderer {
             contact_view_proj: shadow::contact_view_proj().to_cols_array_2d(),
             camera_pos: v4(camera.eye()),
             key_dir: v4(environment::key_dir()),
-            key_colour: v4(environment::key_colour()),
-            sh: environment::sh().map(|[r, g, b]| [r, g, b, 0.0]),
+            key_colour: v4(environment::key_colour() * light.key),
+            sh: environment::sh()
+                .map(|[r, g, b]| [r * light.fill, g * light.fill, b * light.fill, 0.0]),
             horizon: displayed(look::HORIZON_SRGB),
             top: displayed(look::TOP_SRGB),
             params: [exposure, frame_index as f32, fade_start, fade_end],
@@ -675,9 +701,9 @@ impl StudioRenderer {
                 fit.texel(key_size),
                 CONTACT_OPACITY,
             ],
-            key_box: [fit.size, fit.depth, 0.0, 0.0],
+            key_box: [fit.size, fit.depth, light.floor_shadow, 0.0],
             rim_dir: v4(rim_dir),
-            rim_colour: v4(environment::key_colour() * rim),
+            rim_colour: v4(environment::key_colour() * rim * light.rim),
             grid: if self.overrides.grid.unwrap_or(true) {
                 look::GRID
             } else {
@@ -862,7 +888,7 @@ impl StudioRenderer {
         };
         let show = Show {
             source,
-            exposure: environment::exposure(),
+            exposure: self.exposure(),
             ldr: format == LDR,
             fxaa: !still && settings.fxaa_moving,
         };

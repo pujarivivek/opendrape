@@ -1,7 +1,7 @@
 use crate::arrange::{ArrangedScene, ScreenCamera};
 use crate::sim_runner::SimFrame;
 use crate::theme::{FABRIC, FORM_SRGB, SELECTED_FABRIC};
-use crate::view_settings::QualityChoice;
+use crate::view_settings::{LightingChoice, QualityChoice, ViewSettings};
 use glam::DVec2;
 use opendrape_core::PieceId;
 use opendrape_drape::Stage;
@@ -53,10 +53,11 @@ pub struct Viewport {
 }
 
 impl Viewport {
-    pub fn new(rs: &egui_wgpu::RenderState, stage: &Stage, choice: QualityChoice) -> Self {
+    pub fn new(rs: &egui_wgpu::RenderState, stage: &Stage, settings: ViewSettings) -> Self {
         let mut renderer = StudioRenderer::new(&rs.device, &rs.adapter, Quality::Medium);
         let auto_quality = quality::auto(&rs.adapter.get_info(), renderer.hdr_ok());
-        renderer.set_quality(choice.resolve(auto_quality));
+        renderer.set_quality(settings.quality.resolve(auto_quality));
+        renderer.set_lighting(settings.lighting.lighting());
         let (positions, triangles) = stage.render_mesh();
         let body = renderer.create_mesh(
             &rs.device,
@@ -99,6 +100,14 @@ impl Viewport {
 
     pub fn set_quality_choice(&mut self, choice: QualityChoice) {
         self.renderer.set_quality(choice.resolve(self.auto_quality));
+    }
+
+    pub fn lighting(&self) -> opendrape_render::studio::Lighting {
+        self.renderer.lighting()
+    }
+
+    pub fn set_lighting_choice(&mut self, choice: LightingChoice) {
+        self.renderer.set_lighting(choice.lighting());
     }
 
     pub fn camera(&self) -> &OrbitCamera {
