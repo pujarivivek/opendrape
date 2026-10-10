@@ -27,6 +27,15 @@ pub(crate) struct FrameUniforms {
     pub screen: [f32; 4],
     /// x shadow taps, y AO samples, z shadow-map texel size (world metres), w contact opacity.
     pub extra: [f32; 4],
+    /// The key shadow map's square (x, metres) and depth range (y, metres).
+    pub key_box: [f32; 4],
+    /// Unit vector towards the rim light, and its colour (irradiance/π, 0 when off).
+    pub rim_dir: [f32; 4],
+    pub rim_colour: [f32; 4],
+    /// The floor grid: x and y line spacings (metres), z and w how much they darken; and
+    /// where it fades out (x start, y end, metres from the centre).
+    pub grid: [f32; 4],
+    pub grid_fade: [f32; 4],
 }
 
 #[cfg(test)]
@@ -39,7 +48,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<FrameUniforms>() % 16, 0);
         assert_eq!(
             std::mem::size_of::<FrameUniforms>(),
-            7 * 64 + 3 * 16 + 9 * 16 + 6 * 16
+            7 * 64 + 3 * 16 + 9 * 16 + 11 * 16
         );
     }
 }

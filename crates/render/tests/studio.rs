@@ -41,6 +41,8 @@ fn plain() -> Overrides {
         ao: Some(false),
         key_shadows: Some(false),
         contact: Some(false),
+        rim: None,
+        grid: Some(false),
         force_ldr: false,
     }
 }
@@ -743,4 +745,124 @@ fn a_short_pause_does_not_start_still_frames() {
         assert!(!pause.drew, "nothing new to draw");
     }
     assert_eq!(r.stats().still_frames, 0);
+}
+
+/// A box `size` m square and `height` tall standing on the floor at (`x`, 0, `z`).
+fn box_at(x: f32, z: f32, size: f32, height: f32) -> (Vec<Vec3>, Vec<[u32; 3]>) {
+    let (p, t) = box_mesh(size, 0.0, height);
+    (p.into_iter().map(|v| v + Vec3::new(x, 0.0, z)).collect(), t)
+}
+
+/// Something standing well away from the centre still casts its shadow: the key light's
+/// shadow map follows what is in the scene.
+#[test]
+fn shadows_follow_things_away_from_the_centre() {
+    let g = gpu();
+    let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::Medium);
+    r.set_overrides(Overrides {
+        key_shadows: Some(true),
+        ..plain()
+    });
+    let target = RenderTarget::new(&g.device, 400, 400);
+    let camera = OrbitCamera {
+        target: Vec3::new(1.6, 0.0, 0.0),
+        yaw: 0.0,
+        pitch: 1.3,
+        distance: 3.0,
+        fov_y: 35f32.to_radians(),
+    };
+    let b = mesh(
+        &mut r,
+        &g,
+        box_at(1.6, 0.0, 0.3, 1.0),
+        [0.5; 3],
+        Material::Form,
+    );
+    let img = render_still(&mut r, &g, &target, &camera, &[&b]);
+    let towards_light = opendrape_render::studio::environment::key_dir();
+    let away = Vec3::new(-towards_light.x, 0.0, -towards_light.z).normalize() * 0.5;
+    let base = Vec3::new(1.6, 0.0, 0.0);
+    let shadowed = luminance_at(&img, &camera, base + away);
+    let lit = luminance_at(&img, &camera, base - away);
+    assert!(
+        shadowed < 0.9 * lit,
+        "shadow side {shadowed}, light side {lit}"
+    );
+}
+
+/// A soft rim light from behind-left (opposite the key) outlines the figure: surfaces facing
+/// it are brighter with it.
+#[test]
+fn the_rim_light_lights_what_faces_it() {
+    let rim = |on: bool| {
+        let g = gpu();
+        let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::Medium);
+        r.set_overrides(Overrides {
+            rim: Some(on),
+            ..plain()
+        });
+        let target = RenderTarget::new(&g.device, 128, 128);
+        // A card turned to face back-left (azimuth 220°), seen from that side.
+        let turn = glam::Quat::from_rotation_y(220f32.to_radians());
+        let centre = Vec3::new(0.0, 1.0, 0.0);
+        let (p, t) = card(1.0, 0.0, 0.6);
+        let p = p
+            .into_iter()
+            .map(|v| turn * (v - centre) + centre)
+            .collect();
+        let c = mesh(&mut r, &g, (p, t), [0.5; 3], Material::Cloth);
+        let camera = OrbitCamera {
+            yaw: 220f32.to_radians(),
+            ..front_camera(1.5)
+        };
+        mean_light(
+            &render_still(&mut r, &g, &target, &camera, &[&c]),
+            56..72,
+            56..72,
+        )
+    };
+    let (with, without) = (rim(true), rim(false));
+    assert!(with >= 1.1 * without, "with rim {with}, without {without}");
+}
+
+/// Mean light (linear) of a column of pixels `x`, rows `ys`.
+fn column_light(img: &image::RgbaImage, x: u32, ys: std::ops::Range<u32>) -> f32 {
+    mean_light(img, x..x + 1, ys)
+}
+
+/// The floor shows a grid: faint lines every 10 cm, stronger ones every metre.
+#[test]
+fn the_floor_shows_a_grid() {
+    let g = gpu();
+    let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::Medium);
+    r.set_overrides(Overrides {
+        grid: Some(true),
+        ..plain()
+    });
+    let target = RenderTarget::new(&g.device, 600, 600);
+    let camera = OrbitCamera {
+        target: Vec3::new(0.5, 0.0, 0.0),
+        yaw: 0.0,
+        pitch: 1.5,
+        distance: 2.0,
+        fov_y: 35f32.to_radians(),
+    };
+    let img = render_still(&mut r, &g, &target, &camera, &[]);
+    img.save(format!("{}/studio_grid.png", env!("CARGO_TARGET_TMPDIR")))
+        .ok();
+    let size = (img.width(), img.height());
+    let x_of = |x: f32| pixel_of(&camera, size, Vec3::new(x, 0.0, 0.0)).0;
+    let rows = 250..350;
+    let between = column_light(&img, x_of(0.25), rows.clone());
+    let minor = (x_of(0.2)..=x_of(0.2) + 1)
+        .map(|x| column_light(&img, x, rows.clone()))
+        .fold(f32::INFINITY, f32::min);
+    let major = (x_of(1.0)..=x_of(1.0) + 1)
+        .map(|x| column_light(&img, x, rows.clone()))
+        .fold(f32::INFINITY, f32::min);
+    assert!(
+        minor < 0.985 * between,
+        "10 cm line {minor} vs between {between}"
+    );
+    assert!(major < minor, "1 m line {major} vs 10 cm line {minor}");
 }

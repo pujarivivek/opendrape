@@ -34,6 +34,8 @@ pub struct Overrides {
     pub ao: Option<bool>,
     pub key_shadows: Option<bool>,
     pub contact: Option<bool>,
+    pub rim: Option<bool>,
+    pub grid: Option<bool>,
     pub force_ldr: bool,
 }
 
@@ -627,6 +629,22 @@ impl StudioRenderer {
         let ldr = self.colour_format() == LDR;
         let (fade_start, fade_end) = look::FLOOR_FADE;
         let key_size = self.quality.settings().shadow_still.size;
+        let fit = self.shadows.key_fit();
+        let rim = if self.overrides.rim.unwrap_or(true) {
+            look::RIM_SHARE
+        } else {
+            0.0
+        };
+        let (azimuth, elevation) = (
+            look::RIM_AZIMUTH_DEG.to_radians(),
+            look::RIM_ELEVATION_DEG.to_radians(),
+        );
+        let rim_dir = Vec3::new(
+            azimuth.sin() * elevation.cos(),
+            elevation.sin(),
+            azimuth.cos() * elevation.cos(),
+        );
+        let (grid_start, grid_end) = look::GRID_FADE;
         let taps = effects.shadow.map_or(0, |s| s.taps);
         let samples = effects.ao.map_or(0, |a| a.samples);
         FrameUniforms {
@@ -635,7 +653,7 @@ impl StudioRenderer {
             view: view.to_cols_array_2d(),
             proj: proj.to_cols_array_2d(),
             inv_proj: proj.inverse().to_cols_array_2d(),
-            key_view_proj: shadow::key_view_proj().to_cols_array_2d(),
+            key_view_proj: fit.view_proj.to_cols_array_2d(),
             contact_view_proj: shadow::contact_view_proj().to_cols_array_2d(),
             camera_pos: v4(camera.eye()),
             key_dir: v4(environment::key_dir()),
@@ -654,9 +672,18 @@ impl StudioRenderer {
             extra: [
                 taps as f32,
                 samples as f32,
-                shadow::key_texel(key_size),
+                fit.texel(key_size),
                 CONTACT_OPACITY,
             ],
+            key_box: [fit.size, fit.depth, 0.0, 0.0],
+            rim_dir: v4(rim_dir),
+            rim_colour: v4(environment::key_colour() * rim),
+            grid: if self.overrides.grid.unwrap_or(true) {
+                look::GRID
+            } else {
+                [1.0, 1.0, 0.0, 0.0]
+            },
+            grid_fade: [grid_start, grid_end, 0.0, 0.0],
         }
     }
 
@@ -736,21 +763,23 @@ impl StudioRenderer {
         } else {
             (Vec2::ZERO, 0)
         };
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("studio"),
+        });
+        // First: the frame reads where the key map was fitted.
+        self.shadows.draw_if_needed(
+            queue,
+            &mut encoder,
+            meshes,
+            self.geometry_epoch,
+            effects.shadow.is_some(),
+        );
         let uniforms = self.frame_uniforms(camera, size, jitter, effects, index);
         queue.write_buffer(&self.frame_uniforms, 0, bytemuck::bytes_of(&uniforms));
         let floor = self.floor.as_ref().expect("made above");
         for m in meshes.iter().copied().chain([floor]) {
             queue.write_buffer(&m.uniforms, 0, bytemuck::bytes_of(&m.draw_uniforms()));
         }
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("studio"),
-        });
-        self.shadows.draw_if_needed(
-            &mut encoder,
-            meshes,
-            self.geometry_epoch,
-            effects.shadow.is_some(),
-        );
         let floor = self.floor.as_ref().expect("made above");
         let pipelines = self.pipelines.as_ref().expect("made above");
         let targets = self.targets.as_ref().expect("made above");

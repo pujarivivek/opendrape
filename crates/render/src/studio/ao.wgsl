@@ -19,6 +19,11 @@ struct Frame {
     flags: vec4<u32>,
     screen: vec4<f32>,
     extra: vec4<f32>,
+    key_box: vec4<f32>,
+    rim_dir: vec4<f32>,
+    rim_colour: vec4<f32>,
+    grid: vec4<f32>,
+    grid_fade: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> frame: Frame;
 

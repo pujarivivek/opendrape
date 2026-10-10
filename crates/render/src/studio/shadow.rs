@@ -8,11 +8,11 @@ use super::targets::{DEPTH, texture};
 use crate::mesh::Vertex;
 use glam::{Mat4, Vec3};
 
-/// The key light's shadow map covers this square (metres), centred on the form (shade.wgsl
-/// has the same numbers).
-const KEY_BOX: f32 = 2.6;
+/// With nothing to draw, the key light's shadow map covers a square this big round the form.
 const KEY_CENTRE: Vec3 = Vec3::new(0.0, 0.95, 0.0);
-const KEY_DEPTH: f32 = 6.0;
+const KEY_RADIUS: f32 = 1.3;
+/// Room left round what casts shadows (metres).
+const KEY_MARGIN: f32 = 0.05;
 /// The contact map covers this square of floor (metres), and things up to this height.
 const CONTACT_BOX: f32 = 2.4;
 const CONTACT_HEIGHT: f32 = 0.6;
@@ -24,17 +24,48 @@ const BLUR_STEP_M: f32 = 0.019;
 
 const CONTACT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 
-/// World to the key light's shadow map.
-pub(crate) fn key_view_proj() -> Mat4 {
-    let eye = KEY_CENTRE + environment::key_dir() * (KEY_DEPTH / 2.0);
-    let view = glam::camera::rh::view::look_at_mat4(eye, KEY_CENTRE, Vec3::Y);
-    let h = KEY_BOX / 2.0;
-    glam::camera::rh::proj::directx::orthographic(-h, h, -h, h, 0.0, KEY_DEPTH) * view
+/// The key light's view of the scene: an orthographic box round a sphere that holds
+/// everything that casts shadows, so no shadow is ever cut off.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct KeyFit {
+    pub view_proj: Mat4,
+    /// The box's side and depth (metres).
+    pub size: f32,
+    pub depth: f32,
 }
 
-/// The size of one key shadow-map texel on the ground, in metres.
-pub(crate) fn key_texel(size: u32) -> f32 {
-    KEY_BOX / size as f32
+impl KeyFit {
+    /// Round `bounds` (min, max), or round the form's usual place when there is nothing.
+    pub fn around(bounds: Option<(Vec3, Vec3)>) -> Self {
+        let (centre, radius) = match bounds {
+            Some((lo, hi)) => ((lo + hi) / 2.0, (hi - lo).length() / 2.0 + KEY_MARGIN),
+            None => (KEY_CENTRE, KEY_RADIUS),
+        };
+        let radius = radius.max(0.1);
+        let eye = centre + environment::key_dir() * (radius + 0.5);
+        let view = glam::camera::rh::view::look_at_mat4(eye, centre, Vec3::Y);
+        let depth = 2.0 * radius + 1.0;
+        let ortho = glam::camera::rh::proj::directx::orthographic;
+        Self {
+            view_proj: ortho(-radius, radius, -radius, radius, 0.0, depth) * view,
+            size: 2.0 * radius,
+            depth,
+        }
+    }
+
+    /// The size of one shadow-map texel, in metres, for a map `texels` wide.
+    pub fn texel(&self, texels: u32) -> f32 {
+        self.size / texels as f32
+    }
+}
+
+/// The box holding all of `meshes`, if any have vertices.
+fn union_bounds(meshes: &[&StudioMesh]) -> Option<(Vec3, Vec3)> {
+    meshes
+        .iter()
+        .filter(|m| m.index_count > 0 && m.bounds.0.x.is_finite())
+        .map(|m| m.bounds)
+        .reduce(|(a, b), (c, d)| (a.min(c), b.max(d)))
 }
 
 /// World to the floor's contact map (seen from just under the floor, looking up).
@@ -71,6 +102,9 @@ pub(crate) struct Shadows {
     blur_pipeline: wgpu::RenderPipeline,
     blur_layout: wgpu::BindGroupLayout,
     key_light: wgpu::BindGroup,
+    key_light_buffer: wgpu::Buffer,
+    /// What the key map was last drawn for.
+    key_fit: KeyFit,
     contact_light: wgpu::BindGroup,
     across_step: wgpu::Buffer,
     down_step: wgpu::Buffer,
@@ -232,18 +266,23 @@ impl Shadows {
                 label,
                 bytemuck::bytes_of(&matrix.to_cols_array_2d()),
             );
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some(label),
                 layout: &light_layout,
                 entries: &[wgpu::BindGroupEntry {
                     binding: 0,
                     resource: buffer.as_entire_binding(),
                 }],
-            })
+            });
+            (buffer, group)
         };
+        let key_fit = KeyFit::around(None);
+        let (key_light_buffer, key_light) = light("studio key light", key_fit.view_proj);
         Self {
-            key_light: light("studio key light", key_view_proj()),
-            contact_light: light("studio contact light", contact_view_proj()),
+            key_light,
+            key_light_buffer,
+            key_fit,
+            contact_light: light("studio contact light", contact_view_proj()).1,
             across_step: uniform_buffer(device, "studio blur across", &[0; 16]),
             down_step: uniform_buffer(device, "studio blur down", &[0; 16]),
             sampler: device.create_sampler(&wgpu::SamplerDescriptor {
@@ -357,6 +396,11 @@ impl Shadows {
         true
     }
 
+    /// The key light's view the key map was drawn with.
+    pub fn key_fit(&self) -> KeyFit {
+        self.key_fit
+    }
+
     pub fn key_view(&self) -> Option<&wgpu::TextureView> {
         self.maps.as_ref().map(|m| &m.key)
     }
@@ -370,6 +414,7 @@ impl Shadows {
     /// wanted (`key`) and wasn't drawn.
     pub fn draw_if_needed(
         &mut self,
+        queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         meshes: &[&StudioMesh],
         epoch: u64,
@@ -397,6 +442,9 @@ impl Shadows {
             }
         };
         if key {
+            self.key_fit = KeyFit::around(union_bounds(meshes));
+            let matrix = self.key_fit.view_proj.to_cols_array_2d();
+            queue.write_buffer(&self.key_light_buffer, 0, bytemuck::bytes_of(&matrix));
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("studio key shadow"),
                 color_attachments: &[],

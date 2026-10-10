@@ -96,8 +96,8 @@ mod tests {
         assert!((d.length() - 1.0).abs() < 1e-5);
         let elevation = d.y.asin().to_degrees();
         let azimuth = d.x.atan2(d.z).to_degrees();
-        // The bake clamps the height to 25°–60°; the file keeps 6 decimals.
-        assert!((24.99..=60.01).contains(&elevation), "{elevation}");
+        // A photo-studio softbox height: shadows about as long as the figure is tall.
+        assert!((elevation - 50.0).abs() < 0.1, "{elevation}");
         assert!((azimuth - 40.0).abs() < 0.1, "{azimuth}");
         assert!(key_colour().min_element() > 0.0);
     }

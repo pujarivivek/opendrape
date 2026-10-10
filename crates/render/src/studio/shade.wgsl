@@ -19,6 +19,11 @@ struct Frame {
     flags: vec4<u32>,
     screen: vec4<f32>,
     extra: vec4<f32>,
+    key_box: vec4<f32>,
+    rim_dir: vec4<f32>,
+    rim_colour: vec4<f32>,
+    grid: vec4<f32>,
+    grid_fade: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> frame: Frame;
 
@@ -42,9 +47,6 @@ const LINING: f32 = 0.8;
 const KEY_ON_FLOOR: f32 = 0.35;
 // How much the folds' darkening also takes from the key light.
 const AO_ON_KEY: f32 = 0.5;
-// The key shadow map's square (metres) and depth range: as in shadow.rs.
-const KEY_BOX: f32 = 2.6;
-const KEY_DEPTH: f32 = 6.0;
 
 // The soft studio light reaching a surface facing `n`, divided by π.
 fn irradiance(n: vec3<f32>) -> vec3<f32> {
@@ -63,6 +65,17 @@ fn irradiance(n: vec3<f32>) -> vec3<f32> {
 // Soft wrapped light for cloth: 1 facing the key, a little past its edge.
 fn wrap(n_dot_l: f32) -> f32 {
     return max((n_dot_l + 0.5) / 1.5, 0.0);
+}
+
+// How much of the floor grid line there is at floor point `p` (0..1) for lines every `spacing`
+// metres: about a pixel wide whatever the distance, and gone where the lines would crowd.
+fn grid_line(p: vec2<f32>, spacing: f32) -> f32 {
+    let c = p / spacing;
+    let width = fwidth(c);
+    let to_line = abs(fract(c - 0.5) - 0.5) / max(width, vec2<f32>(1e-5));
+    let line = 1.0 - min(min(to_line.x, to_line.y), 1.0);
+    let crowded = smoothstep(0.15, 0.4, max(width.x, width.y));
+    return line * (1.0 - crowded);
 }
 
 // The backdrop seen along `dir`: light grey at and below the horizon, a little darker above.
@@ -96,17 +109,17 @@ fn key_shadow(world: vec3<f32>, n: vec3<f32>, pixel: vec2<f32>) -> f32 {
     );
     let angle = (pixel_noise(pixel) + frame.params.y * 0.618034) * 6.2831853;
     let rotate = mat2x2<f32>(cos(angle), sin(angle), -sin(angle), cos(angle));
-    // A soft studio light: the shadow edge spreads over about 2.5 cm.
-    let radius = 0.025 / KEY_BOX;
+    // A soft studio light: the shadow edge spreads over about 4 cm.
+    let radius = 0.04 / frame.key_box.x;
     // A tap reaching sideways over a surface tilted to the light finds that surface itself
     // nearer the light: allow for the tilt over the tap's reach (receiver slope bias).
     let facing = clamp(dot(n, frame.key_dir.xyz), 0.05, 1.0);
-    let slope = min(sqrt(1.0 - facing * facing) / facing, 5.0);
+    let slope = min(sqrt(1.0 - facing * facing) / facing, 3.0);
     let taps = min(i32(frame.extra.x), 12);
     var lit = 0.0;
     for (var i = 0; i < taps; i++) {
         let offset = rotate * disc[i] * radius;
-        let bias = 0.0015 + length(offset) * KEY_BOX * slope / KEY_DEPTH;
+        let bias = 0.0015 + length(offset) * frame.key_box.x * slope / frame.key_box.y;
         lit += textureSampleCompareLevel(shadow_map, shadow_sampler, uv + offset, ndc.z - bias);
     }
     return lit / f32(max(taps, 1));
@@ -242,18 +255,36 @@ fn fs_mesh(v: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
         let vis = 1.0 / max(4.0 * (lit + n_dot_v - lit * n_dot_v), 1e-3);
         let glow = 0.6 * pow(1.0 - n_dot_v, 4.0);
         let base = 1.0 - max(sheen.r, max(sheen.g, sheen.b)) * glow;
-        c = albedo * (soft * ao + key * wrap(n_dot_l) * shadow) * base
-            + sheen * (d * vis * PI * key * lit * shadow + soft * ao * glow)
+        // The rim light, from behind: wrapped light and sheen along the edges.
+        let r = frame.rim_dir.xyz;
+        let n_dot_r = dot(n, r);
+        let rim_lit = max(n_dot_r, 0.0);
+        let hr = normalize(to_eye + r);
+        let n_dot_hr = clamp(dot(n, hr), 0.0, 1.0);
+        let dr = 4.0 * (1.0 - n_dot_hr * n_dot_hr) / (2.0 * PI);
+        let vis_r = 1.0 / max(4.0 * (rim_lit + n_dot_v - rim_lit * n_dot_v), 1e-3);
+        let rim = frame.rim_colour.rgb;
+        c = albedo * (soft * ao + key * wrap(n_dot_l) * shadow + rim * wrap(n_dot_r)) * base
+            + sheen * (d * vis * PI * key * lit * shadow + dr * vis_r * PI * rim * rim_lit
+                + soft * ao * glow)
             + reflected;
     } else if (material == FORM) {
-        c = albedo * (soft * ao + key * lit * shadow) + reflected;
+        let rim_lit = max(dot(n, frame.rim_dir.xyz), 0.0);
+        c = albedo * (soft * ao + key * lit * shadow + frame.rim_colour.rgb * rim_lit) + reflected;
     } else {
         // The floor catches shadows: it shows the backdrop behind it, darkened only where the
         // form and the garment shade it, so it meets the backdrop with no edge, like a photo
         // studio's cove. Out past the form the shading fades away.
-        let near = 1.0 - smoothstep(frame.params.z, frame.params.w, length(v.world.xz));
+        let from_centre = length(v.world.xz);
+        let near = 1.0 - smoothstep(frame.params.z, frame.params.w, from_centre);
         let shade = ao * contact_shadow(v.world) * (1.0 - KEY_ON_FLOOR * (1.0 - shadow));
-        c = backdrop(-to_eye) * mix(vec3<f32>(1.0), shade, near);
+        // The grid: faint lines every 10 cm, stronger every metre, fading out with distance.
+        let grid_near = 1.0 - smoothstep(frame.grid_fade.x, frame.grid_fade.y, from_centre);
+        let lines = max(
+            grid_line(v.world.xz, frame.grid.x) * frame.grid.z,
+            grid_line(v.world.xz, frame.grid.y) * frame.grid.w,
+        );
+        c = backdrop(-to_eye) * mix(vec3<f32>(1.0), shade, near) * (1.0 - lines * grid_near);
     }
     return finish(c);
 }

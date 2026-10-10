@@ -55,6 +55,8 @@ pub struct StudioMesh {
     pub(crate) bind_group: wgpu::BindGroup,
     pub(crate) colour: [f32; 3],
     pub(crate) material: Material,
+    /// The smallest box holding its vertices (min, max), for fitting the shadow map.
+    pub(crate) bounds: (Vec3, Vec3),
 }
 
 impl StudioMesh {
@@ -134,6 +136,7 @@ impl StudioMesh {
             bind_group,
             colour,
             material,
+            bounds: (Vec3::ZERO, Vec3::ZERO),
         };
         mesh.upload(queue, positions, Some(triangles));
         mesh
@@ -161,6 +164,10 @@ impl StudioMesh {
             queue.write_buffer(&self.indices, 0, bytemuck::cast_slice(t));
             self.index_count = (t.len() * 3) as u32;
         }
+        self.bounds = positions.iter().fold(
+            (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
+            |(lo, hi), p| (lo.min(*p), hi.max(*p)),
+        );
         let normals = vertex_normals(positions, &self.triangles);
         let verts: Vec<Vertex> = positions
             .iter()

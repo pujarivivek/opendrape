@@ -12,9 +12,11 @@ use std::fmt::Write as _;
 const KEY_SHARE: f64 = 0.4;
 const FLOOR_SHARE: f64 = 0.1;
 /// Where the key light comes from: this many degrees round from the front (+Z) towards +X,
-/// at the HDRI's own height clamped to this range.
+/// and this high, like a photo studio's softbox (shadows about as long as the figure is tall).
+/// The HDRI's own brightest light is lower (bounce off a bright floor), which threw long
+/// shadows.
 const KEY_AZIMUTH_DEG: f64 = 40.0;
-const KEY_ELEVATION_DEG: (f64, f64) = (25.0, 60.0);
+const KEY_ELEVATION_DEG: f64 = 50.0;
 
 const Y00: f64 = 0.282_095;
 const Y1: f64 = 0.488_603;
@@ -120,13 +122,7 @@ fn bake(w: usize, h: usize, pixels: &[[f32; 3]]) -> Bake {
     let d = dominant(&first);
     let yaw = KEY_AZIMUTH_DEG.to_radians() - d.x.atan2(d.z);
     let mut sh = white_balance(convolve(project_sh9(w, h, pixels, yaw)));
-    let (lo, hi) = KEY_ELEVATION_DEG;
-    let elevation = dominant(&sh)
-        .y
-        .asin()
-        .to_degrees()
-        .clamp(lo, hi)
-        .to_radians();
+    let elevation = KEY_ELEVATION_DEG.to_radians();
     let azimuth = KEY_AZIMUTH_DEG.to_radians();
     let key_dir = DVec3::new(
         azimuth.sin() * elevation.cos(),
@@ -278,7 +274,7 @@ mod tests {
         let azimuth = b.key_dir.x.atan2(b.key_dir.z).to_degrees();
         let elevation = b.key_dir.y.asin().to_degrees();
         assert!((azimuth - 40.0).abs() < 2.0, "azimuth {azimuth}");
-        assert!((25.0..=60.0).contains(&elevation), "elevation {elevation}");
+        assert!((elevation - 50.0).abs() < 1e-6, "elevation {elevation}");
     }
 
     #[test]
