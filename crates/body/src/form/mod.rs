@@ -115,31 +115,36 @@ impl Form {
         measure_all(&self.torso, &rings, &landmarks(&self.torso, &rings))
     }
 
-    /// The unsized rings and the rings at `size` (mm), resized and re-cut to the neck's plane, or
-    /// the measurement the form cannot take.
-    fn rings(&self, size: &Measurements, quality: Quality) -> Result<(Rings, Rings), SizeError> {
+    /// The unsized rings and the rings at `size` (mm), resized and re-cut to the neck's plane
+    /// (with the neck's wall, for the stand), or the measurement the form cannot take.
+    fn rings(
+        &self,
+        size: &Measurements,
+        quality: Quality,
+    ) -> Result<(Rings, cut::Trim), SizeError> {
         let base = Rings::from_file(&self.torso).with_half_angles(quality.half_angles());
         let sized = resize::resize(&self.torso, &base, size)?;
-        let rings = cut::recut(&self.torso, &base, &sized);
-        Ok((base, rings))
+        let trim = cut::recut(&self.torso, &base, &sized);
+        Ok((base, trim))
     }
 
     /// The form at `size` (mm), or the measurement it cannot take.
     pub fn build(&self, size: &Measurements, quality: Quality) -> Result<BuiltForm, SizeError> {
-        let (base, rings) = self.rings(size, quality)?;
-        let landmarks = landmarks(&self.torso, &rings);
-        let tapes = tape::tapes(&self.torso, &rings);
+        let (base, trim) = self.rings(size, quality)?;
+        let rings = &trim.rings;
+        let landmarks = landmarks(&self.torso, rings);
+        let tapes = tape::tapes(&self.torso, rings);
         Ok(BuiltForm {
             torso: rings.mesh(),
-            tapes: tape::ribbons(&tapes, &rings),
-            stand: stand::stand(&self.torso, &base, &rings),
+            tapes: tape::ribbons(&tapes, rings),
+            stand: stand::stand(&self.torso, &base, rings, &trim.wall),
             stations: self
                 .torso
                 .stations
                 .iter()
                 .map(|(name, &i)| (name.clone(), rings.y[i]))
                 .collect(),
-            measured: measure_all(&self.torso, &rings, &landmarks),
+            measured: measure_all(&self.torso, rings, &landmarks),
             landmarks,
             collision: self.torso.collision.clone(),
         })

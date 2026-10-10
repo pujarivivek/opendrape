@@ -61,6 +61,16 @@ pub(super) fn sized_plane(file: &FormFile, base: &Rings, rings: &Rings) -> Plane
     Plane::new(file, file.stand.neck_cut.y + (rings.y[top] - base.y[top]))
 }
 
+/// A neck trimmed to the cut plane.
+pub(super) struct Trim {
+    pub rings: Rings,
+    /// The neck wall's last true sample, seen from above as (x, z), at every sample round the
+    /// form where rings were trimmed, that is where the base form has rings above the neck's own
+    /// surface. Extruded straight up, these meet the plane where the true neck does, which is
+    /// beyond the vertices on the plane when the rings are far apart there.
+    pub wall: Vec<DVec2>,
+}
+
 /// `rings` (a resized copy of `base`) with its neck trimmed to the cut plane.
 ///
 /// At each angle the base form's rings leave the neck's own surface at some ring, `neck`: the
@@ -76,7 +86,7 @@ pub(super) fn sized_plane(file: &FormFile, base: &Rings, rings: &Rings) -> Plane
 /// neck back and, at the form's own size, moved the top rings by up to 4 mm (1.5 mm this way).
 ///
 /// The right side mirrors the left, so the result stays exactly symmetric.
-pub(super) fn recut(file: &FormFile, base: &Rings, rings: &Rings) -> Rings {
+pub(super) fn recut(file: &FormFile, base: &Rings, rings: &Rings) -> Trim {
     let (old, new) = (base_plane(file), sized_plane(file, base, rings));
     let (n, half, around) = (rings.len(), rings.half(), rings.around());
     // The last true neck ring at each angle.
@@ -95,6 +105,11 @@ pub(super) fn recut(file: &FormFile, base: &Rings, rings: &Rings) -> Rings {
             let p = rings.vertex(necks[k].unwrap_or(n - 1), j);
             DVec2::new(p.x, p.z)
         })
+        .collect();
+    let trimmed = |j: usize| matches!(necks[j.min(around - j)], Some(i) if i < n - 1);
+    let wall_points = (0..around)
+        .filter(|&j| trimmed(j))
+        .map(|j| wall[j])
         .collect();
     let mut out = rings.clone();
     for (k, &neck) in necks.iter().enumerate() {
@@ -124,7 +139,10 @@ pub(super) fn recut(file: &FormFile, base: &Rings, rings: &Rings) -> Rings {
             out.r[i][k] = r;
         }
     }
-    out
+    Trim {
+        rings: out,
+        wall: wall_points,
+    }
 }
 
 /// How far from `from`, along `dir`, a ray first meets the closed polygon `outline`.
@@ -211,7 +229,9 @@ mod tests {
     fn a_form_that_stops_short_of_its_cut_is_left_alone() {
         let file = fixture::torso();
         let base = Rings::from_file(&file);
-        assert_eq!(recut(&file, &base, &base), base);
+        let cut = recut(&file, &base, &base);
+        assert_eq!(cut.rings, base);
+        assert!(cut.wall.is_empty(), "nothing above the neck's own surface");
         let s = sized(&file, &[("neck", 330.0), ("hip", 1000.0)]);
         let raw = resize::resize(&file, &s.base, &s.size).unwrap();
         assert_ne!(raw, s.base);
@@ -224,7 +244,7 @@ mod tests {
             let file = FormFile::from_json(json).unwrap();
             for half in [49, 33] {
                 let base = Rings::from_file(&file).with_half_angles(half);
-                let cut = recut(&file, &base, &base);
+                let cut = recut(&file, &base, &base).rings;
                 let diffs = changes(&cut, &base);
                 // Only the rings above the neck's station, and by about a millimetre at most
                 // (the base's top rings are slivers cut by the plane, which the wall through
@@ -306,7 +326,7 @@ mod tests {
     fn trimming_twice_changes_nothing_more() {
         for (json, extreme) in both_real_forms() {
             for (case, s) in real_cases(json, extreme) {
-                let again = recut(&s.file, &s.base, &s.rings);
+                let again = recut(&s.file, &s.base, &s.rings).rings;
                 let worst = changes(&again, &s.rings).first().map_or(0.0, |c| c.2);
                 assert!(worst < 1e-9, "{} {case}: moved {worst}", s.file.id);
             }
@@ -329,5 +349,47 @@ mod tests {
                 assert!(s.rings.y.windows(2).all(|w| w[1] > w[0]), "{id}");
             }
         }
+    }
+
+    #[test]
+    fn the_wall_points_are_vertices_of_the_sized_neck_in_mirror_pairs() {
+        for (json, extreme) in both_real_forms() {
+            for (case, s) in real_cases(json, extreme) {
+                let id = format!("{} {case}", s.file.id);
+                let raw = resize::resize(&s.file, &s.base, &s.size).unwrap();
+                let vertices: Vec<DVec3> = (0..raw.len())
+                    .flat_map(|i| (0..raw.around()).map(move |j| (i, j)))
+                    .map(|(i, j)| raw.vertex(i, j))
+                    .collect();
+                let on_a_vertex = |w: &DVec2| {
+                    vertices
+                        .iter()
+                        .any(|v| (v.x - w.x).abs() < 1e-12 && (v.z - w.y).abs() < 1e-12)
+                };
+                for w in &s.wall {
+                    assert!(
+                        on_a_vertex(w),
+                        "{id}: {w} is not a vertex of the sized neck"
+                    );
+                    assert!(
+                        s.wall
+                            .iter()
+                            .any(|m| (m.x + w.x).abs() < 1e-12 && (m.y - w.y).abs() < 1e-12),
+                        "{id}: {w} has no mirror image"
+                    );
+                }
+                // The front of the neck: the angles where the base form has rings above the
+                // neck's own surface, a third to a half of the samples round the form.
+                let share = s.wall.len() as f64 / s.rings.around() as f64;
+                assert!((0.3..0.5).contains(&share), "{id}: {share}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_form_with_nothing_to_trim_has_no_wall_points() {
+        let file = fixture::torso();
+        let s = sized(&file, &[("neck", 330.0)]);
+        assert!(s.wall.is_empty());
     }
 }

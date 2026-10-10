@@ -34,6 +34,8 @@ pub struct Sized {
     pub size: Measurements,
     pub base: Rings,
     pub rings: Rings,
+    /// The neck wall's last true samples seen from above, (x, z).
+    pub wall: Vec<DVec2>,
 }
 
 impl Sized {
@@ -44,17 +46,23 @@ impl Sized {
 
 /// `file` at its own size with `changes` (mm) applied, or `None` if the resize refuses it.
 pub fn try_sized(file: &FormFile, changes: &[(&str, f64)]) -> Option<Sized> {
+    try_sized_at(file, changes, Quality::Standard)
+}
+
+/// The same at a mesh quality.
+pub fn try_sized_at(file: &FormFile, changes: &[(&str, f64)], quality: Quality) -> Option<Sized> {
     let form = Form::new(file.clone()).unwrap();
-    let mut size = form.base_measurements(Quality::Standard);
+    let mut size = form.base_measurements(quality);
     for &(m, mm) in changes {
         size.insert(m.to_string(), mm);
     }
-    let (base, rings) = form.rings(&size, Quality::Standard).ok()?;
+    let (base, trim) = form.rings(&size, quality).ok()?;
     Some(Sized {
         file: file.clone(),
         size,
         base,
-        rings,
+        rings: trim.rings,
+        wall: trim.wall,
     })
 }
 
@@ -73,8 +81,8 @@ pub fn neck_extremes(file: &FormFile) -> (f64, f64) {
     (smallest.unwrap(), largest.unwrap())
 }
 
-/// A real form at its own size, at an extreme target, and with the smallest and largest neck the
-/// resize takes.
+/// A real form at its own size, at an extreme target, with the smallest and largest neck the
+/// resize takes, and at its own size and the extreme target in low quality.
 pub fn real_cases(json: &str, extreme: &[(&str, f64)]) -> Vec<(String, Sized)> {
     let file = FormFile::from_json(json).unwrap();
     let (small, large) = neck_extremes(&file);
@@ -83,6 +91,14 @@ pub fn real_cases(json: &str, extreme: &[(&str, f64)]) -> Vec<(String, Sized)> {
         ("extreme".to_string(), sized(&file, extreme)),
         (format!("neck {small} mm"), sized(&file, &[("neck", small)])),
         (format!("neck {large} mm"), sized(&file, &[("neck", large)])),
+        (
+            "low quality".to_string(),
+            try_sized_at(&file, &[], Quality::Low).unwrap(),
+        ),
+        (
+            "low extreme".to_string(),
+            try_sized_at(&file, extreme, Quality::Low).unwrap(),
+        ),
     ]
 }
 
