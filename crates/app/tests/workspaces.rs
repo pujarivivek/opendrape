@@ -271,3 +271,16 @@ fn small_windows_show_every_workspace_without_crashing() {
         }
     }
 }
+
+/// Play and Reset are icons now: they keep their names, and hovering says what they do.
+#[test]
+fn the_3d_toolbar_explains_its_icons() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path());
+    h.get_by_label("Play").hover();
+    h.run_steps(30);
+    h.get_by_label("Play\nDrape the pieces on the form.");
+    h.get_by_label("Reset").hover();
+    h.run_steps(30);
+    h.get_by_label("Reset\nStop draping and go back to arranging the pieces.");
+}

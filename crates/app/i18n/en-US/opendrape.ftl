@@ -28,6 +28,9 @@ graphics-starting-over = Last time, OpenDrape could not start its 3D graphics in
 toolbar-play = Play
 toolbar-pause = Pause
 toolbar-reset = Reset
+toolbar-play-tip = Drape the pieces on the form.
+toolbar-pause-tip = Pause the drape.
+toolbar-reset-tip = Stop draping and go back to arranging the pieces.
 overlay-stats = { $fps } fps · simulation { $ms } ms per step · { $points } points
 overlay-stats-paused = simulation { $ms } ms per step · { $points } points
 

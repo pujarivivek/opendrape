@@ -984,3 +984,52 @@ fn text_typed_in_a_field_survives_the_window_losing_focus() {
     let p = piece_of(&h, id);
     assert!((opendrape_geom::edge_length(&p, 0) - 450.0).abs() < 1e-9);
 }
+
+/// The tool strip down the left of the pattern table: one button per tool, named "Pen (H)" and
+/// so on, that picks its tool.
+#[test]
+fn every_tool_has_a_button_in_the_strip() {
+    let mut h = harness();
+    let named = [
+        (Tool::Pen, "Pen (H)"),
+        (Tool::Rectangle, "Rectangle (S)"),
+        (Tool::AddPoint, "Add point (X)"),
+        (Tool::Notch, "Notch (N)"),
+        (Tool::Line, "Internal line (L)"),
+        (Tool::Sew, "Sew (W)"),
+        (Tool::FreeSew, "Free sew (F)"),
+        (Tool::Edit, "Edit (Z)"),
+    ];
+    for (tool, name) in named {
+        h.get_by_label(name).click();
+        h.run();
+        assert_eq!(h.state().tool, tool, "{name}");
+    }
+}
+
+#[test]
+fn the_tool_strip_runs_down_the_left_of_the_table() {
+    let h = harness();
+    let canvas = h.state().canvas_rect;
+    let pen = h.get_by_label("Pen (H)").rect();
+    let sew = h.get_by_label("Sew (W)").rect();
+    assert!(pen.max.x <= canvas.min.x + 1.0, "{pen:?} vs {canvas:?}");
+    assert!(
+        sew.min.y > pen.max.y,
+        "the tools are stacked: {pen:?} then {sew:?}"
+    );
+    // The view options sit above the table.
+    let fit = h.get_by_label_contains("Fit").rect();
+    assert!(fit.max.y <= canvas.min.y + 1.0, "{fit:?} vs {canvas:?}");
+}
+
+/// Hovering a tool shows its name, key and what it does, without a second "Pen (H)" that
+/// would make the button's name ambiguous.
+#[test]
+fn hovering_a_tool_explains_it() {
+    let mut h = harness();
+    h.get_by_label("Pen (H)").hover();
+    h.run_steps(30);
+    h.get_by_label_contains("Draw a piece point by point");
+    h.get_by_label("Pen (H)");
+}

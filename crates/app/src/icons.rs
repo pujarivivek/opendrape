@@ -4,7 +4,22 @@
 
 pub use egui_phosphor::regular as ph;
 
+use crate::editor::Tool;
 use egui::{Button, RichText, vec2};
+
+/// Each pattern tool's icon in the tool strip.
+pub fn tool_icon(tool: Tool) -> &'static str {
+    match tool {
+        Tool::Edit => ph::CURSOR,
+        Tool::Pen => ph::PEN_NIB,
+        Tool::Rectangle => ph::RECTANGLE,
+        Tool::AddPoint => ph::PLUS_CIRCLE,
+        Tool::Notch => ph::TRIANGLE,
+        Tool::Line => ph::LINE_SEGMENT,
+        Tool::Sew => ph::NEEDLE,
+        Tool::FreeSew => ph::PATH,
+    }
+}
 
 /// Icon size in points; the button around it is at least [`BUTTON_PT`] square.
 const ICON_PT: f32 = 18.0;

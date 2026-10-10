@@ -20,7 +20,7 @@ pub use document::{Document, PinShift, UNDO_LIMIT};
 pub use placing::DEFAULT_SHOULDER_M;
 pub use view::View;
 
-use crate::tr;
+use crate::{icons, tr};
 use egui::{Key, KeyboardShortcut, Modifiers};
 use opendrape_core::{PieceId, Point2, Project, SeamId, Units};
 use opendrape_drape::Stage;
@@ -43,6 +43,8 @@ pub const REDO_Y: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, K
 /// Show every piece: Cmd+0 (Ctrl+0 on Windows). F is the Free Sew tool's.
 pub const FIT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Num0);
 
+/// Width of the tool strip down the left of the pattern table (screen points).
+const TOOL_STRIP_WIDTH: f32 = 40.0;
 /// Pointer distance (screen points) that counts as touching a point, handle or edge.
 const HIT_PX: f64 = 8.0;
 /// What an empty pattern table shows: 80 × 60 cm.
@@ -368,12 +370,21 @@ impl PatternEditor {
         self.selection = self.selection.validated(self.doc.project());
         self.drop_stale_sew();
         self.drop_stale_free_sew();
-        egui::Panel::top("pattern_tools").show(ui, |ui| self.toolbar(ui));
+        egui::Panel::top("pattern_view_bar").show(ui, |ui| self.view_bar(ui));
         egui::Panel::bottom("pattern_status").show(ui, |ui| self.status_bar(ui));
+        egui::Panel::left("pattern_tools")
+            .resizable(false)
+            .exact_size(TOOL_STRIP_WIDTH)
+            .show(ui, |ui| self.tool_strip(ui));
         egui::Panel::right("pattern_properties")
             .resizable(false)
             .exact_size(240.0)
-            .show(ui, |ui| self.properties(ui));
+            .show(ui, |ui| {
+                // A long section (a piece with its 3D placement) scrolls on a short screen.
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| self.properties(ui));
+            });
         egui::CentralPanel::default().show(ui, |ui| self.canvas_ui(ui, keys_free));
         if let Some(units) = self.pending_units.take() {
             self.doc.edit(|p| p.units = units);
@@ -399,19 +410,25 @@ impl PatternEditor {
         }
     }
 
-    fn toolbar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
+    /// The tools, as icons down the left of the pattern table.
+    fn tool_strip(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(4.0);
+        ui.vertical_centered(|ui| {
             for tool in Tool::ALL {
                 let label = format!("{} ({})", tool.label(), tool.key().name());
-                if ui
-                    .selectable_label(self.tool == tool, label)
-                    .on_hover_text(tool.tip())
+                let icon = icons::tool_icon(tool);
+                if icons::icon_button(ui, icon, &label, &tool.tip(), self.tool == tool, true)
                     .clicked()
                 {
                     self.set_tool(tool);
                 }
             }
-            ui.separator();
+        });
+    }
+
+    /// How the table is shown, above it: units, lengths, seam allowance, Fit.
+    fn view_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
             let units = self.doc.project().units;
             for (u, label) in [
                 (Units::Cm, tr!("units-cm")),

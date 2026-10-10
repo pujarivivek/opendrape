@@ -4,6 +4,7 @@ use crate::draping::{Draper, MenuAt, Pull};
 use crate::editor::{self, PatternEditor};
 use crate::file_dialogs::{DialogKind, FileDialogs};
 use crate::gpu::{Decision, GpuChoice, GpuState, Os, StateStore, confirmed_state};
+use crate::icons::{self, ph};
 use crate::recovery::Recovery;
 use crate::sim_runner::{DrapeNote, SimFrame, SimRunner};
 use crate::tr;
@@ -295,22 +296,21 @@ impl OpenDrapeApp {
         let (draping, playing) = (runner.is_draping(), runner.is_playing());
         let mut clicked = None;
         ui.horizontal_wrapped(|ui| {
-            let label = if draping && playing {
-                tr!("toolbar-pause")
+            let (icon, label, tip) = if draping && playing {
+                (ph::PAUSE, tr!("toolbar-pause"), tr!("toolbar-pause-tip"))
             } else {
-                tr!("toolbar-play")
+                (ph::PLAY, tr!("toolbar-play"), tr!("toolbar-play-tip"))
             };
-            if ui.button(label).clicked() {
+            if icons::icon_button(ui, icon, &label, &tip, false, true).clicked() {
                 clicked = Some(match (draping, playing) {
                     (false, _) => Toolbar::Play,
                     (true, true) => Toolbar::Pause,
                     (true, false) => Toolbar::Resume,
                 });
             }
-            if ui
-                .add_enabled(draping, egui::Button::new(tr!("toolbar-reset")))
-                .clicked()
-            {
+            let (label, tip) = (tr!("toolbar-reset"), tr!("toolbar-reset-tip"));
+            let reset = ph::ARROW_COUNTER_CLOCKWISE;
+            if icons::icon_button(ui, reset, &label, &tip, false, draping).clicked() {
                 clicked = Some(Toolbar::Reset);
             }
             ui.separator();
