@@ -50,12 +50,13 @@ pub fn girth_at(mesh: &BodyMesh, y: f32, max_abs_x: f32) -> f32 {
     hull_perimeter(pts) as f32
 }
 
-/// Andrew's monotone chain convex hull, returning its perimeter.
-pub(crate) fn hull_perimeter(mut pts: Vec<DVec2>) -> f64 {
+/// Andrew's monotone chain convex hull: its corners in counter-clockwise order, or none when
+/// there are fewer than 3 distinct points. Collinear points leave just the two ends.
+pub(crate) fn convex_hull(mut pts: Vec<DVec2>) -> Vec<DVec2> {
     pts.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
     pts.dedup();
     if pts.len() < 3 {
-        return 0.0;
+        return vec![];
     }
     fn half(points: impl Iterator<Item = DVec2>) -> Vec<DVec2> {
         let mut h: Vec<DVec2> = vec![];
@@ -72,6 +73,12 @@ pub(crate) fn hull_perimeter(mut pts: Vec<DVec2>) -> f64 {
     }
     let mut hull = half(pts.iter().copied());
     hull.extend(half(pts.iter().rev().copied()));
+    hull
+}
+
+/// The perimeter of the convex hull of `pts`.
+pub(crate) fn hull_perimeter(pts: Vec<DVec2>) -> f64 {
+    let hull = convex_hull(pts);
     (0..hull.len())
         .map(|i| hull[i].distance(hull[(i + 1) % hull.len()]))
         .sum()
