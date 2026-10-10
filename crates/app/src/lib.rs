@@ -17,6 +17,7 @@ pub mod smoke_test;
 pub mod startup_log;
 pub mod theme;
 mod viewport;
+pub mod workspace;
 
 pub use app::{OpenDrapeApp, Shared, SharedState, Startup};
 pub use file_dialogs::{DialogKind, FileDialogs};

@@ -39,7 +39,7 @@ pub const REDO: KeyboardShortcut = KeyboardShortcut::new(
     Key::Z,
 );
 /// Redo the Windows way: Ctrl+Y.
-const REDO_Y: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Y);
+pub const REDO_Y: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Y);
 /// Show every piece: Cmd+0 (Ctrl+0 on Windows). F is the Free Sew tool's.
 pub const FIT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Num0);
 

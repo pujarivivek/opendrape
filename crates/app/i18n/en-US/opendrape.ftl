@@ -230,3 +230,17 @@ panel-position-z = Position Z
 panel-rotation-x = Rotation X
 panel-rotation-y = Rotation Y
 panel-rotation-z = Rotation Z
+
+## Workspaces: the tabs along the top
+menu-view = View
+workspace-modeling = Modeling
+workspace-finishing = Finishing
+workspace-texturing = Texturing
+workspace-rendering = Rendering
+workspace-animation = Animation
+workspace-modeling-blurb = Draft pattern pieces, sew them and drape them on the form.
+workspace-finishing-blurb = Topstitching, binding, buttons, zippers and other finishing details.
+workspace-texturing-blurb = Fabrics, colours and prints for your pieces.
+workspace-rendering-blurb = Pictures of your garment, from quick views to AI photos.
+workspace-animation-blurb = Turntables and short clips of your garment.
+coming-soon = Coming in a later update.

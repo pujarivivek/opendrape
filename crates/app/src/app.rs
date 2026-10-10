@@ -8,6 +8,7 @@ use crate::recovery::Recovery;
 use crate::sim_runner::{DrapeNote, SimFrame, SimRunner};
 use crate::tr;
 use crate::viewport::{Show, Viewport};
+use crate::workspace::{self, Workspace};
 use egui::{Key, KeyboardShortcut, Modifiers, ViewportCommand};
 use opendrape_core::{PieceId, Project};
 use opendrape_drape::Stage;
@@ -138,6 +139,8 @@ pub struct OpenDrapeApp {
     /// Work a quit without asking left behind, and the file it came from: waiting for the
     /// student to restore or discard it.
     offered: Option<(Project, Option<PathBuf>)>,
+    /// The workspace tab open; screen state only, never saved or undone.
+    workspace: Workspace,
 }
 
 impl OpenDrapeApp {
@@ -184,7 +187,17 @@ impl OpenDrapeApp {
             title: String::new(),
             recovery,
             offered,
+            workspace: Workspace::default(),
         }
+    }
+
+    /// The workspace tab open.
+    pub fn workspace(&self) -> Workspace {
+        self.workspace
+    }
+
+    pub fn set_workspace(&mut self, workspace: Workspace) {
+        self.workspace = workspace;
     }
 
     pub fn editor(&self) -> &PatternEditor {
@@ -695,8 +708,11 @@ impl OpenDrapeApp {
         }
     }
 
-    fn menu_bar(&mut self, ui: &mut egui::Ui) -> Option<FileAction> {
+    /// The menus, then the workspace tabs. Returns the file action chosen and the workspace
+    /// picked (from the View menu or a tab).
+    fn menu_bar(&mut self, ui: &mut egui::Ui) -> (Option<FileAction>, Option<Workspace>) {
         let mut action = None;
+        let mut picked = None;
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button(tr!("menu-file"), |ui| {
                 let items = [
@@ -727,6 +743,14 @@ impl OpenDrapeApp {
                     ui.close();
                 }
             });
+            ui.menu_button(tr!("menu-view"), |ui| {
+                for ws in Workspace::ALL {
+                    if menu_item(ui, true, ws.label(), &ws.shortcut()) {
+                        picked = Some(ws);
+                        ui.close();
+                    }
+                }
+            });
             ui.menu_button(tr!("menu-help"), |ui| {
                 if ui.button(tr!("menu-about")).clicked() {
                     self.show_about = true;
@@ -744,8 +768,47 @@ impl OpenDrapeApp {
                     ui.label(tr!("graphics-restart-note"));
                 });
             });
+            if let Some(ws) = workspace::tabs(ui, self.workspace) {
+                picked = Some(ws);
+            }
         });
-        action
+        (action, picked)
+    }
+
+    /// Cmd+1…5 (Ctrl on Windows). Not while a text field or the number box has the keyboard, a
+    /// question or message box is open, or the mouse is held (a drag on the pattern table or
+    /// in the 3D view must end where it started).
+    fn workspace_shortcut(&self, ctx: &egui::Context) -> Option<Workspace> {
+        let busy = ctx.text_edit_focused()
+            || self.editor.length_box_open()
+            || self.pending.is_some()
+            || self.error.is_some()
+            || self.offered.is_some()
+            || self.arranger.is_dragging()
+            || self.draper.is_dragging()
+            || ctx.input(|i| i.pointer.any_down());
+        if busy {
+            return None;
+        }
+        Workspace::ALL
+            .into_iter()
+            .find(|ws| ctx.input_mut(|i| i.consume_shortcut(&ws.shortcut())))
+    }
+
+    /// Undo and Redo from the keyboard in the workspaces that don't show the pattern table
+    /// (which has its own); the same keys, waiting while a text field has the keyboard.
+    fn app_undo_redo(&mut self, ctx: &egui::Context) {
+        if ctx.text_edit_focused() {
+            return;
+        }
+        // Redo first: `consume_shortcut` also matches Cmd+Z while Shift is held.
+        if ctx
+            .input_mut(|i| i.consume_shortcut(&editor::REDO) || i.consume_shortcut(&editor::REDO_Y))
+        {
+            self.editor.redo();
+        } else if ctx.input_mut(|i| i.consume_shortcut(&editor::UNDO)) {
+            self.editor.undo();
+        }
     }
 
     /// ⌘N, ⌘O, ⌘S, ⇧⌘S, ⌘Q (Ctrl on Windows). While a text field is being typed in, or the
@@ -1119,9 +1182,13 @@ impl eframe::App for OpenDrapeApp {
         let ctx = ui.ctx().clone();
         self.guard_close(&ctx);
         let shortcut = self.file_shortcut(&ctx);
-        let menu = egui::Panel::top("menu_bar")
+        let workspace_key = self.workspace_shortcut(&ctx);
+        let (menu, picked) = egui::Panel::top("menu_bar")
             .show(ui, |ui| self.menu_bar(ui))
             .inner;
+        if let Some(ws) = picked.or(workspace_key) {
+            self.workspace = ws;
+        }
         if let Some(action) = menu.or(shortcut).or(self.queued.take()) {
             self.file_action(action, frame, &ctx);
         }
@@ -1146,7 +1213,18 @@ impl eframe::App for OpenDrapeApp {
         // closed by Escape this frame, that Escape must not reach the pattern table too.
         let keys_for_pattern =
             self.pending.is_none() && self.error.is_none() && self.offered.is_none() && !view_drag;
-        egui::CentralPanel::default().show(ui, |ui| self.editor.ui_with_keys(ui, keys_for_pattern));
+        match self.workspace {
+            Workspace::Modeling => {
+                egui::CentralPanel::default()
+                    .show(ui, |ui| self.editor.ui_with_keys(ui, keys_for_pattern));
+            }
+            ws => {
+                if keys_for_pattern {
+                    self.app_undo_redo(&ctx);
+                }
+                egui::CentralPanel::default().show(ui, |ui| workspace::coming_soon(ui, ws));
+            }
+        }
         self.unsaved_changes_modal(frame, &ctx);
         self.error_modal(&ctx);
         self.recovery_modal(&ctx);
