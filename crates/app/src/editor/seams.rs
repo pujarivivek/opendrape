@@ -131,3 +131,58 @@ impl PatternEditor {
         (d <= tol && d + tol / HIT_PX < edge).then_some(id)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use opendrape_core::{Half, OutlinePos, Piece, PieceId};
+
+    #[test]
+    fn a_free_side_is_drawn_along_just_the_stretch_it_sews() {
+        let mut pr = Project::new();
+        let a = pr.add_piece(Piece::rectangle(
+            PieceId(0),
+            "A",
+            Point2::new(0.0, 0.0),
+            200.0,
+            100.0,
+        ));
+        let b = pr.add_piece(Piece::rectangle(
+            PieceId(0),
+            "B",
+            Point2::new(300.0, 0.0),
+            100.0,
+            100.0,
+        ));
+        // A's bottom edge from 50 mm to 150 mm, run backwards; and round B's bottom-right corner.
+        pr.add_seam(
+            SeamSide {
+                shape: a,
+                half: Half::Drawn,
+                from: OutlinePos::new(0, 0.75),
+                to: OutlinePos::new(0, 0.25),
+                forward: false,
+            },
+            SeamSide {
+                shape: b,
+                half: Half::Drawn,
+                from: OutlinePos::new(0, 0.5),
+                to: OutlinePos::new(1, 0.5),
+                forward: true,
+            },
+        );
+        let lines = seam_lines(&pr, &geom::shapes(&pr), 2.0, 0.1);
+        assert_eq!(lines.len(), 1);
+        let [side_a, side_b] = &lines[0].sides;
+        // 2 mm inside the outline, from the side's start to its end.
+        let close = |p: Point2, q: Point2| assert!(p.distance(q) < 1e-9, "{p:?} vs {q:?}");
+        close(side_a[0], Point2::new(150.0, 2.0));
+        close(*side_a.last().unwrap(), Point2::new(50.0, 2.0));
+        close(side_b[0], Point2::new(350.0, 2.0));
+        close(*side_b.last().unwrap(), Point2::new(398.0, 50.0));
+        assert!(
+            side_b.iter().any(|p| p.x > 397.0 && p.y < 3.0),
+            "round the corner"
+        );
+    }
+}

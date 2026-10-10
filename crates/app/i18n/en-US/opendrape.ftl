@@ -179,6 +179,7 @@ notice-free-short = That side is too short to sew: pick points more than 1 mm ap
 panel-seam = Seam { $number }
 panel-seam-side = Side { $side }: { $length }
 panel-seam-differ = Lengths differ by { $difference }
+panel-seam-notches = Notches don't match: { $one } on one side, { $other } on the other.
 panel-seam-flip = Flip
 panel-delete-seam = Delete seam
 

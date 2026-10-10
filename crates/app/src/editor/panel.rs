@@ -54,8 +54,8 @@ impl PatternEditor {
         self.panel.editing.retain(|id, _| shown.contains(id));
     }
 
-    /// A seam: each side's length, a warning when they differ by more than 3 mm, Flip and
-    /// Delete.
+    /// A seam: each side's length, a warning when they differ by more than 3 mm, a warning when
+    /// their notches don't pair up, Flip and Delete.
     fn seam_properties(&mut self, ui: &mut egui::Ui, id: SeamId) {
         let project = self.doc.project();
         let Some(seam) = project.seam(id).copied() else {
@@ -76,6 +76,20 @@ impl PatternEditor {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
                 tr!("panel-seam-differ", difference = units.format(difference)),
+            );
+        }
+        // Notches inside each side pair up in order; with a different number on each side the
+        // fabric is laid out evenly instead (see `opendrape_mesh`).
+        let notches = |side: &SeamSide| {
+            geom::shape_of(project, side.shape)
+                .and_then(|s| geom::side_notches(&s, side))
+                .map_or(0, |n| n.len())
+        };
+        let (na, nb) = (notches(&seam.a), notches(&seam.b));
+        if na != nb {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                tr!("panel-seam-notches", one = na, other = nb),
             );
         }
         ui.add_space(6.0);

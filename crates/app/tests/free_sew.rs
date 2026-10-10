@@ -285,3 +285,31 @@ fn the_same_spot_clicked_for_both_ends_is_refused_not_sewn_all_the_way_round() {
     }
     assert!(seams(&h).is_empty());
 }
+
+#[test]
+fn the_seam_panel_says_when_the_notches_do_not_pair_up() {
+    let mut h = harness();
+    // The sleeve's cap has one notch, at its middle; a 400 mm edge with two notches is sewn to
+    // the whole cap.
+    let (sleeve, _) = with_sleeve(&mut h, false);
+    let other = h.state_mut().doc.edit(|pr| {
+        let mut piece = Piece::rectangle(PieceId(0), "Other", p(500.0, 0.0), 400.0, 100.0);
+        piece.notches = vec![Notch::new(0, 150.0), Notch::new(0, 250.0)];
+        pr.add_piece(piece)
+    });
+    let seam = h.state_mut().doc.edit(|pr| {
+        pr.add_seam(
+            SeamSide::edges(sleeve, Half::Drawn, 2, 2, true),
+            SeamSide::edges(other, Half::Drawn, 0, 0, true),
+        )
+    });
+    h.state_mut().selection = Selection::Seam(seam);
+    h.run();
+    h.get_by_label("Notches don't match: 1 on one side, 2 on the other.");
+    // With one notch taken off the other edge, they pair up: no warning.
+    h.state_mut()
+        .doc
+        .edit(|pr| pr.pieces[1].notches.truncate(1));
+    h.run();
+    assert!(h.query_by_label_contains("Notches don't match").is_none());
+}
