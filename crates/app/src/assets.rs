@@ -130,7 +130,7 @@ impl FormsPanel {
         measured: &Measurements,
         units: Units,
     ) -> Option<FormAction> {
-        let form = Form::bundled(&choice.id)?;
+        let form = choice::form(&choice.id)?;
         let mut action = None;
         egui::Grid::new("form_measurements")
             .num_columns(3)
