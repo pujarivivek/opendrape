@@ -1186,7 +1186,11 @@ impl eframe::App for OpenDrapeApp {
         let (menu, picked) = egui::Panel::top("menu_bar")
             .show(ui, |ui| self.menu_bar(ui))
             .inner;
-        if let Some(ws) = picked.or(workspace_key) {
+        // A key switches at once: it is never taken while something is being typed. A tab
+        // or View menu click switches at the end of the frame, after the pattern table has seen
+        // it as a click elsewhere (so a field being typed in keeps its text, and an open
+        // number box closes) like any other.
+        if let Some(ws) = workspace_key {
             self.workspace = ws;
         }
         if let Some(action) = menu.or(shortcut).or(self.queued.take()) {
@@ -1224,6 +1228,10 @@ impl eframe::App for OpenDrapeApp {
                 }
                 egui::CentralPanel::default().show(ui, |ui| workspace::coming_soon(ui, ws));
             }
+        }
+        if let Some(ws) = picked {
+            self.workspace = ws;
+            ctx.request_repaint(); // show it now, not on the next input
         }
         self.unsaved_changes_modal(frame, &ctx);
         self.error_modal(&ctx);

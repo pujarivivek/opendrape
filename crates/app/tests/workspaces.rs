@@ -284,3 +284,71 @@ fn the_3d_toolbar_explains_its_icons() {
     h.run_steps(30);
     h.get_by_label("Reset\nStop draping and go back to arranging the pieces.");
 }
+
+/// Clicks a tab the way a mouse does (pointer events, not an accessibility action), so the
+/// pattern table sees it as a click elsewhere, as it would any other.
+fn click_tab_with_mouse(h: &mut App, tab: &str) {
+    let pos = h.get_by_role_and_label(Role::Tab, tab).rect().center();
+    h.hover_at(pos);
+    h.run();
+    for pressed in [true, false] {
+        h.event(Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+        h.run();
+    }
+}
+
+#[test]
+fn a_name_typed_then_a_tab_clicked_is_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path());
+    let id = add_piece(&mut h);
+    h.state_mut().editor_mut().selection = Selection::Piece(id);
+    h.run();
+    h.get_by_role_and_label(Role::TextInput, "Name").click();
+    h.run();
+    h.get_by_role_and_label(Role::TextInput, "Name")
+        .type_text("Sleeve");
+    h.run();
+    click_tab_with_mouse(&mut h, "Texturing");
+    assert_eq!(h.state().workspace(), Workspace::Texturing);
+    assert_eq!(h.state().editor().doc.project().name_of(id), Some("Sleeve"));
+}
+
+#[test]
+fn the_number_box_closes_when_a_tab_is_clicked() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path());
+    h.state_mut().editor_mut().set_tool(Tool::Pen);
+    h.run();
+    let pos = h.state().editor().canvas_rect.center();
+    h.hover_at(pos);
+    h.run();
+    for pressed in [true, false] {
+        h.event(Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+        h.run();
+    }
+    h.event(Event::Text("5".into()));
+    h.run();
+    assert!(
+        h.state().editor().length_box_open(),
+        "typing a digit opens the box"
+    );
+    click_tab_with_mouse(&mut h, "Texturing");
+    assert_eq!(h.state().workspace(), Workspace::Texturing);
+    assert!(
+        !h.state().editor().length_box_open(),
+        "a click elsewhere cancels the box"
+    );
+    cmd(&mut h, Key::Num1);
+    assert_eq!(h.state().workspace(), Workspace::Modeling);
+}
