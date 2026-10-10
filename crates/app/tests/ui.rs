@@ -1700,12 +1700,6 @@ fn the_camera_stays_put_while_a_handle_is_held_scroll_zoom_included() {
     let (cam, g) = piece_with_gizmo(&mut h);
     let before = h.state().orbit_camera().unwrap();
     let from = near_tip(&cam, &g, 1);
-    eprintln!(
-        "PROBE from {from:?} centre {:?} rect {:?} hit {:?}",
-        cam.project(g.centre),
-        cam,
-        g.hit(&cam, from)
-    );
     grab_and_pull(&mut h, from, from + DVec2::new(0.0, -30.0));
     assert!(h.state().arranger().is_dragging());
     for _ in 0..3 {
