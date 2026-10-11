@@ -37,6 +37,8 @@ pub struct Overrides {
     pub contact: Option<bool>,
     pub rim: Option<bool>,
     pub grid: Option<bool>,
+    /// The linen's raised weave and slubs (its bump), on unless a test turns it off.
+    pub bump: Option<bool>,
     pub force_ldr: bool,
 }
 
@@ -840,7 +842,16 @@ impl StudioRenderer {
                 fit.texel(key_size),
                 CONTACT_OPACITY,
             ],
-            key_box: [fit.size, fit.depth, light.floor_shadow, 0.0],
+            key_box: [
+                fit.size,
+                fit.depth,
+                light.floor_shadow,
+                if self.overrides.bump.unwrap_or(true) {
+                    1.0
+                } else {
+                    0.0
+                },
+            ],
             rim_dir: v4(rim_dir),
             rim_colour: v4(environment::key_colour() * rim * light.rim),
             grid: if self.overrides.grid.unwrap_or(true) {

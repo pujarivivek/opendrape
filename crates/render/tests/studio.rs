@@ -43,6 +43,7 @@ fn plain() -> Overrides {
         contact: Some(false),
         rim: None,
         grid: Some(false),
+        bump: None,
         force_ldr: false,
     }
 }
@@ -1220,4 +1221,31 @@ fn a_label_shows_its_picture_across_its_rectangle() {
     let (left, right) = (img.get_pixel(80, 100), img.get_pixel(120, 100));
     assert!(left[0] > left[2] + 60, "red on the left: {left:?}");
     assert!(right[2] > right[0] + 60, "blue on the right: {right:?}");
+}
+
+#[test]
+fn linen_has_depth_its_slubs_catch_the_light() {
+    let shot = |bump: bool| {
+        let g = gpu();
+        let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::Medium);
+        r.set_overrides(Overrides {
+            bump: Some(bump),
+            ..plain()
+        });
+        let linen = srgb8_to_linear([208, 200, 193]);
+        let m = mesh(&mut r, &g, card(1.0, 0.15, 1.2), linen, Material::Linen);
+        let target = RenderTarget::new(&g.device, 200, 200);
+        render_still(&mut r, &g, &target, &front_camera(0.25), &[&m])
+    };
+    let (_, flat) = centre_spread(&shot(false), 80);
+    let (_, bumped) = centre_spread(&shot(true), 80);
+    assert!(bumped > flat + 0.5, "depth: {bumped} against {flat}");
+    // And still no shimmer from far off.
+    let g = gpu();
+    let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::Medium);
+    r.set_overrides(plain());
+    let m = mesh(&mut r, &g, card(1.0, 0.15, 1.2), [0.6; 3], Material::Linen);
+    let target = RenderTarget::new(&g.device, 200, 200);
+    let far = render_still(&mut r, &g, &target, &front_camera(4.0), &[&m]);
+    assert!(centre_spread(&far, 60).1 < 6.0);
 }

@@ -58,6 +58,10 @@ const THREAD: f32 = 0.0009;
 const SLUB_WIDTH: f32 = 0.0018;
 const SLUB_LENGTH: f32 = 0.02;
 const MOTTLE: f32 = 0.015;
+// How far (m) linen's threads, slubs and undulations stand proud.
+const THREAD_RISE: f32 = 0.00006;
+const SLUB_RISE: f32 = 0.00012;
+const CLOTH_RISE: f32 = 0.0002;
 // Brushed metal's roughness.
 const METAL_ROUGHNESS: f32 = 0.45;
 const LINING: f32 = 0.8;
@@ -123,6 +127,38 @@ fn linen(t: vec2<f32>, span: f32) -> f32 {
     return 1.0 + weave * (1.0 - smoothstep(0.25, 0.6, span / THREAD))
         + slubs * (1.0 - smoothstep(0.3, 0.8, span / SLUB_WIDTH))
         + mottle * (1.0 - smoothstep(0.3, 0.8, span / MOTTLE));
+}
+
+// How high (m) linen's surface stands at cover point `t`: its threads round over and under
+// each other, slubs stand proud, and the cloth undulates a little; each part fades out as in
+// `linen`, so the bump never shimmers either.
+fn linen_height(t: vec2<f32>, span: f32) -> f32 {
+    let p = t / THREAD;
+    let cell = floor(p);
+    let f = fract(p) - 0.5;
+    let over = fract((cell.x + cell.y) * 0.5) < 0.25;
+    let thread = select(1.0 - 4.0 * f.y * f.y, 1.0 - 4.0 * f.x * f.x, over);
+    let warp_slubs = noise2(vec2<f32>(t.x / SLUB_WIDTH, t.y / SLUB_LENGTH));
+    let weft_slubs = noise2(vec2<f32>(t.x / SLUB_LENGTH + 37.0, t.y / SLUB_WIDTH));
+    let undulate = noise2(t / MOTTLE + vec2<f32>(5.0, 9.0));
+    return THREAD_RISE * thread * (1.0 - smoothstep(0.25, 0.6, span / THREAD))
+        + SLUB_RISE * (0.4 * warp_slubs + 0.6 * weft_slubs)
+            * (1.0 - smoothstep(0.3, 0.8, span / SLUB_WIDTH))
+        + CLOTH_RISE * undulate * (1.0 - smoothstep(0.3, 0.8, span / MOTTLE));
+}
+
+// `n` tilted by the slope of a height field across the surface (Mikkelsen's bump mapping
+// without tangents): `dpx`/`dpy` are how the surface point moves to the next pixel across and
+// down, `dhx`/`dhy` how the height does.
+fn bumped(n: vec3<f32>, dpx: vec3<f32>, dpy: vec3<f32>, dhx: f32, dhy: f32) -> vec3<f32> {
+    let r1 = cross(dpy, n);
+    let r2 = cross(n, dpx);
+    let det = dot(dpx, r1);
+    if (abs(det) < 1e-12) {
+        return n;
+    }
+    let grad = sign(det) * (dhx * r1 + dhy * r2);
+    return normalize(abs(det) * n - grad);
 }
 
 // Where `world` is on a form's cover: across (m, round its centre line, as if 15 cm out) and up.
@@ -349,6 +385,11 @@ fn fs_mesh(v: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
         0.5 - dot(off, draw.label_up.xyz) / draw.label_up.w,
     );
     let pictured = textureSample(picture, picture_sampler, label_uv).rgb;
+    let height = linen_height(cover, span) * frame.key_box.w;
+    let dpx = dpdx(v.world);
+    let dpy = dpdy(v.world);
+    let dhx = dpdx(height);
+    let dhy = dpdy(height);
     var n = normalize(v.normal);
     var albedo = draw.colour.rgb;
     let material = draw.material.x;
@@ -364,6 +405,10 @@ fn fs_mesh(v: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
         if (material == CLOTH) {
             albedo = albedo * LINING;
         }
+    }
+    if (material == LINEN || material == LABEL) {
+        // The weave's relief: its slubs and folds catch the light.
+        n = bumped(n, dpx, dpy, dhx, dhy);
     }
     let to_eye = normalize(frame.camera_pos.xyz - v.world);
     let n_dot_v = clamp(dot(n, to_eye), 1e-4, 1.0);
