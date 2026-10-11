@@ -30,8 +30,13 @@ struct Frame {
 struct Draw {
     colour: vec4<f32>,
     material: vec4<u32>,
+    label_centre: vec4<f32>,
+    label_right: vec4<f32>,
+    label_up: vec4<f32>,
 };
 @group(1) @binding(0) var<uniform> draw: Draw;
+@group(1) @binding(1) var picture: texture_2d<f32>;
+@group(1) @binding(2) var picture_sampler: sampler;
 
 @group(2) @binding(0) var shadow_map: texture_depth_2d;
 @group(2) @binding(1) var shadow_sampler: sampler_comparison;
@@ -43,6 +48,18 @@ struct Draw {
 
 const CLOTH: u32 = 0u;
 const FORM: u32 = 1u;
+const LINEN: u32 = 3u;
+const METAL: u32 = 4u;
+const LABEL: u32 = 5u;
+// Linen's threads are this far apart (m)...
+const THREAD: f32 = 0.0009;
+// ...with slubs (thicker stretches of yarn) about this wide and long (m), and a soft mottle
+// about this large (m).
+const SLUB_WIDTH: f32 = 0.0018;
+const SLUB_LENGTH: f32 = 0.02;
+const MOTTLE: f32 = 0.015;
+// Brushed metal's roughness.
+const METAL_ROUGHNESS: f32 = 0.45;
 const LINING: f32 = 0.8;
 // How much the folds' darkening also takes from the key light.
 const AO_ON_KEY: f32 = 0.5;
@@ -59,6 +76,72 @@ fn irradiance(n: vec3<f32>) -> vec3<f32> {
     e += frame.sh[7].rgb * (1.092548 * n.x * n.z);
     e += frame.sh[8].rgb * (0.546274 * (n.x * n.x - n.y * n.y));
     return max(e, vec3<f32>(0.0));
+}
+
+fn hash11(x: f32) -> f32 {
+    return fract(sin(x * 127.1 + 31.7) * 43758.5453);
+}
+
+fn hash21(p: vec2<f32>) -> f32 {
+    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);
+}
+
+// Smooth value noise, 0..1.
+fn noise2(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = mix(hash21(i), hash21(i + vec2<f32>(1.0, 0.0)), u.x);
+    let b = mix(hash21(i + vec2<f32>(0.0, 1.0)), hash21(i + vec2<f32>(1.0, 1.0)), u.x);
+    return mix(a, b, u.y);
+}
+
+// How much lighter or darker linen is at cover point `t` (about 1): a plain weave of slubby
+// threads, slubs of uneven yarn both ways, and a soft mottle. Each fades out where it gets
+// finer than about a pixel, so it never shimmers: up close the threads show, at the usual
+// distance the slubs and mottle, from far off a plain colour. `span` is how far apart (m)
+// neighbouring pixels are on the cover (from the caller, in uniform control flow).
+fn linen(t: vec2<f32>, span: f32) -> f32 {
+    let p = t / THREAD;
+    let cell = floor(p);
+    let f = fract(p) - 0.5;
+    // Over and under, like a chequerboard: the warp (up) on top in half the cells.
+    let over = fract((cell.x + cell.y) * 0.5) < 0.25;
+    // A round thread: lighter along its middle.
+    let warp = 1.0 - 3.0 * f.x * f.x;
+    let weft = 1.0 - 3.0 * f.y * f.y;
+    let thread = select(weft, warp, over);
+    // Slubs: each thread a little thicker or thinner along its length.
+    let slub = select(hash11(cell.y), hash11(cell.x + 17.0), over);
+    let weave = 0.10 * (thread - 0.75) + 0.06 * (slub - 0.5);
+    // Uneven yarn: slubs, thicker stretches of thread a few threads wide and a couple of
+    // centimetres long, along the warp (up) and the weft (across), mostly the weft.
+    let warp_slubs = noise2(vec2<f32>(t.x / SLUB_WIDTH, t.y / SLUB_LENGTH)) - 0.5;
+    let weft_slubs = noise2(vec2<f32>(t.x / SLUB_LENGTH + 37.0, t.y / SLUB_WIDTH)) - 0.5;
+    let slubs = 0.05 * warp_slubs + 0.08 * weft_slubs;
+    let mottle = 0.05 * (noise2(t / MOTTLE) - 0.5);
+    return 1.0 + weave * (1.0 - smoothstep(0.25, 0.6, span / THREAD))
+        + slubs * (1.0 - smoothstep(0.3, 0.8, span / SLUB_WIDTH))
+        + mottle * (1.0 - smoothstep(0.3, 0.8, span / MOTTLE));
+}
+
+// Where `world` is on a form's cover: across (m, round its centre line, as if 15 cm out) and up.
+fn cover_coords(world: vec3<f32>) -> vec2<f32> {
+    return vec2<f32>(atan2(world.x, world.z) * 0.15, world.y);
+}
+
+// GGX's spread of microfacets, and Smith's height-correlated visibility.
+fn ggx(n_dot_h: f32, a: f32) -> f32 {
+    let a2 = a * a;
+    let d = n_dot_h * n_dot_h * (a2 - 1.0) + 1.0;
+    return a2 / (PI * d * d);
+}
+
+fn smith(n_dot_l: f32, n_dot_v: f32, a: f32) -> f32 {
+    let a2 = a * a;
+    let v = n_dot_l * sqrt(n_dot_v * n_dot_v * (1.0 - a2) + a2);
+    let l = n_dot_v * sqrt(n_dot_l * n_dot_l * (1.0 - a2) + a2);
+    return 0.5 / max(v + l, 1e-5);
 }
 
 // Soft wrapped light for cloth: 1 facing the key, a little past its edge.
@@ -255,9 +338,26 @@ fn vs_mesh(v: VsIn) -> VsOut {
 
 @fragment
 fn fs_mesh(v: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    // Taken first, in uniform control flow (they need neighbouring pixels): the cover's weave
+    // coordinates and how fine they are here, and the label's picture.
+    let cover = cover_coords(v.world);
+    let spans = fwidth(cover);
+    let span = max(spans.x, spans.y);
+    let off = v.world - draw.label_centre.xyz;
+    let label_uv = vec2<f32>(
+        dot(off, draw.label_right.xyz) / draw.label_right.w + 0.5,
+        0.5 - dot(off, draw.label_up.xyz) / draw.label_up.w,
+    );
+    let pictured = textureSample(picture, picture_sampler, label_uv).rgb;
     var n = normalize(v.normal);
     var albedo = draw.colour.rgb;
     let material = draw.material.x;
+    if (material == LINEN) {
+        albedo = albedo * linen(cover, span);
+    } else if (material == LABEL) {
+        // A woven label: its picture, with a little of the weave.
+        albedo = pictured * (1.0 + 0.5 * (linen(cover, span) - 1.0));
+    }
     if (!front) {
         // The other side: seen from inside a garment, like its lining.
         n = -n;
@@ -304,9 +404,23 @@ fn fs_mesh(v: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
             + sheen * (d * vis * PI * key * lit * shadow + dr * vis_r * PI * rim * rim_lit
                 + soft * ao * glow)
             + reflected;
-    } else if (material == FORM) {
+    } else if (material == FORM || material == LINEN || material == LABEL) {
         let rim_lit = max(dot(n, frame.rim_dir.xyz), 0.0);
         c = albedo * (soft * ao + key * lit * shadow + frame.rim_colour.rgb * rim_lit) + reflected;
+    } else if (material == METAL) {
+        // Brushed metal: the studio's soft light seen in the reflection (blurred, as the SH
+        // light is), and the key and the rim as soft highlights. Its colour is its reflectance.
+        let a = METAL_ROUGHNESS * METAL_ROUGHNESS;
+        let f = albedo + (vec3<f32>(1.0) - albedo) * pow(1.0 - n_dot_v, 5.0);
+        let env = irradiance(reflect(-to_eye, n));
+        let h = normalize(to_eye + l);
+        let spec = ggx(max(dot(n, h), 0.0), a) * smith(lit, n_dot_v, a);
+        let r = frame.rim_dir.xyz;
+        let rim_lit = max(dot(n, r), 0.0);
+        let hr = normalize(to_eye + r);
+        let spec_r = ggx(max(dot(n, hr), 0.0), a) * smith(rim_lit, n_dot_v, a);
+        c = f * (env * ao + PI * spec * key * lit * shadow
+            + PI * spec_r * frame.rim_colour.rgb * rim_lit);
     } else {
         // The floor catches shadows: it shows the backdrop behind it, darkened only where the
         // form and the garment shade it, so it meets the backdrop with no edge, like a photo

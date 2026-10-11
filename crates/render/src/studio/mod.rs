@@ -13,7 +13,7 @@ mod shadow;
 mod targets;
 
 pub use look::{LightScale, Lighting};
-use mesh::MeshGpu;
+use mesh::{LabelFrame, MeshGpu};
 pub use mesh::{Material, StudioMesh};
 
 use crate::camera::OrbitCamera;
@@ -121,6 +121,10 @@ pub struct StudioRenderer {
     overrides: Overrides,
     shader: wgpu::ShaderModule,
     draw_layout: wgpu::BindGroupLayout,
+    /// The picture a mesh without a label draws (a white texel, made with the first mesh: it
+    /// needs the queue), and how pictures are sampled.
+    white: Option<wgpu::TextureView>,
+    picture_sampler: wgpu::Sampler,
     pipeline_layout: wgpu::PipelineLayout,
     frame_uniforms: wgpu::Buffer,
     frame_bind_group: wgpu::BindGroup,
@@ -157,6 +161,68 @@ pub struct StudioRenderer {
     next_mesh_id: u64,
     /// Goes up whenever any mesh's vertices or triangles change.
     geometry_epoch: u64,
+}
+
+/// A picture to draw on a [`Material::Label`] mesh: `image` (sRGB) stretched over the rectangle
+/// `size` (m: across, up) round `centre`, its sides along `right` and `up`.
+pub struct LabelImage<'a> {
+    pub image: &'a image::RgbaImage,
+    pub centre: Vec3,
+    pub right: Vec3,
+    pub up: Vec3,
+    pub size: [f32; 2],
+}
+
+/// `image` (sRGB) as a texture with every mip level, each made from the one before by
+/// averaging, so a picture seen small stays smooth.
+fn picture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    label: &str,
+    image: &image::RgbaImage,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let (w, h) = (image.width().max(1), image.height().max(1));
+    let levels = 32 - w.max(h).leading_zeros();
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: levels,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let mut level = image.clone();
+    for mip in 0..levels {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: mip,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &level,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * level.width()),
+                rows_per_image: Some(level.height()),
+            },
+            wgpu::Extent3d {
+                width: level.width(),
+                height: level.height(),
+                depth_or_array_layers: 1,
+            },
+        );
+        let (nw, nh) = ((level.width() / 2).max(1), (level.height() / 2).max(1));
+        level = image::imageops::resize(&level, nw, nh, image::imageops::FilterType::Triangle);
+    }
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
 }
 
 fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
@@ -214,7 +280,11 @@ impl StudioRenderer {
         });
         let draw_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("studio draw layout"),
-            entries: &[uniform_entry(0)],
+            entries: &[
+                uniform_entry(0),
+                texture_entry(1, T::Float { filterable: true }),
+                sampler_entry(2, wgpu::SamplerBindingType::Filtering),
+            ],
         });
         let textures_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("studio textures layout"),
@@ -285,12 +355,22 @@ impl StudioRenderer {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
+        let picture_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("studio pictures"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        });
+
         Self {
             hdr_ok,
             quality,
             overrides: Overrides::default(),
             shader,
             draw_layout,
+            white: None,
+            picture_sampler,
             pipeline_layout,
             frame_uniforms,
             frame_bind_group,
@@ -362,11 +442,14 @@ impl StudioRenderer {
         let id = self.next_mesh_id;
         self.next_mesh_id += 1;
         self.geometry_epoch += 1;
+        let white = self.white(device, queue);
         StudioMesh::new(
             MeshGpu {
                 device,
                 queue,
                 layout: &self.draw_layout,
+                texture: &white,
+                sampler: &self.picture_sampler,
             },
             id,
             positions,
@@ -374,6 +457,37 @@ impl StudioRenderer {
             colour,
             material,
         )
+    }
+
+    /// The white texel a mesh without a picture draws, made the first time it's wanted.
+    fn white(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
+        self.white
+            .get_or_insert_with(|| {
+                let white = image::RgbaImage::from_pixel(1, 1, image::Rgba([255; 4]));
+                picture(device, queue, "studio white", &white).1
+            })
+            .clone()
+    }
+
+    /// Gives `mesh` (one made with [`Material::Label`]) its picture: `label.image` stretched over
+    /// the rectangle it gives. Drawn from the next frame on.
+    pub fn set_label(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        mesh: &mut StudioMesh,
+        label: &LabelImage,
+    ) {
+        let (texture, view) = picture(device, queue, "studio label", label.image);
+        mesh.bind(device, &self.draw_layout, &view, &self.picture_sampler);
+        let frame = LabelFrame {
+            centre: label.centre,
+            right: label.right.normalize_or_zero(),
+            up: label.up.normalize_or_zero(),
+            size: label.size,
+        };
+        mesh.label = Some((texture, view, frame));
+        mesh.label_epoch += 1;
     }
 
     /// Replaces a mesh's vertex positions (normals are recomputed) and optionally its
@@ -391,11 +505,16 @@ impl StudioRenderer {
             mesh.upload(queue, positions, triangles);
         } else {
             let tris = triangles.map_or_else(|| mesh.triangles().to_vec(), <[_]>::to_vec);
-            *mesh = StudioMesh::new(
+            let label = mesh.label.take();
+            let white = self.white(device, queue);
+            let texture = label.as_ref().map_or(&white, |(_, view, _)| view);
+            let mut grown = StudioMesh::new(
                 MeshGpu {
                     device,
                     queue,
                     layout: &self.draw_layout,
+                    texture,
+                    sampler: &self.picture_sampler,
                 },
                 mesh.id,
                 positions,
@@ -403,6 +522,9 @@ impl StudioRenderer {
                 mesh.colour,
                 mesh.material,
             );
+            grown.label = label;
+            grown.label_epoch = mesh.label_epoch;
+            *mesh = grown;
         }
     }
 
@@ -564,7 +686,7 @@ impl StudioRenderer {
         )
             .hash(&mut h);
         for m in meshes {
-            (m.id, m.colour.map(f32::to_bits), m.material).hash(&mut h);
+            (m.id, m.colour.map(f32::to_bits), m.material, m.label_epoch).hash(&mut h);
         }
         h.finish()
     }
@@ -773,11 +895,14 @@ impl StudioRenderer {
         self.ensure_targets(device, target.width, target.height, format);
         if self.floor.is_none() {
             let (positions, triangles) = mesh::floor_disc(look::FLOOR_RADIUS);
+            let white = self.white(device, queue);
             self.floor = Some(StudioMesh::new(
                 MeshGpu {
                     device,
                     queue,
                     layout: &self.draw_layout,
+                    texture: &white,
+                    sampler: &self.picture_sampler,
                 },
                 0,
                 &positions,
