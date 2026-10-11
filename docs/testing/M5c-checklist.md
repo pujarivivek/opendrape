@@ -6,8 +6,14 @@ your own measurements. Your choice is saved with the project.
 
 ## Check these
 
-- [ ] **The dress form.** The 3D view shows a beige torso on a charcoal stand, with thin dark
-      tape lines. There is no human body any more.
+- [ ] **The dress form** looks like the approved Blender forms: a light linen torso with fine
+      sewn seams (centre front, princess lines, sides, shoulders, neckline, armholes), a
+      brushed-silver neck cap with a rounded edge, a dark knob, pole and base, and a navy woven
+      label low on the front reading "OpenDrape", the form and size, and its girths. There is
+      no human body any more.
+- [ ] **Up close**, the linen has a fine, uneven weave that catches the light; from further
+      off it is a soft plain linen with no shimmer while you turn the view. No flat facets show
+      on the cap or the torso.
 - [ ] **Assets.** Click **Assets** in the menu row (after View). The list of dress forms takes
       the place of the pattern on the right. Close it three ways: click Assets again, click the
       ✕ at the top right, or pick a tab (Modeling, Finishing…).
@@ -23,7 +29,10 @@ your own measurements. Your choice is saved with the project.
       Enter: the waist changes, and the size list says Custom. Type 200 and press Enter: a
       message says what the waist can be, and nothing changes. Under the fields you see what
       the form measures (front waist length, apex to apex, high hip).
-- [ ] **Show tape lines.** Untick it: the tape lines go. Quit and reopen: still off.
+- [ ] **Show measuring tapes.** Tick it: dark measuring tapes appear round the bust, waist and
+      hips. Quit and reopen: still on. Untick it to get the plain form back.
+- [ ] **The label follows the size.** Pick Men's torso, then size 44: the label says
+      "MEN'S FORM · SIZE 44" and its new chest, waist and hip.
 - [ ] **Going up sizes.** Draw a skirt's front and back, use Place at → Front and → Back, then
       pick **US 18**: no piece ends up inside the bigger form. Press Play: it drapes.
 - [ ] **T-shirt sleeves.** Place a sleeve with Place at → **Left armhole**. It starts beside the

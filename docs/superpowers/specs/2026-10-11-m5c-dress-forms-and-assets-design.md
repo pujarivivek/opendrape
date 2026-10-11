@@ -25,9 +25,17 @@ is this milestone, laid out the way the user asked on 2026-10-11.
 ## What the user sees
 
 ### The 3D view
-- The dress form on its stand replaces the human body. The torso is matte, in today's form colour
-  (`FORM_SRGB`, a warm linen beige). The tape lines are thin dark ribbons, and the stand (neck
-  cap, pole, base) is a dark charcoal.
+- The dress form on its stand replaces the human body, looking like the approved Blender forms
+  (changed after the first look, 2026-10-11):
+  - a light linen cover (`FORM_SRGB` 208, 200, 193) with a fine weave, slubby yarn and a little
+    relief, drawn by the shader (no texture files, so no licence question), fading to plain
+    linen where it would be finer than a pixel;
+  - fine sewn seams along the tape lines that aren't girths, a little darker than the linen;
+  - the measuring tapes round the girths only when "Show measuring tapes" is ticked;
+  - a brushed-metal neck cap with a rounded top edge and a smooth outline, and a dark knob, pole
+    and base;
+  - a navy woven size label low on the front: "OpenDrape", the form and size, and its girths in
+    the project's units.
 - The camera frames the torso, centred at waist height. The four view buttons, Play/Reset and the
   studio lighting work as before.
 
@@ -68,8 +76,8 @@ File  Edit  View  Assets  Help │ [Modeling]  Finishing  Texturing  Rendering  
     on this form"), and the old value stays.
   - Below the fields are read-only "measured" values: front waist length, apex to apex (women),
     and high hip.
-- **Show tape lines** turns the tape ribbons on or off. It's a viewing choice, remembered with the
-  other View settings (`view.json`), and not saved in the project.
+- **Show measuring tapes** turns the girth tapes on or off (off at first). It's a viewing choice,
+  remembered with the other View settings (`view.json`), and not saved in the project.
 
 ### The 3D | 2D switch
 - It appears at the top left of the left area, only while Assets is open in the Modeling tab
