@@ -330,9 +330,16 @@ impl Viewport {
             Some(c) => {
                 let new_tris =
                     (!Arc::ptr_eq(&c.triangles, &f.triangles)).then_some(f.triangles.as_slice());
-                if !Arc::ptr_eq(&c.fabric, &f.fabric) {
+                let new_fabric = !Arc::ptr_eq(&c.fabric, &f.fabric);
+                if new_fabric {
                     c.mesh.set_seams(&f.fabric.seam_mm());
+                    c.mesh
+                        .set_weave(&f.fabric.weave_m(), &f.fabric.cut_triangles());
                     c.fabric = f.fabric.clone();
+                }
+                if new_fabric || new_tris.is_some() {
+                    // A weld joins particles: each vertex follows the one its own has become.
+                    c.mesh.set_corners(&f.fabric.live_map(&f.triangles));
                 }
                 self.renderer.update_mesh(
                     &rs.device,
@@ -354,8 +361,15 @@ impl Viewport {
                     Material::Cloth,
                 );
                 mesh.set_seams(&f.fabric.seam_mm());
-                self.renderer
-                    .update_mesh(&rs.device, &rs.queue, &mut mesh, &f.positions, None);
+                mesh.set_weave(&f.fabric.weave_m(), &f.fabric.cut_triangles());
+                mesh.set_corners(&f.fabric.live_map(&f.triangles));
+                self.renderer.update_mesh(
+                    &rs.device,
+                    &rs.queue,
+                    &mut mesh,
+                    &f.positions,
+                    Some(&f.triangles),
+                );
                 self.cloth = Some(ClothOnGpu {
                     mesh,
                     seq: f.seq,

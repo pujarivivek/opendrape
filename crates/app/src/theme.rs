@@ -49,7 +49,8 @@ pub const TAPE_SRGB: [u8; 3] = opendrape_render::studio::look::TAPE_SRGB;
 pub const STAND_SRGB: [u8; 3] = opendrape_render::studio::look::STAND_SRGB;
 pub const METAL_SRGB: [u8; 3] = opendrape_render::studio::look::METAL_SRGB;
 /// The fabric (a cotton blue) and the selected piece (a warmer orange), as linear RGB.
-pub const FABRIC: [f32; 3] = [0.17, 0.36, 0.70];
+/// Unbleached muslin (sRGB 230, 220, 200), the fabric every garment is cut from for now.
+pub const FABRIC: [f32; 3] = [0.791, 0.716, 0.578];
 pub const SELECTED_FABRIC: [f32; 3] = [0.95, 0.55, 0.25];
 
 /// The speed numbers over the 3D view.
@@ -172,7 +173,7 @@ mod tests {
         );
         assert_eq!(GIZMO_BRIGHT, Color32::from_rgb(255, 200, 0));
         assert_eq!(FORM_SRGB, [208, 200, 193]);
-        assert_eq!(FABRIC, [0.17, 0.36, 0.70]);
+        assert_eq!(FABRIC, [0.791, 0.716, 0.578]);
         assert_eq!(SELECTED_FABRIC, [0.95, 0.55, 0.25]);
         assert_eq!(STATS_TEXT, Color32::from_gray(60));
         assert_eq!(GIZMO_SQUARE, Color32::from_white_alpha(170));

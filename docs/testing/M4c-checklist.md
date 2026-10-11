@@ -17,6 +17,11 @@ you drafted for M4b (or draft it again from that checklist).
       no sharp crease and no zigzag. The seams shut one at a time as each pulls closed, in
       about half a second, with gravity starting just after. While they shut, the fabric
       already keeps off itself everywhere but right along the seams.
+- [ ] **The fabric is muslin.** Every garment is now cut from unbleached muslin: a warm
+      off-white with a soft, slightly uneven surface. Zoom right in on a piece and the plain
+      weave shows, its threads running with the piece's grain; from further off it reads as
+      a lightly slubbed cloth. The weave carries straight across a seam, each side on its own
+      cut, as on a real garment.
 - [ ] **Seams show as stitch lines.** Zoom in on a seam: a fine line runs along it, a
       shallow groove with a soft crest beside it, like a sewn seam on a real garment. It is
       shading only (the fabric is still flat there), and an unsewn edge has no line.

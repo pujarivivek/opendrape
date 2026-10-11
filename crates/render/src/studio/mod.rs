@@ -4,6 +4,7 @@
 mod ao;
 pub mod environment;
 mod environment_data;
+pub mod fabric;
 mod frame;
 pub mod look;
 mod mesh;
@@ -127,6 +128,9 @@ pub struct StudioRenderer {
     /// needs the queue), and how pictures are sampled.
     white: Option<wgpu::TextureView>,
     picture_sampler: wgpu::Sampler,
+    /// The fabric cloth is dressed in (made with the first cloth), and how it's tiled.
+    fabric: Option<wgpu::TextureView>,
+    fabric_sampler: wgpu::Sampler,
     pipeline_layout: wgpu::PipelineLayout,
     frame_uniforms: wgpu::Buffer,
     frame_bind_group: wgpu::BindGroup,
@@ -175,13 +179,15 @@ pub struct LabelImage<'a> {
     pub size: [f32; 2],
 }
 
-/// `image` (sRGB) as a texture with every mip level, each made from the one before by
-/// averaging, so a picture seen small stays smooth.
+/// `image` as a texture of `format` (sRGB for a picture, plain for data such as the fabric's
+/// normals) with every mip level, each made from the one before by averaging, so a picture
+/// seen small stays smooth.
 fn picture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     label: &str,
     image: &image::RgbaImage,
+    format: wgpu::TextureFormat,
 ) -> (wgpu::Texture, wgpu::TextureView) {
     let (w, h) = (image.width().max(1), image.height().max(1));
     let levels = 32 - w.max(h).leading_zeros();
@@ -195,7 +201,7 @@ fn picture(
         mip_level_count: levels,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        format,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
@@ -364,6 +370,17 @@ impl StudioRenderer {
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
+        // The fabric repeats across the cloth, and is seen at a slant more often than not.
+        let fabric_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("studio fabric"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            anisotropy_clamp: 4,
+            ..Default::default()
+        });
 
         Self {
             hdr_ok,
@@ -373,6 +390,8 @@ impl StudioRenderer {
             draw_layout,
             white: None,
             picture_sampler,
+            fabric: None,
+            fabric_sampler,
             pipeline_layout,
             frame_uniforms,
             frame_bind_group,
@@ -444,14 +463,14 @@ impl StudioRenderer {
         let id = self.next_mesh_id;
         self.next_mesh_id += 1;
         self.geometry_epoch += 1;
-        let white = self.white(device, queue);
+        let (texture, sampler) = self.dressing(device, queue, material);
         StudioMesh::new(
             MeshGpu {
                 device,
                 queue,
                 layout: &self.draw_layout,
-                texture: &white,
-                sampler: &self.picture_sampler,
+                texture: &texture,
+                sampler: &sampler,
             },
             id,
             positions,
@@ -466,9 +485,49 @@ impl StudioRenderer {
         self.white
             .get_or_insert_with(|| {
                 let white = image::RgbaImage::from_pixel(1, 1, image::Rgba([255; 4]));
-                picture(device, queue, "studio white", &white).1
+                picture(
+                    device,
+                    queue,
+                    "studio white",
+                    &white,
+                    wgpu::TextureFormat::Rgba8UnormSrgb,
+                )
+                .1
             })
             .clone()
+    }
+
+    /// The fabric cloth is dressed in (see [`fabric`]), made into a texture the first time
+    /// it's wanted: plain data, not a picture (its red is brightness, its green and blue a
+    /// normal).
+    fn fabric(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
+        self.fabric
+            .get_or_insert_with(|| {
+                picture(
+                    device,
+                    queue,
+                    "studio fabric",
+                    fabric::muslin(),
+                    wgpu::TextureFormat::Rgba8Unorm,
+                )
+                .1
+            })
+            .clone()
+    }
+
+    /// The picture and the sampler a mesh of `material` draws with until it is given a label:
+    /// cloth its fabric, repeating; the rest a white texel.
+    fn dressing(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        material: Material,
+    ) -> (wgpu::TextureView, wgpu::Sampler) {
+        if material == Material::Cloth {
+            (self.fabric(device, queue), self.fabric_sampler.clone())
+        } else {
+            (self.white(device, queue), self.picture_sampler.clone())
+        }
     }
 
     /// Gives `mesh` (one made with [`Material::Label`]) its picture: `label.image` stretched over
@@ -480,7 +539,13 @@ impl StudioRenderer {
         mesh: &mut StudioMesh,
         label: &LabelImage,
     ) {
-        let (texture, view) = picture(device, queue, "studio label", label.image);
+        let (texture, view) = picture(
+            device,
+            queue,
+            "studio label",
+            label.image,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+        );
         mesh.bind(device, &self.draw_layout, &view, &self.picture_sampler);
         let frame = LabelFrame {
             centre: label.centre,
@@ -508,16 +573,19 @@ impl StudioRenderer {
         } else {
             let tris = triangles.map_or_else(|| mesh.triangles().to_vec(), <[_]>::to_vec);
             let seams = std::mem::take(&mut mesh.seams);
+            let weave = std::mem::take(&mut mesh.weave);
+            let cut = std::mem::take(&mut mesh.cut);
+            let corners = std::mem::take(&mut mesh.corners);
             let label = mesh.label.take();
-            let white = self.white(device, queue);
-            let texture = label.as_ref().map_or(&white, |(_, view, _)| view);
+            let (plain, sampler) = self.dressing(device, queue, mesh.material);
+            let texture = label.as_ref().map_or(&plain, |(_, view, _)| view);
             let mut grown = StudioMesh::new(
                 MeshGpu {
                     device,
                     queue,
                     layout: &self.draw_layout,
                     texture,
-                    sampler: &self.picture_sampler,
+                    sampler: &sampler,
                 },
                 mesh.id,
                 positions,
@@ -527,8 +595,10 @@ impl StudioRenderer {
             );
             grown.label = label;
             grown.label_epoch = mesh.label_epoch;
-            if !seams.is_empty() {
+            if !seams.is_empty() || !weave.is_empty() || !corners.is_empty() {
                 grown.seams = seams;
+                grown.set_weave(&weave, &cut);
+                grown.set_corners(&corners);
                 grown.upload(queue, positions, None);
             }
             *mesh = grown;
@@ -586,7 +656,12 @@ impl StudioRenderer {
         let vertex = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Vertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32],
+            attributes: &wgpu::vertex_attr_array![
+                0 => Float32x3,
+                1 => Float32x3,
+                2 => Float32,
+                3 => Float32x2,
+            ],
         };
         let mesh = pipeline(
             "studio meshes",

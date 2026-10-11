@@ -32,6 +32,8 @@ pub struct FabricPanel {
     pub shape: PieceId,
     pub flat: Vec<[f64; 2]>,
     pub triangles: Vec<[u32; 3]>,
+    /// The grain as a unit direction on the pattern table: the fabric's warp.
+    pub grain: [f64; 2],
     pub first_particle: usize,
     pub first_triangle: usize,
     /// How far (mm, on the pattern) each point is from the nearest sewn stretch of the
@@ -61,6 +63,7 @@ impl Fabric {
                     shape: p.shape,
                     flat: p.flat.clone(),
                     triangles: p.triangles.clone(),
+                    grain: p.grain,
                     first_particle: particle,
                     first_triangle: triangle,
                     seam_mm: seam_distances(mesh, k),
@@ -85,6 +88,55 @@ impl Fabric {
             .iter()
             .flat_map(|p| p.seam_mm.iter().copied())
             .collect()
+    }
+
+    /// Every particle's place on its fabric's weave (m), in cloth order: across the grain,
+    /// then along it, so that a texture laid over them runs with the weft and the warp of
+    /// every panel however it was cut.
+    pub fn weave_m(&self) -> Vec<[f32; 2]> {
+        self.panels
+            .iter()
+            .flat_map(|p| {
+                let warp = DVec2::from_array(p.grain).normalize_or_zero();
+                let warp = if warp == DVec2::ZERO { DVec2::Y } else { warp };
+                let weft = DVec2::new(warp.y, -warp.x);
+                p.flat.iter().map(move |f| {
+                    let f = DVec2::from_array(*f);
+                    [f.dot(weft) as f32, f.dot(warp) as f32]
+                })
+            })
+            .collect()
+    }
+
+    /// The cloth's triangles as the fabric was cut, over the particles each panel started
+    /// with (before any weld joined them), in cloth order.
+    pub fn cut_triangles(&self) -> Vec<[u32; 3]> {
+        self.panels
+            .iter()
+            .flat_map(|p| {
+                let first = p.first_particle as u32;
+                p.triangles.iter().map(move |t| t.map(|k| k + first))
+            })
+            .collect()
+    }
+
+    /// The live particle each of the fabric's particles has become after welding, read off
+    /// `triangles` (the cloth's, which welding renumbers in place): itself until a weld joins
+    /// it to another.
+    pub fn live_map(&self, triangles: &[[u32; 3]]) -> Vec<u32> {
+        let n: usize = self.panels.iter().map(|p| p.flat.len()).sum();
+        let mut live: Vec<u32> = (0..n as u32).collect();
+        for p in &self.panels {
+            for (j, cut) in p.triangles.iter().enumerate() {
+                let Some(now) = triangles.get(p.first_triangle + j) else {
+                    continue;
+                };
+                for k in 0..3 {
+                    live[p.first_particle + cut[k] as usize] = now[k];
+                }
+            }
+        }
+        live
     }
 }
 
@@ -422,6 +474,49 @@ mod tests {
         ));
         let alone = Drape::new(Arc::new(pr), &stage);
         assert!(alone.fabric.seam_mm().iter().all(|&d| d == NO_SEAM_MM));
+    }
+
+    #[test]
+    fn the_weave_runs_with_each_panels_grain_and_welds_map_onto_live_particles() {
+        let stage = Stage::shared();
+        let mut drape = Drape::new(Arc::new(two_panels()), &stage);
+        let fabric = drape.fabric.clone();
+        let n = drape.solver.cloth().len();
+        // On the straight grain (up the pattern), the weave is the pattern itself.
+        let weave = fabric.weave_m();
+        assert_eq!(weave.len(), n);
+        for p in &fabric.panels {
+            assert!(
+                p.grain[0].abs() < 1e-9 && (p.grain[1] - 1.0).abs() < 1e-9,
+                "{:?}",
+                p.grain
+            );
+            for (k, f) in p.flat.iter().enumerate() {
+                let w = weave[p.first_particle + k];
+                assert!((w[0] as f64 - f[0]).abs() < 1e-6 && (w[1] as f64 - f[1]).abs() < 1e-6);
+            }
+        }
+        // Before any weld the cut triangles are the cloth's and every particle is its own.
+        let cut = fabric.cut_triangles();
+        assert_eq!(cut, drape.solver.cloth().triangles());
+        let live = fabric.live_map(drape.solver.cloth().triangles());
+        assert!(live.iter().enumerate().all(|(i, &l)| l as usize == i));
+        // Welded, each stitched particle maps onto a live one, and the cut triangles still
+        // describe the same fabric.
+        let stitched: Vec<(usize, usize)> = drape.solver.cloth().stitch_pairs().collect();
+        drape.solver.cloth_mut().weld_stitches();
+        let cloth = drape.solver.cloth();
+        let live = fabric.live_map(cloth.triangles());
+        assert_eq!(live.len(), n);
+        for &(a, b) in &stitched {
+            assert_eq!(live[a], live[b], "sewn together");
+            assert!(cloth.is_alive(live[a] as usize));
+        }
+        assert!(
+            live.iter().any(|&l| l as usize != 0)
+                && live.iter().enumerate().any(|(i, &l)| l as usize != i)
+        );
+        assert_eq!(cut.len(), cloth.triangles().len());
     }
 
     #[test]

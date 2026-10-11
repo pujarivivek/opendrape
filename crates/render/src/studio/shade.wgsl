@@ -33,6 +33,7 @@ struct Draw {
     label_centre: vec4<f32>,
     label_right: vec4<f32>,
     label_up: vec4<f32>,
+    weave: vec4<f32>,
 };
 @group(1) @binding(0) var<uniform> draw: Draw;
 @group(1) @binding(1) var picture: texture_2d<f32>;
@@ -65,6 +66,8 @@ const CLOTH_RISE: f32 = 0.0002;
 // Brushed metal's roughness.
 const METAL_ROUGHNESS: f32 = 0.45;
 const LINING: f32 = 0.8;
+// How much of the fabric's ambient occlusion (between its threads) darkens cloth.
+const WEAVE_SHADE: f32 = 0.5;
 // How much the folds' darkening also takes from the key light.
 const AO_ON_KEY: f32 = 0.5;
 
@@ -118,14 +121,19 @@ fn linen(t: vec2<f32>, span: f32) -> f32 {
     // Slubs: each thread a little thicker or thinner along its length.
     let slub = select(hash11(cell.y), hash11(cell.x + 17.0), over);
     let weave = 0.10 * (thread - 0.75) + 0.06 * (slub - 0.5);
-    // Uneven yarn: slubs, thicker stretches of thread a few threads wide and a couple of
-    // centimetres long, along the warp (up) and the weft (across), mostly the weft.
+    return 1.0 + weave * (1.0 - smoothstep(0.25, 0.6, span / THREAD)) + yarn(t, span);
+}
+
+// How much lighter or darker uneven yarn makes cloth at `t` (about 0): slubs, thicker
+// stretches of thread a few threads wide and a couple of centimetres long, along the warp
+// (up) and the weft (across), mostly the weft; and a soft mottle. Each fades out where it gets
+// finer than about a pixel (`span`, as in `linen`).
+fn yarn(t: vec2<f32>, span: f32) -> f32 {
     let warp_slubs = noise2(vec2<f32>(t.x / SLUB_WIDTH, t.y / SLUB_LENGTH)) - 0.5;
     let weft_slubs = noise2(vec2<f32>(t.x / SLUB_LENGTH + 37.0, t.y / SLUB_WIDTH)) - 0.5;
     let slubs = 0.05 * warp_slubs + 0.08 * weft_slubs;
     let mottle = 0.05 * (noise2(t / MOTTLE) - 0.5);
-    return 1.0 + weave * (1.0 - smoothstep(0.25, 0.6, span / THREAD))
-        + slubs * (1.0 - smoothstep(0.3, 0.8, span / SLUB_WIDTH))
+    return slubs * (1.0 - smoothstep(0.3, 0.8, span / SLUB_WIDTH))
         + mottle * (1.0 - smoothstep(0.3, 0.8, span / MOTTLE));
 }
 
@@ -159,6 +167,33 @@ fn bumped(n: vec3<f32>, dpx: vec3<f32>, dpy: vec3<f32>, dhx: f32, dhy: f32) -> v
     }
     let grad = sign(det) * (dhx * r1 + dhy * r2);
     return normalize(abs(det) * n - grad);
+}
+
+// `n` tilted by a tangent-space normal map sample `nxy` (0..1, up the image being up) laid
+// over the surface by texture coordinates, with no stored tangents (Schüler 2006): the
+// tangent frame comes from how the surface point (`dpx`, `dpy`) and the coordinates (`duvx`,
+// `duvy`) change to the next pixel across and down.
+fn woven(
+    n: vec3<f32>,
+    dpx: vec3<f32>,
+    dpy: vec3<f32>,
+    duvx: vec2<f32>,
+    duvy: vec2<f32>,
+    nxy: vec2<f32>,
+) -> vec3<f32> {
+    let t = (nxy * 2.0 - 1.0) * (draw.weave.z * frame.key_box.w);
+    let tz = sqrt(max(1.0 - dot(t, t), 0.0));
+    let dp2perp = cross(dpy, n);
+    let dp1perp = cross(n, dpx);
+    let tangent = dp2perp * duvx.x + dp1perp * duvy.x;
+    // Texture rows run down the image, so up the image is the other way along v.
+    let bitangent = -(dp2perp * duvx.y + dp1perp * duvy.y);
+    let m = max(dot(tangent, tangent), dot(bitangent, bitangent));
+    if (m < 1e-20) {
+        return n;
+    }
+    let s = inverseSqrt(m);
+    return normalize(tangent * (s * t.x) + bitangent * (s * t.y) + n * tz);
 }
 
 // Where `world` is on a form's cover: across (m, round its centre line, as if 15 cm out) and up.
@@ -356,6 +391,7 @@ struct VsIn {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) seam: f32,
+    @location(3) weave: vec2<f32>,
 };
 
 struct VsOut {
@@ -363,6 +399,7 @@ struct VsOut {
     @location(0) world: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) seam: f32,
+    @location(3) weave: vec2<f32>,
 };
 
 @vertex
@@ -372,6 +409,7 @@ fn vs_mesh(v: VsIn) -> VsOut {
     out.world = v.position;
     out.normal = v.normal;
     out.seam = v.seam;
+    out.weave = v.weave;
     return out;
 }
 
@@ -409,7 +447,15 @@ fn fs_mesh(v: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
         dot(off, draw.label_right.xyz) / draw.label_right.w + 0.5,
         0.5 - dot(off, draw.label_up.xyz) / draw.label_up.w,
     );
-    let pictured = textureSample(picture, picture_sampler, label_uv).rgb;
+    // Cloth's picture is its fabric's weave, laid over it by the vertices' place on the weave
+    // and the fabric's tile; a label's is its picture, stretched over its rectangle.
+    let weave_uv = v.weave / draw.weave.xy;
+    let picture_uv = select(label_uv, weave_uv, draw.material.x == CLOTH);
+    let pictured = textureSample(picture, picture_sampler, picture_uv);
+    let duvx = dpdx(weave_uv);
+    let duvy = dpdy(weave_uv);
+    let weave_spans = fwidth(v.weave);
+    let weave_span = max(weave_spans.x, weave_spans.y);
     let height = linen_height(cover, span) * frame.key_box.w;
     let dpx = dpdx(v.world);
     let dpy = dpdy(v.world);
@@ -431,15 +477,24 @@ fn fs_mesh(v: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     let slope = seam_slope(d);
     let dh_dx = slope * d_dx * 0.001;
     let dh_dy = slope * d_dy * 0.001;
-    if (material == CLOTH && d < SEAM_REACH_MM) {
-        n = bumped(n, dpx, dpy, dh_dx, dh_dy);
-        // Stitches shade the groove a little as well.
-        albedo = albedo * (1.0 - 0.16 * exp(-(d * d) / 0.8));
+    if (material == CLOTH) {
+        if (draw.material.y == 1u) {
+            // Dressed in its fabric: the weave's light and dark and its relief up close, and
+            // the unevenness of its yarn from further off.
+            albedo = albedo * (2.0 * pictured.r) * mix(1.0, pictured.a, WEAVE_SHADE)
+                * (1.0 + yarn(v.weave, weave_span));
+            n = woven(n, dpx, dpy, duvx, duvy, pictured.gb);
+        }
+        if (d < SEAM_REACH_MM) {
+            n = bumped(n, dpx, dpy, dh_dx, dh_dy);
+            // Stitches shade the groove a little as well.
+            albedo = albedo * (1.0 - 0.16 * exp(-(d * d) / 0.8));
+        }
     } else if (material == LINEN) {
         albedo = albedo * linen(cover, span);
     } else if (material == LABEL) {
         // A woven label: its picture, with a little of the weave.
-        albedo = pictured * (1.0 + 0.5 * (linen(cover, span) - 1.0));
+        albedo = pictured.rgb * (1.0 + 0.5 * (linen(cover, span) - 1.0));
     }
     if (!front) {
         // The other side: seen from inside a garment, like its lining.

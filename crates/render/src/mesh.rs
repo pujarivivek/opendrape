@@ -9,6 +9,9 @@ pub(crate) struct Vertex {
     /// How far (mm) this point is from the nearest sewn seam on its piece: the studio draws
     /// a stitch line as a groove in the shading along it. [`NO_SEAM_MM`] when there is none.
     pub(crate) seam: f32,
+    /// Where this point is on its fabric's weave (m): across the grain, then along it. The
+    /// studio lays the fabric's scan over cloth by it.
+    pub(crate) weave: [f32; 2],
 }
 
 /// The seam distance of a vertex nowhere near a seam (mm).
@@ -44,8 +47,18 @@ pub fn vertex_normals(positions: &[Vec3], triangles: &[[u32; 3]]) -> Vec<Vec3> {
 /// triangle reached across an edge that its neighbour goes round the same way is turned.
 /// The lighting is two-sided, so which way a run ends up facing does not matter.
 pub fn orient_consistently(triangles: &[[u32; 3]]) -> Vec<[u32; 3]> {
+    triangles
+        .iter()
+        .zip(orientation_flips(triangles))
+        .map(|(t, flip)| if flip { [t[0], t[2], t[1]] } else { *t })
+        .collect()
+}
+
+/// Which of `triangles` [`orient_consistently`] turns round.
+pub fn orientation_flips(triangles: &[[u32; 3]]) -> Vec<bool> {
     use std::collections::HashMap;
     let mut out = triangles.to_vec();
+    let mut flipped = vec![false; out.len()];
     let mut by_edge: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
     for (t, tri) in triangles.iter().enumerate() {
         for k in 0..3 {
@@ -74,13 +87,23 @@ pub fn orient_consistently(triangles: &[[u32; 3]]) -> Vec<[u32; 3]> {
                     let m = out[n];
                     if (0..3).any(|j| m[j] == a && m[(j + 1) % 3] == b) {
                         out[n] = [m[0], m[2], m[1]];
+                        flipped[n] = true;
                     }
                     stack.push(n);
                 }
             }
         }
     }
-    out
+    flipped
+}
+
+/// A normal for each entry of `corners` (a vertex's index into `positions`): the
+/// area-weighted normals of `triangles` over `positions`, read through `corners`, so that
+/// two vertices that share a position (a welded seam's two sides) share its normal and shade
+/// as one surface. The triangles must be wound consistently.
+pub fn normals_through(positions: &[Vec3], triangles: &[[u32; 3]], corners: &[u32]) -> Vec<Vec3> {
+    let normals = vertex_normals(positions, triangles);
+    corners.iter().map(|&c| normals[c as usize]).collect()
 }
 
 /// The mesh with a copy of a vertex for each group of its triangles that meet it at less than
@@ -294,6 +317,7 @@ impl MeshRenderer {
                 position: p.to_array(),
                 normal: n.to_array(),
                 seam: NO_SEAM_MM,
+                weave: [0.0; 2],
             })
             .collect();
         queue.write_buffer(&mesh.vertices, 0, bytemuck::cast_slice(&verts));
@@ -399,6 +423,28 @@ mod tests {
         // Two separate runs are each oriented on their own, and nothing is lost.
         let apart = [[0, 1, 2], [3, 5, 4]];
         assert_eq!(orient_consistently(&apart), apart);
+        assert_eq!(orientation_flips(&triangles), [false, false, true, true]);
+    }
+
+    #[test]
+    fn a_welded_ridge_shades_as_one_surface_through_its_corners() {
+        // A tent: two slopes meeting at a ridge whose points (positions 1 and 2) are shared,
+        // drawn from seven corners, the ridge's twice.
+        let positions = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 1.0),
+            Vec3::new(1.0, 1.0, 1.0),
+            Vec3::new(1.0, 0.0, 2.0),
+            Vec3::new(0.0, 0.0, 2.0),
+        ];
+        let welded = [[0, 1, 2], [1, 3, 2], [1, 4, 3]];
+        let corners = [0, 1, 2, 1, 2, 3, 4];
+        let n = normals_through(&positions, &welded, &corners);
+        assert_eq!(n.len(), 7);
+        assert_eq!(n[1], n[3], "the ridge's two corners share a normal");
+        assert_eq!(n[2], n[4]);
+        // Averaged over both slopes: it points up, not along either slope's own normal.
+        assert!(n[1].y > 0.9, "{}", n[1]);
     }
 }
 

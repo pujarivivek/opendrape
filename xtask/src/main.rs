@@ -1,14 +1,17 @@
 //! Developer tasks: `cargo xtask icons` regenerates the app icons in `assets/`;
-//! `cargo xtask studio` bakes the studio lighting from its CC0 HDRI.
+//! `cargo xtask studio` bakes the studio lighting from its CC0 HDRI; `cargo xtask fabric`
+//! bakes the cloth's muslin from its CC0 scan.
 
+mod fabric;
 mod studio;
 
 fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("icons") => icons(),
         Some("studio") => studio::run(std::env::args().skip(2).collect()),
+        Some("fabric") => fabric::run(std::env::args().skip(2).collect()),
         _ => {
-            eprintln!("usage: cargo xtask <icons|studio>");
+            eprintln!("usage: cargo xtask <icons|studio|fabric>");
             std::process::exit(2);
         }
     }

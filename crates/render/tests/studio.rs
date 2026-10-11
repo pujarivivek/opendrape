@@ -464,6 +464,68 @@ fn a_seam_down_a_card_shows_in_the_shading() {
     );
 }
 
+/// Cloth dressed in its fabric shows it: up close (a pixel finer than a thread) the scan's
+/// weave, from further off the unevenness of its yarn; a bare card is even at both. Dressed,
+/// it stays about as bright.
+#[test]
+fn a_card_dressed_in_muslin_shows_its_weave_and_its_yarn() {
+    let g = gpu();
+    let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::High);
+    r.set_overrides(plain());
+    let target = RenderTarget::new(&g.device, 256, 256);
+    let patch = |img: &image::RgbaImage| -> Vec<f32> {
+        (96..160)
+            .flat_map(|y| (96..160).map(move |x| (x, y)))
+            .map(|(x, y)| luminance(img.get_pixel(x, y)))
+            .collect()
+    };
+    let mean = |v: &[f32]| v.iter().sum::<f32>() / v.len() as f32;
+    let spread = |v: &[f32]| {
+        let m = mean(v);
+        (v.iter().map(|l| (l - m).powi(2)).sum::<f32>() / v.len() as f32).sqrt()
+    };
+    // A 3 cm card seen from 7 cm (a pixel is 0.17 mm, under a thread), and a 12 cm card
+    // from 30 cm (0.7 mm, a few threads).
+    for (size, distance, least, name) in
+        [(0.03, 0.07, 2.5, "close"), (0.12, 0.3, 0.8, "arms_length")]
+    {
+        let (p, t) = card(1.0, 0.0, size);
+        let mut c = mesh(
+            &mut r,
+            &g,
+            (p.clone(), t.clone()),
+            [0.6; 3],
+            Material::Cloth,
+        );
+        let camera = front_camera(distance);
+        let bare = patch(&render_still(&mut r, &g, &target, &camera, &[&c]));
+        let weave: Vec<[f32; 2]> = p.iter().map(|q| [q.x, q.y]).collect();
+        c.set_weave(&weave, &t);
+        r.update_mesh(&g.device, &g.queue, &mut c, &p, Some(&t));
+        let img = render_still(&mut r, &g, &target, &camera, &[&c]);
+        img.save(format!(
+            "{}/studio_muslin_{name}.png",
+            env!("CARGO_TARGET_TMPDIR")
+        ))
+        .ok();
+        let dressed = patch(&img);
+        eprintln!(
+            "{name}: bare spread {:.2}, dressed spread {:.2}, means {:.1} and {:.1}",
+            spread(&bare),
+            spread(&dressed),
+            mean(&bare),
+            mean(&dressed)
+        );
+        assert!(spread(&bare) < 1.0, "{name}: a bare card is even");
+        assert!(spread(&dressed) > least, "{name}: the fabric shows");
+        let (b, d) = (mean(&bare), mean(&dressed));
+        assert!(
+            (0.75..1.05).contains(&(d / b)),
+            "{name}: about as bright: {d} vs {b}"
+        );
+    }
+}
+
 /// The shadow maps are drawn again only when the geometry changes, not when the camera moves.
 #[test]
 fn shadow_maps_are_redrawn_only_when_geometry_changes() {

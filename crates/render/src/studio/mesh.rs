@@ -1,7 +1,8 @@
 //! Meshes the studio draws: the form, the cloth and the floor, each with its colour and kind
 //! of surface.
 
-use crate::mesh::{NO_SEAM_MM, Vertex, vertex_normals};
+use crate::mesh::{NO_SEAM_MM, Vertex, normals_through, orientation_flips, vertex_normals};
+use crate::studio::fabric::{MUSLIN_RELIEF, MUSLIN_TILE_M};
 use glam::Vec3;
 
 /// What a mesh is made of, which decides how light falls on it.
@@ -47,6 +48,9 @@ pub(crate) struct DrawUniforms {
     pub label_centre: [f32; 4],
     pub label_right: [f32; 4],
     pub label_up: [f32; 4],
+    /// Cloth's fabric: its tile (m, across and along the weave), how strongly its relief
+    /// tilts the light, and 0.
+    pub weave: [f32; 4],
 }
 
 /// Where a label's picture goes: its rectangle's middle, its across and up directions (unit)
@@ -93,6 +97,17 @@ pub struct StudioMesh {
     /// Each vertex's distance (mm) from the nearest sewn seam, if the mesh has seams (see
     /// [`Self::set_seams`]); empty for none.
     pub(crate) seams: Vec<f32>,
+    /// Each vertex's place on its fabric's weave (m), if the mesh is dressed in a fabric
+    /// (see [`Self::set_weave`]); empty for none.
+    pub(crate) weave: Vec<[f32; 2]>,
+    /// The triangles as the fabric was cut, over the vertices (see [`Self::set_weave`]).
+    pub(crate) cut: Vec<[u32; 3]>,
+    /// The position each vertex draws (see [`Self::set_corners`]); empty: its own index.
+    pub(crate) corners: Vec<u32>,
+    /// Which of the triangles last uploaded were turned round to wind consistently.
+    flips: Vec<bool>,
+    /// The index buffer must be written again (the cut or the corners changed).
+    indices_stale: bool,
 }
 
 impl StudioMesh {
@@ -123,10 +138,11 @@ impl StudioMesh {
         let with = |v: Vec3, w: f32| [v.x, v.y, v.z, w];
         DrawUniforms {
             colour: [r, g, b, 1.0],
-            material: [self.material.id(), 0, 0, 0],
+            material: [self.material.id(), u32::from(!self.weave.is_empty()), 0, 0],
             label_centre: with(frame.centre, 0.0),
             label_right: with(frame.right, frame.size[0]),
             label_up: with(frame.up, frame.size[1]),
+            weave: [MUSLIN_TILE_M[0], MUSLIN_TILE_M[1], MUSLIN_RELIEF, 0.0],
         }
     }
 
@@ -195,6 +211,11 @@ impl StudioMesh {
             label_epoch: 0,
             bounds: (Vec3::ZERO, Vec3::ZERO),
             seams: Vec::new(),
+            weave: Vec::new(),
+            cut: Vec::new(),
+            corners: Vec::new(),
+            flips: Vec::new(),
+            indices_stale: false,
         };
         mesh.upload(queue, positions, Some(triangles));
         mesh
@@ -207,10 +228,45 @@ impl StudioMesh {
         self.seams = seams.to_vec();
     }
 
+    /// Dresses the mesh in the studio's fabric: `weave` is where each vertex lies on the
+    /// fabric's weave (m: across the grain, then along it), and `cut` the triangles over
+    /// those vertices as the fabric was cut, before any seam was welded (one for each
+    /// triangle uploaded, in the same order). With [`Self::set_corners`], a welded seam's two
+    /// sides each keep their own place on the weave while sharing a position. Takes effect at
+    /// the next upload; empty means no fabric.
+    pub fn set_weave(&mut self, weave: &[[f32; 2]], cut: &[[u32; 3]]) {
+        self.weave = weave.to_vec();
+        self.cut = cut.to_vec();
+        self.indices_stale = true;
+    }
+
+    /// Tells the mesh which position (an index into the positions uploaded) each of its
+    /// vertices draws, so that several vertices (the sides of a welded seam) can share one
+    /// position, and its normal. Only with a cut from [`Self::set_weave`]. Empty: each vertex
+    /// its own position.
+    pub fn set_corners(&mut self, corners: &[u32]) {
+        self.corners = corners.to_vec();
+        self.indices_stale = true;
+    }
+
+    /// Whether the vertices are the cut's corners rather than the positions themselves.
+    fn split(&self) -> bool {
+        !self.corners.is_empty() && !self.cut.is_empty()
+    }
+
+    /// How many vertices the mesh draws from `positions` positions.
+    fn vertex_count(&self, positions: usize) -> usize {
+        if self.split() {
+            self.corners.len()
+        } else {
+            positions
+        }
+    }
+
     /// Whether `positions` and `triangles` fit in the buffers this mesh has.
     pub(crate) fn fits(&self, positions: usize, triangles: Option<usize>) -> bool {
         let tris = triangles.unwrap_or(self.triangles.len());
-        positions <= self.vertex_capacity && tris * 3 <= self.index_capacity
+        self.vertex_count(positions) <= self.vertex_capacity && tris * 3 <= self.index_capacity
     }
 
     pub(crate) fn triangles(&self) -> &[[u32; 3]] {
@@ -225,27 +281,66 @@ impl StudioMesh {
         triangles: Option<&[[u32; 3]]>,
     ) {
         if let Some(t) = triangles {
-            self.triangles = crate::mesh::orient_consistently(t);
-            queue.write_buffer(&self.indices, 0, bytemuck::cast_slice(&self.triangles));
-            self.index_count = (self.triangles.len() * 3) as u32;
+            self.flips = orientation_flips(t);
+            self.triangles = turned(t, &self.flips);
+            self.indices_stale = true;
+        }
+        if self.indices_stale {
+            // Drawn over the cut when the vertices are its corners (a welded seam's two sides
+            // are separate vertices there), turned as the triangles themselves were.
+            let drawn = if self.split() {
+                turned(&self.cut, &self.flips)
+            } else {
+                self.triangles.clone()
+            };
+            queue.write_buffer(&self.indices, 0, bytemuck::cast_slice(&drawn));
+            self.index_count = (drawn.len() * 3) as u32;
+            self.indices_stale = false;
         }
         self.bounds = positions.iter().fold(
             (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
             |(lo, hi), p| (lo.min(*p), hi.max(*p)),
         );
-        let normals = vertex_normals(positions, &self.triangles);
-        let verts: Vec<Vertex> = positions
-            .iter()
-            .zip(&normals)
-            .enumerate()
-            .map(|(i, (p, n))| Vertex {
-                position: p.to_array(),
-                normal: n.to_array(),
-                seam: self.seams.get(i).copied().unwrap_or(NO_SEAM_MM),
-            })
-            .collect();
+        let vertex = |v: usize, p: Vec3, n: Vec3| Vertex {
+            position: p.to_array(),
+            normal: n.to_array(),
+            seam: self.seams.get(v).copied().unwrap_or(NO_SEAM_MM),
+            weave: self.weave.get(v).copied().unwrap_or([0.0; 2]),
+        };
+        let verts: Vec<Vertex> = if self.split() {
+            let normals = normals_through(positions, &self.triangles, &self.corners);
+            self.corners
+                .iter()
+                .zip(&normals)
+                .enumerate()
+                .map(|(v, (&c, n))| vertex(v, positions[c as usize], *n))
+                .collect()
+        } else {
+            let normals = vertex_normals(positions, &self.triangles);
+            positions
+                .iter()
+                .zip(&normals)
+                .enumerate()
+                .map(|(v, (p, n))| vertex(v, *p, *n))
+                .collect()
+        };
         queue.write_buffer(&self.vertices, 0, bytemuck::cast_slice(&verts));
     }
+}
+
+/// `triangles` with those marked in `flips` turned round.
+fn turned(triangles: &[[u32; 3]], flips: &[bool]) -> Vec<[u32; 3]> {
+    triangles
+        .iter()
+        .enumerate()
+        .map(|(k, t)| {
+            if flips.get(k).copied().unwrap_or(false) {
+                [t[0], t[2], t[1]]
+            } else {
+                *t
+            }
+        })
+        .collect()
 }
 
 /// A mesh's per-draw bind group: its uniforms and the picture it draws.
