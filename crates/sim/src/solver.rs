@@ -51,14 +51,17 @@ pub struct Params {
     /// Contact planes are created for particles within this distance of the body (m).
     pub collision_margin: f64,
     pub max_speed: f64,
-    /// Whether cloth keeps off cloth (layers stack, folds don't pass through themselves),
-    /// from the moment every seam has welded.
+    /// Whether cloth keeps off cloth (layers stack, folds don't pass through themselves). Along
+    /// a seam still open (within `seam_band_rings` of it) nothing is kept apart, so it can shut.
     pub self_collision: bool,
     /// How far cloth particles are kept off the other layers' triangles (m); None: half the
     /// fabric's edge length.
     pub self_collision_distance: Option<f64>,
     /// Cloth against cloth is solved every this many substeps (1: every one).
     pub self_collision_every: usize,
+    /// How many rings of particles either side of a stitch still open self-collision leaves
+    /// alone, so that the seam can pull shut through them.
+    pub seam_band_rings: usize,
     /// Friction between layers of cloth.
     pub cloth_friction: f64,
 }
@@ -92,6 +95,7 @@ impl Default for Params {
             self_collision: true,
             self_collision_distance: None,
             self_collision_every: 1,
+            seam_band_rings: 2,
             cloth_friction: 0.3,
         }
     }
@@ -154,6 +158,9 @@ pub struct Solver {
     /// For each open seam, the smallest gap it has reached and when: a seam that stops
     /// closing a little short welds anyway (`Params::weld_stall_gap`).
     seam_best: std::collections::BTreeMap<u32, (f64, f64)>,
+    /// What the band along the open seams was last marked for: the cloth's topology and how
+    /// many stitches were open (None: no band).
+    band_for: Option<(u64, usize)>,
 }
 
 impl Solver {
@@ -168,6 +175,7 @@ impl Solver {
             contacts: Vec::new(),
             body_queries: 0,
             seam_best: std::collections::BTreeMap::new(),
+            band_for: None,
         }
     }
     /// How many particles the body has been asked about so far: a settled drape asks about
@@ -212,6 +220,7 @@ impl Solver {
         let mut ph = PhaseTimes::default();
         let mut lap = Lap::start();
         if self.cloth.has_open_stitches() {
+            let topology = self.cloth.topology_version;
             if p.weld_timeout.is_some_and(|tw| t >= tw) {
                 for (group, gap) in self.cloth.open_seam_gaps() {
                     if gap > p.weld_gap {
@@ -240,9 +249,23 @@ impl Solver {
                 self.cloth.weld_groups(&weld);
             }
             // A weld renumbers the triangles' particles: any pairs found are stale.
-            if let Some(sc) = &mut self.self_contacts {
+            if self.cloth.topology_version != topology
+                && let Some(sc) = &mut self.self_contacts
+            {
                 sc.invalidate();
             }
+        }
+        // Self-collision leaves a band along every seam still open alone (see
+        // `Cloth::mark_open_band`), marked again whenever a weld changes the seams.
+        let open = (self.cloth.topology_version, self.cloth.stitches.len());
+        if self.cloth.has_open_stitches() {
+            if self.band_for != Some(open) {
+                self.cloth.mark_open_band(p.seam_band_rings);
+                self.band_for = Some(open);
+            }
+        } else if self.band_for.is_some() {
+            self.cloth.open_band.clear();
+            self.band_for = None;
         }
         lap.lap(&mut ph.weld);
         let gravity = if t < p.gravity_delay {
@@ -292,11 +315,11 @@ impl Solver {
             contacts,
             ..
         } = self;
-        // Cloth keeps off cloth once the garment is sewn. Seams pull pieces through each other
-        // on their way shut (they are arranged round the form, not sewn), and particles kept
-        // a thickness apart cannot meet: with self-collision from the start, the drafted
-        // T-shirt's seams only shut at the timeout.
-        if p.self_collision && c.spacing > 0.0 && !c.has_open_stitches() {
+        // Cloth keeps off cloth from the start, but for a band along each seam still open:
+        // seams pull pieces together through whatever lies between (they are arranged round
+        // the form, not sewn), and particles kept a thickness apart could never meet. Waiting
+        // for the seams instead let a sleeve fold through itself on its way to the armhole.
+        if p.self_collision && c.spacing > 0.0 {
             let d = self_collision_distance(&p, c.spacing);
             if self_contacts.as_ref().is_none_or(|s| s.distance != d) {
                 *self_contacts = Some(SelfContacts::new(d));

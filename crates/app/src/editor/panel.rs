@@ -618,7 +618,7 @@ fn twin_offset_beside(piece: &Piece) -> Point2 {
 
 /// A one-line text box for a property. Typing edits a private copy; Enter or clicking
 /// elsewhere returns it (when it differs from `value`); Escape throws it away.
-fn text_field(
+pub(crate) fn text_field(
     ui: &mut egui::Ui,
     editing: &mut HashMap<Id, String>,
     id: Id,

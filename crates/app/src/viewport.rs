@@ -1,13 +1,15 @@
 use crate::arrange::{ArrangedScene, ScreenCamera};
 use crate::sim_runner::SimFrame;
-use crate::theme::{FABRIC, FORM_SRGB, SELECTED_FABRIC};
+use crate::theme::{
+    FABRIC, FORM_SRGB, METAL_SRGB, SEAM_SRGB, SELECTED_FABRIC, STAND_SRGB, TAPE_SRGB,
+};
 use crate::view_settings::{LightingChoice, QualityChoice, ViewSettings};
 use glam::DVec2;
 use opendrape_core::PieceId;
-use opendrape_drape::{Fabric, Stage};
+use opendrape_drape::{Fabric, FormLabel, Stage};
 use opendrape_render::colour::srgb8_to_linear;
 use opendrape_render::studio::quality::{self, Quality};
-use opendrape_render::studio::{Material, StudioMesh, StudioRenderer};
+use opendrape_render::studio::{LabelImage, Material, StudioMesh, StudioRenderer};
 use opendrape_render::{OrbitCamera, RenderTarget, target_size};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -20,6 +22,23 @@ struct ClothOnGpu {
     /// fabric again).
     fabric: Arc<Fabric>,
 }
+
+/// A picture for Assets is drawn at most this many times while its still image builds up.
+const THUMB_FRAMES: usize = 64;
+
+/// A part of the dress form, drawn in its own colour and finish.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Part {
+    Torso,
+    Seams,
+    Tapes,
+    Cap,
+    Post,
+    Label,
+}
+
+/// Edges of the stand sharper than this (radians) stay sharp.
+const STAND_CREASE: f32 = 0.7;
 
 /// What the 3D view shows besides the form.
 pub enum Show<'a> {
@@ -45,7 +64,12 @@ pub struct Viewport {
     auto_quality: Quality,
     camera: OrbitCamera,
     target: Option<(RenderTarget, egui::TextureId)>,
-    body: StudioMesh,
+    /// The form's torso, tape lines and stand.
+    form: Vec<(Part, StudioMesh)>,
+    /// The pictures drawn for Assets, kept while their egui textures are shown.
+    thumbs: Vec<RenderTarget>,
+    /// The tape lines are drawn.
+    show_tapes: bool,
     cloth: Option<ClothOnGpu>,
     /// The arranged pieces on the GPU, and the scene they were made from.
     pieces: Vec<(PieceId, StudioMesh)>,
@@ -56,22 +80,20 @@ pub struct Viewport {
 }
 
 impl Viewport {
-    pub fn new(rs: &egui_wgpu::RenderState, stage: &Stage, settings: ViewSettings) -> Self {
+    pub fn new(
+        rs: &egui_wgpu::RenderState,
+        stage: &Stage,
+        settings: ViewSettings,
+        label: &[String; 3],
+    ) -> Self {
         let mut renderer = StudioRenderer::new(&rs.device, &rs.adapter, Quality::Medium);
         let auto_quality = quality::auto(&rs.adapter.get_info(), renderer.hdr_ok());
         renderer.set_quality(settings.quality.resolve(auto_quality));
         renderer.set_lighting(settings.lighting.lighting());
-        let (positions, triangles) = stage.render_mesh();
-        let body = renderer.create_mesh(
-            &rs.device,
-            &rs.queue,
-            positions,
-            triangles,
-            srgb8_to_linear(FORM_SRGB),
-            Material::Form,
-        );
+        let form = form_meshes(&mut renderer, rs, stage, label);
         let camera = OrbitCamera {
-            target: glam::Vec3::new(0.0, 0.95, 0.0),
+            // The form's waist, in the middle of the view.
+            target: glam::Vec3::new(0.0, stage.waist_y() as f32, 0.0),
             yaw: 0.5,
             pitch: 0.12,
             distance: 2.6,
@@ -82,13 +104,84 @@ impl Viewport {
             auto_quality,
             camera,
             target: None,
-            body,
+            form,
+            thumbs: Vec::new(),
+            show_tapes: settings.show_tapes,
             cloth: None,
             pieces: Vec::new(),
             pieces_of: None,
             frames_drawn: 0,
             pointer_held: false,
         }
+    }
+
+    /// Draws the form of `stage` from now on, its size label reading `label`, and looks at its
+    /// waist.
+    pub fn set_stage(&mut self, rs: &egui_wgpu::RenderState, stage: &Stage, label: &[String; 3]) {
+        self.form = form_meshes(&mut self.renderer, rs, stage, label);
+        self.camera.target.y = stage.waist_y() as f32;
+    }
+
+    /// The form's size label reads `label` from now on.
+    pub fn set_label(&mut self, rs: &egui_wgpu::RenderState, stage: &Stage, label: &[String; 3]) {
+        if let (Some((_, mesh)), Some(frame)) = (
+            self.form.iter_mut().find(|(part, _)| *part == Part::Label),
+            stage.label(),
+        ) {
+            put_label(&mut self.renderer, rs, mesh, frame, label);
+        }
+    }
+
+    /// Shows or hides the form's measuring tapes.
+    pub fn set_show_tapes(&mut self, on: bool) {
+        self.show_tapes = on;
+    }
+
+    /// A picture of `stage`'s form, `size` points large, for Assets: seen from the front
+    /// three-quarter in the studio, its still image finished. The view's own next frame is drawn
+    /// afresh.
+    pub fn thumbnail(
+        &mut self,
+        rs: &egui_wgpu::RenderState,
+        stage: &Stage,
+        label: &[String; 3],
+        size: egui::Vec2,
+        pixels_per_point: f32,
+    ) -> egui::TextureId {
+        let (w, h) = (
+            (size.x * pixels_per_point).round().max(1.0) as u32,
+            (size.y * pixels_per_point).round().max(1.0) as u32,
+        );
+        let target = RenderTarget::new(&rs.device, w, h);
+        let meshes = form_meshes(&mut self.renderer, rs, stage, label);
+        let shown: Vec<&StudioMesh> = meshes
+            .iter()
+            .filter(|(part, _)| self.show_tapes || *part != Part::Tapes)
+            .map(|(_, mesh)| mesh)
+            .collect();
+        let camera = OrbitCamera {
+            target: glam::Vec3::new(0.0, stage.waist_y() as f32 + 0.05, 0.0),
+            yaw: 0.5,
+            pitch: 0.12,
+            distance: 2.0,
+            fov_y: 35f32.to_radians(),
+        };
+        self.renderer.set_moving(false);
+        for _ in 0..THUMB_FRAMES {
+            let drawn = self
+                .renderer
+                .render(&rs.device, &rs.queue, &target, &camera, &shown);
+            if drawn.still_done {
+                break;
+            }
+        }
+        let id = rs.renderer.write().register_native_texture(
+            &rs.device,
+            &target.color_view,
+            wgpu::FilterMode::Linear,
+        );
+        self.thumbs.push(target);
+        id
     }
 
     /// The quality level the 3D view draws at.
@@ -157,7 +250,12 @@ impl Viewport {
         }
         self.ensure_target(rs, w, h);
         let (target, texture_id) = self.target.as_ref().expect("ensure_target sets it");
-        let mut meshes = vec![&self.body];
+        let mut meshes: Vec<&StudioMesh> = self
+            .form
+            .iter()
+            .filter(|(part, _)| self.show_tapes || *part != Part::Tapes)
+            .map(|(_, mesh)| mesh)
+            .collect();
         meshes.extend(self.cloth.as_ref().map(|c| &c.mesh));
         meshes.extend(self.pieces.iter().map(|(_, m)| m));
         // A button held on the view (as it was last frame) is a drag in progress too.
@@ -297,4 +395,78 @@ impl Viewport {
         };
         self.target = Some((target, id));
     }
+}
+
+/// The parts of `stage`'s form on the GPU, each in its colour and finish (a part with no
+/// triangles is left out): the linen torso and seams, the measuring tapes, the metal cap, the
+/// dark post, and the woven size label reading `label`.
+fn form_meshes(
+    renderer: &mut StudioRenderer,
+    rs: &egui_wgpu::RenderState,
+    stage: &Stage,
+    label: &[String; 3],
+) -> Vec<(Part, StudioMesh)> {
+    let mut meshes: Vec<(Part, StudioMesh)> = [
+        (Part::Torso, stage.render_mesh(), FORM_SRGB, Material::Linen),
+        (Part::Seams, stage.seams_mesh(), SEAM_SRGB, Material::Linen),
+        (Part::Tapes, stage.tapes_mesh(), TAPE_SRGB, Material::Form),
+        (Part::Cap, stage.cap_mesh(), METAL_SRGB, Material::Metal),
+        (Part::Post, stage.stand_mesh(), STAND_SRGB, Material::Form),
+    ]
+    .into_iter()
+    .filter(|(_, (_, triangles), _, _)| !triangles.is_empty())
+    .map(|(part, (positions, triangles), colour, material)| {
+        // The stand's pieces are solids with sharp rims: keep them sharp.
+        let (positions, triangles) = if matches!(part, Part::Cap | Part::Post) {
+            opendrape_render::split_creases(positions, triangles, STAND_CREASE)
+        } else {
+            (positions.to_vec(), triangles.to_vec())
+        };
+        let mesh = renderer.create_mesh(
+            &rs.device,
+            &rs.queue,
+            &positions,
+            &triangles,
+            srgb8_to_linear(colour),
+            material,
+        );
+        (part, mesh)
+    })
+    .collect();
+    if let Some(frame) = stage.label() {
+        let mut mesh = renderer.create_mesh(
+            &rs.device,
+            &rs.queue,
+            &frame.positions,
+            &frame.triangles,
+            [1.0; 3],
+            Material::Label,
+        );
+        put_label(renderer, rs, &mut mesh, frame, label);
+        meshes.push((Part::Label, mesh));
+    }
+    meshes
+}
+
+/// Draws the size label reading `lines` onto the label's mesh.
+fn put_label(
+    renderer: &mut StudioRenderer,
+    rs: &egui_wgpu::RenderState,
+    mesh: &mut StudioMesh,
+    frame: &FormLabel,
+    lines: &[String; 3],
+) {
+    let picture = crate::form_label::picture(lines);
+    renderer.set_label(
+        &rs.device,
+        &rs.queue,
+        mesh,
+        &LabelImage {
+            image: &picture,
+            centre: frame.centre,
+            right: frame.right,
+            up: frame.up,
+            size: frame.size,
+        },
+    );
 }

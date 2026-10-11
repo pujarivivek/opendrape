@@ -1,4 +1,5 @@
 use crate::arrange::{ArrangedScene, Arranger, SceneCache, ScreenCamera};
+use crate::assets;
 use crate::diagnostics::Diagnostics;
 use crate::draping::{Draper, MenuAt, Pull};
 use crate::editor::{self, PatternEditor};
@@ -15,9 +16,11 @@ use crate::view_settings::{
 use crate::viewport::{Show, Viewport};
 use crate::workspace::{self, Workspace};
 use egui::{Key, KeyboardShortcut, Modifiers, ViewportCommand};
+use opendrape_core::{FormChoice, Units};
 use opendrape_core::{PieceId, Project};
 use opendrape_drape::DrapeQuality;
 use opendrape_drape::Stage;
+use opendrape_drape::choice::FormProblem;
 use opendrape_mesh::MeshNote;
 use opendrape_render::OrbitCamera;
 use std::path::{Path, PathBuf};
@@ -116,8 +119,16 @@ pub struct OpenDrapeApp {
     runner: Option<SimRunner>,
     fps: f32,
     editor: PatternEditor,
-    /// The form, shared with the simulation thread.
+    /// The form, shared with the simulation thread. It follows the project's form (see
+    /// [`Self::sync_stage`]).
     stage: Arc<Stage>,
+    /// A form already built for the project's next form (by Assets, or for a file being
+    /// opened), so the next sync needn't build it again.
+    next_stage: Option<Arc<Stage>>,
+    /// A form that could not be built, so it isn't tried again every frame.
+    unbuilt: Option<FormChoice>,
+    /// The form and the units its size label was last drawn for.
+    labelled: Option<(Option<FormChoice>, Units)>,
     /// The project the drape was last given (at Play, or since by an edit while draping).
     draped: Option<Arc<Project>>,
     /// The pieces as the 3D view shows them while arranging.
@@ -146,6 +157,12 @@ pub struct OpenDrapeApp {
     offered: Option<(Project, Option<PathBuf>)>,
     /// The workspace tab open; screen state only, never saved or undone.
     workspace: Workspace,
+    /// The Assets section is shown where the pattern usually is (screen state only).
+    assets_open: bool,
+    /// While Assets is open in Modeling, the left area shows the pattern, not the 3D view.
+    left_2d: bool,
+    /// The dress-form panel in Assets.
+    forms: assets::FormsPanel,
     /// How the 3D view should look (View → 3D quality), remembered between launches.
     view_settings: ViewSettings,
 }
@@ -172,7 +189,11 @@ impl OpenDrapeApp {
         let offered = recovery.take();
         let view_settings = ViewSettings::load(startup.store.dir());
         Self {
-            viewport: render_state.map(|rs| Viewport::new(rs, &stage, view_settings)),
+            viewport: render_state.map(|rs| {
+                let project = editor.doc.project();
+                let label = crate::form_label::lines(&project.form, project.units);
+                Viewport::new(rs, &stage, view_settings, &label)
+            }),
             view_settings,
             diagnostics: Diagnostics::collect(info.as_ref(), startup.decision),
             startup,
@@ -183,6 +204,9 @@ impl OpenDrapeApp {
             fps: 0.0,
             editor,
             stage,
+            next_stage: None,
+            unbuilt: None,
+            labelled: None,
             draped: None,
             arranged: SceneCache::default(),
             arranger: Arranger::default(),
@@ -197,6 +221,9 @@ impl OpenDrapeApp {
             recovery,
             offered,
             workspace: Workspace::default(),
+            assets_open: false,
+            left_2d: false,
+            forms: assets::FormsPanel::default(),
         }
     }
 
@@ -213,6 +240,58 @@ impl OpenDrapeApp {
     /// The workspace tab open.
     pub fn workspace(&self) -> Workspace {
         self.workspace
+    }
+
+    /// The Assets section is open, where the pattern usually is.
+    pub fn assets_open(&self) -> bool {
+        self.assets_open
+    }
+
+    /// Opens or closes the Assets section. Closing it puts the 3D view back on the left.
+    pub fn set_assets_open(&mut self, open: bool) {
+        self.assets_open = open;
+        if !open {
+            self.left_2d = false;
+        }
+    }
+
+    /// The left area shows the pattern (Assets is open in Modeling, switched to 2D).
+    pub fn left_shows_pattern(&self) -> bool {
+        self.left_2d && self.area_switch_shown()
+    }
+
+    /// Switches the left area to the pattern (true) or the 3D view, while the switch is shown.
+    pub fn set_left_shows_pattern(&mut self, on: bool) {
+        self.left_2d = on && self.area_switch_shown();
+    }
+
+    /// The 3D | 2D switch is shown: Assets is open in Modeling, the only tab with a pattern.
+    fn area_switch_shown(&self) -> bool {
+        self.assets_open && self.workspace == Workspace::Modeling
+    }
+
+    /// Shows the workspace `ws`: a tab is a stage to look at, so Assets closes.
+    fn show_workspace(&mut self, ws: Workspace) {
+        self.workspace = ws;
+        self.set_assets_open(false);
+    }
+
+    /// The 3D | 2D switch along the top of the left area. Its buttons read "3D" and "2D", like
+    /// the tool strips' captions, and are named for what they show.
+    fn area_switch(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            for (pattern, text, name) in [
+                (false, tr!("area-3d"), tr!("area-3d-name")),
+                (true, tr!("area-2d"), tr!("area-2d-name")),
+            ] {
+                let button = ui.add(egui::Button::selectable(self.left_2d == pattern, text));
+                ui.ctx()
+                    .accesskit_node_builder(button.id, |node| node.set_label(name));
+                if button.clicked() {
+                    self.left_2d = pattern;
+                }
+            }
+        });
     }
 
     pub fn set_workspace(&mut self, workspace: Workspace) {
@@ -267,6 +346,126 @@ impl OpenDrapeApp {
     /// The form garments are arranged round and draped on.
     pub fn stage(&self) -> &Arc<Stage> {
         &self.stage
+    }
+
+    /// Changes the project's dress form to `choice`, as one undo step: pieces that would
+    /// start inside the new form are moved straight out of it (see [`Stage::reseat`]). The 3D
+    /// view, the drape and Place at follow on the next frame. Nothing changes when the form
+    /// can't be built.
+    pub fn apply_form(&mut self, choice: FormChoice) -> Result<(), FormProblem> {
+        let stage = Stage::for_choice(&choice)?;
+        self.editor.doc.edit(|p| {
+            p.form = choice;
+            stage.reseat(p);
+        });
+        self.next_stage = Some(Arc::new(stage));
+        Ok(())
+    }
+
+    /// Carries out what the student asked for in Assets' dress-form panel. A form that can't
+    /// be built (a custom measurement out of its range) changes nothing and says why.
+    fn form_action(&mut self, action: Option<assets::FormAction>, now: &FormChoice, units: Units) {
+        match action {
+            Some(assets::FormAction::Pick(choice)) => {
+                if let Err(e) = self.apply_form(choice) {
+                    self.forms
+                        .refused(now, assets::form_problem_text(&e, units));
+                }
+            }
+            Some(assets::FormAction::ShowTapes(on)) => {
+                self.view_settings.show_tapes = on;
+                self.view_settings.save(self.startup.store.dir());
+                if let Some(viewport) = self.viewport.as_mut() {
+                    viewport.set_show_tapes(on);
+                }
+            }
+            None => {}
+        }
+    }
+
+    /// Draws each form's picture for Assets the first time it is wanted (there are none without
+    /// a 3D view: the cards show an icon then).
+    fn draw_thumbnails(&mut self, frame: &eframe::Frame, ctx: &egui::Context) {
+        let (Some(viewport), Some(rs)) = (self.viewport.as_mut(), frame.wgpu_render_state()) else {
+            return;
+        };
+        for id in opendrape_body::form::Form::IDS {
+            if self.forms.thumbs.contains_key(id) {
+                continue;
+            }
+            let Some(stage) =
+                opendrape_drape::choice::base_choice(id).and_then(|c| Stage::for_choice(&c).ok())
+            else {
+                continue;
+            };
+            let label = crate::form_label::lines(
+                stage.choice().expect("a form's stage"),
+                self.editor.doc.project().units,
+            );
+            let texture =
+                viewport.thumbnail(rs, &stage, &label, assets::THUMB, ctx.pixels_per_point());
+            self.forms.thumbs.insert(id.to_string(), texture);
+        }
+    }
+
+    /// The stage follows the project's form: after a form change, an undo or redo of one, or
+    /// opening a file. The drape restarts, a held drag ends, and the 3D view draws the new
+    /// form.
+    fn sync_stage(&mut self, frame: &eframe::Frame) {
+        let wanted = &self.editor.doc.project().form;
+        if self.stage.choice() == Some(wanted) || self.unbuilt.as_ref() == Some(wanted) {
+            return;
+        }
+        let ready = self
+            .next_stage
+            .take()
+            .filter(|s| s.choice() == Some(wanted));
+        let stage = match ready {
+            Some(stage) => stage,
+            None => match Stage::for_choice(wanted) {
+                Ok(stage) => Arc::new(stage),
+                Err(e) => {
+                    crate::startup_log::stage(format_args!("form: kept the last one: {e}"));
+                    self.unbuilt = Some(wanted.clone());
+                    return;
+                }
+            },
+        };
+        self.unbuilt = None;
+        self.stop_pulling();
+        self.stop_arranging();
+        if let Some(runner) = &self.runner {
+            runner.set_stage(stage.clone());
+        }
+        self.draped = None;
+        self.arranged = SceneCache::default();
+        if self.editor.stage.is_some() {
+            self.editor.stage = Some(stage.clone());
+        }
+        let project = self.editor.doc.project();
+        let label = crate::form_label::lines(&project.form, project.units);
+        if let (Some(viewport), Some(rs)) = (self.viewport.as_mut(), frame.wgpu_render_state()) {
+            viewport.set_stage(rs, &stage, &label);
+        }
+        self.stage = stage;
+    }
+
+    /// The form's size label follows the project's units (its form is followed by
+    /// [`Self::sync_stage`]).
+    fn sync_label(&mut self, frame: &eframe::Frame) {
+        let now = (
+            self.stage.choice().cloned(),
+            self.editor.doc.project().units,
+        );
+        if self.labelled.as_ref() == Some(&now) {
+            return;
+        }
+        if let (Some(choice), Some(viewport), Some(rs)) =
+            (&now.0, self.viewport.as_mut(), frame.wgpu_render_state())
+        {
+            viewport.set_label(rs, &self.stage, &crate::form_label::lines(choice, now.1));
+        }
+        self.labelled = Some(now);
     }
 
     /// The pieces as the 3D view shows them while arranging.
@@ -721,9 +920,10 @@ impl OpenDrapeApp {
 
     /// The menus, then the workspace tabs. Returns the file action chosen and the workspace
     /// picked (from the View menu or a tab).
-    fn menu_bar(&mut self, ui: &mut egui::Ui) -> (Option<FileAction>, Option<Workspace>) {
+    fn menu_bar(&mut self, ui: &mut egui::Ui) -> (Option<FileAction>, Option<Workspace>, bool) {
         let mut action = None;
         let mut picked = None;
+        let mut toggle_assets = false;
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button(tr!("menu-file"), |ui| {
                 let items = [
@@ -766,6 +966,12 @@ impl OpenDrapeApp {
                 self.lighting_menu(ui);
                 self.drape_quality_menu(ui);
             });
+            toggle_assets = ui
+                .add(egui::Button::selectable(
+                    self.assets_open,
+                    tr!("menu-assets"),
+                ))
+                .clicked();
             ui.menu_button(tr!("menu-help"), |ui| {
                 if ui.button(tr!("menu-about")).clicked() {
                     self.show_about = true;
@@ -787,7 +993,7 @@ impl OpenDrapeApp {
                 picked = Some(ws);
             }
         });
-        (action, picked)
+        (action, picked, toggle_assets)
     }
 
     /// View → 3D quality: Auto (saying which level it picked), Basic, Medium, High. The choice
@@ -1057,7 +1263,17 @@ impl OpenDrapeApp {
         let Some(path) = answer else { return }; // cancelled
         match purpose {
             DialogFor::Open => match opendrape_io::load(&path) {
-                Ok(project) => self.replace_project(project, Some(path), false),
+                // A form this version can't build is refused, never swapped for another.
+                Ok(project) => match Stage::for_choice(&project.form) {
+                    Ok(stage) => {
+                        self.next_stage = Some(Arc::new(stage));
+                        self.replace_project(project, Some(path), false);
+                    }
+                    Err(e) => {
+                        let why = assets::form_problem_text(&e, project.units);
+                        self.error = Some(tr!("error-open", error = why));
+                    }
+                },
                 Err(e) => self.error = Some(tr!("error-open", error = e.to_string())),
             },
             DialogFor::SaveAs(then) => {
@@ -1156,7 +1372,14 @@ impl OpenDrapeApp {
             });
         });
         let Some(restore) = answer else { return };
-        if let (true, Some((project, from))) = (restore, self.offered.take()) {
+        if let (true, Some((mut project, from))) = (restore, self.offered.take()) {
+            // The work matters more than the form it was on: one that can't be built (a later
+            // version renamed it, say) gives way to the default, and the student is told.
+            if let Err(e) = Stage::for_choice(&project.form) {
+                let why = assets::form_problem_text(&e, project.units);
+                self.error = Some(tr!("recovery-form-replaced", error = why));
+                project.form = FormChoice::default();
+            }
             self.replace_project(project, from, true);
         }
         // `take` above cleared the offer, whichever the answer was.
@@ -1293,18 +1516,20 @@ fn choice_label(choice: GpuChoice) -> String {
 impl eframe::App for OpenDrapeApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.sync_stage(frame);
+        self.sync_label(frame);
         self.guard_close(&ctx);
         let shortcut = self.file_shortcut(&ctx);
         let workspace_key = self.workspace_shortcut(&ctx);
-        let (menu, picked) = egui::Panel::top("menu_bar")
+        let (menu, picked, toggle_assets) = egui::Panel::top("menu_bar")
             .show(ui, |ui| self.menu_bar(ui))
             .inner;
         // A key switches at once: it is never taken while something is being typed. A tab
         // or View menu click switches at the end of the frame, after the pattern table has seen
         // it as a click elsewhere (so a field being typed in keeps its text, and an open
-        // number box closes) like any other.
+        // number box closes) like any other. So does the Assets button.
         if let Some(ws) = workspace_key {
-            self.workspace = ws;
+            self.show_workspace(ws);
         }
         if let Some(action) = menu.or(shortcut).or(self.queued.take()) {
             self.file_action(action, frame, &ctx);
@@ -1321,16 +1546,52 @@ impl eframe::App for OpenDrapeApp {
         // gizmo handle, a pin, the fabric), or an Undo or Delete typed while one is held, is not
         // also the pattern table's.
         let view_drag = self.arranger.is_dragging() || self.draper.is_dragging();
+        // Decided before the question or message box below has run: when one of them is closed
+        // by Escape this frame, that Escape must not reach the pattern table too.
+        let keys_free = |app: &Self| {
+            app.pending.is_none() && app.error.is_none() && app.offered.is_none() && !view_drag
+        };
+        let pattern_left = self.left_shows_pattern();
+        let keys_left = keys_free(self);
         egui::Panel::left("view_3d")
             .resizable(true)
             .default_size(width * 0.42)
             .size_range(240.0..=(width - 360.0).max(240.0))
-            .show(ui, |ui| self.view_3d(ui, frame));
-        // Decided here, before the question or message box below has run: when one of them is
-        // closed by Escape this frame, that Escape must not reach the pattern table too.
-        let keys_for_pattern =
-            self.pending.is_none() && self.error.is_none() && self.offered.is_none() && !view_drag;
+            .show(ui, |ui| {
+                if self.area_switch_shown() {
+                    egui::Panel::top("area_switch").show(ui, |ui| self.area_switch(ui));
+                }
+                if pattern_left {
+                    // `view_3d` keeps this up to date while it is shown.
+                    self.editor.draping = self.is_draping();
+                    self.editor.ui_with_keys(ui, keys_left);
+                } else {
+                    self.view_3d(ui, frame);
+                }
+            });
+        let keys_for_pattern = keys_free(self);
+        let mut close_assets = false;
         match self.workspace {
+            _ if self.assets_open => {
+                // The pattern table isn't on the right: Undo and Redo are the app's, unless the
+                // pattern is on the left (where its own keys are).
+                if keys_for_pattern && !pattern_left {
+                    self.app_undo_redo(&ctx);
+                }
+                self.draw_thumbnails(frame, &ctx);
+                let units = self.editor.doc.project().units;
+                let choice = self.editor.doc.project().form.clone();
+                let (forms, stage) = (&mut self.forms, &self.stage);
+                let show_tapes = self.view_settings.show_tapes;
+                let action = egui::CentralPanel::default()
+                    .show(ui, |ui| {
+                        close_assets = assets::header(ui);
+                        ui.separator();
+                        forms.ui(ui, &choice, stage.measured(), units, show_tapes)
+                    })
+                    .inner;
+                self.form_action(action, &choice, units);
+            }
             Workspace::Modeling => {
                 egui::CentralPanel::default()
                     .show(ui, |ui| self.editor.ui_with_keys(ui, keys_for_pattern));
@@ -1342,8 +1603,12 @@ impl eframe::App for OpenDrapeApp {
                 egui::CentralPanel::default().show(ui, |ui| workspace::coming_soon(ui, ws));
             }
         }
+        if close_assets || toggle_assets {
+            self.set_assets_open(!self.assets_open && !close_assets);
+            ctx.request_repaint();
+        }
         if let Some(ws) = picked {
-            self.workspace = ws;
+            self.show_workspace(ws);
             ctx.request_repaint(); // show it now, not on the next input
         }
         self.unsaved_changes_modal(frame, &ctx);

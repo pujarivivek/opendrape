@@ -8,6 +8,8 @@
 //!   app drapes at); without it, the solver's defaults and the flags below
 //! - `--edge-mm 12` fabric edge length for the drafted scenes
 //! - `--substeps 20`, `--iterations 2`, `--seam-compliance 0.01` for the drafted scenes
+//! - `--seam-band 2` rings along an open seam that self-collision leaves alone (a huge number:
+//!   no self-collision until every seam has welded)
 //! - `--threads 1` the rayon pool's size (1 stands in for a slow laptop)
 //!
 //! Each scene prints a human line, its phases, and one `BENCH` line for scripts.
@@ -30,6 +32,7 @@ struct Opts {
     iterations: Option<usize>,
     seam_compliance: Option<f64>,
     stretch_compliance: Option<f64>,
+    seam_band: Option<usize>,
     threads: Option<usize>,
 }
 
@@ -43,6 +46,7 @@ fn parse() -> Opts {
         iterations: None,
         seam_compliance: None,
         stretch_compliance: None,
+        seam_band: None,
         threads: None,
     };
     let mut args = std::env::args().skip(1);
@@ -71,6 +75,7 @@ fn parse() -> Opts {
             "--stretch-compliance" => {
                 o.stretch_compliance = Some(value().parse().expect("stretch compliance"))
             }
+            "--seam-band" => o.seam_band = Some(value().parse().expect("seam band rings")),
             "--threads" => o.threads = Some(value().parse().expect("threads")),
             other => panic!("unknown option {other}"),
         }
@@ -139,6 +144,7 @@ fn main() {
         iterations: o.iterations.unwrap_or(defaults.iterations),
         seam_compliance: o.seam_compliance.unwrap_or(defaults.seam_compliance),
         stretch_compliance: o.stretch_compliance.unwrap_or(defaults.stretch_compliance),
+        seam_band_rings: o.seam_band.unwrap_or(defaults.seam_band_rings),
         ..defaults
     };
     let mesh = MeshParams {
@@ -175,7 +181,13 @@ fn main() {
                     drafted::t_shirt(&stage).project
                 };
                 let mut drape = match o.quality {
-                    Some(q) => Drape::at_quality(Arc::new(project), &stage, q),
+                    Some(q) => {
+                        let params = Params {
+                            seam_band_rings: o.seam_band.unwrap_or(q.params().seam_band_rings),
+                            ..q.params()
+                        };
+                        Drape::with(Arc::new(project), &stage, &q.mesh_params(), params)
+                    }
                     None => Drape::with(Arc::new(project), &stage, &mesh, params),
                 };
                 let collider = stage.drape_collider();

@@ -2518,6 +2518,8 @@ dependencies = [
  "glam",
  "i18n-embed",
  "i18n-embed-fl",
+ "image",
+ "opendrape-body",
  "opendrape-core",
  "opendrape-drape",
  "opendrape-geom",
@@ -4725,7 +4727,6 @@ version = "0.1.0"
 dependencies = [
  "glam",
  "image",
- "opendrape-body",
 ]
 
 [[package]]

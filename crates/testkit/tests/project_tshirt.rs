@@ -1,13 +1,14 @@
-//! M4b's drape gate: a T-shirt drafted the way a student would draft it, draped on the bundled
-//! body through the same code the app runs (`opendrape-drape`: its `Stage` for the form, its
-//! arms and its rays, and its `Drape` for the fabric, the placements and the stitches).
+//! M4b's drape gate: a T-shirt drafted the way a student would draft it, draped on the default
+//! dress form through the same code the app runs (`opendrape-drape`: its `Stage` for the form,
+//! its imaginary arm lines and its rays, and its `Drape` for the fabric, the placements and the
+//! stitches). The form has no arms, so the sleeves hang from the armholes.
 //! - The pieces: a front and a back cut on the fold, and a mirrored pair of sleeves with a
 //!   notch at the top of the cap.
 //! - The seams: the shoulders, the sides and the sleeve's underarm sewn whole-edge (W); each
 //!   cap sewn into its armhole in two free seams (F) that meet at the cap notch. The mirror
 //!   images sew the other side.
 //! - The placing: the bodice moved up to the neck (typed), Place at front and back, and Place
-//!   at → Left arm for the sleeve (its twin goes on the right arm).
+//!   at → Left armhole for the sleeve (its twin goes to the right armhole).
 
 use opendrape_core::{PieceId, Point2};
 use opendrape_drape::{Drape, Stage};
@@ -24,7 +25,7 @@ fn p(x: f64, y: f64) -> Point2 {
 /// The form alone, for measuring how far the cloth is inside it.
 fn body(stage: &Stage) -> BodyCollider {
     let (positions, triangles) = stage.render_mesh();
-    BodyCollider::new(positions, triangles).expect("the bundled body is closed")
+    BodyCollider::new(positions, triangles).expect("the form is closed")
 }
 
 /// The largest and mean distance (mm) between the particles the solver stitches.
@@ -63,7 +64,7 @@ fn corner_at(drape: &Drape, shape: PieceId, at: Point2) -> (usize, usize) {
 }
 
 #[test]
-fn a_drafted_t_shirt_drapes_with_its_sleeves_on_the_arms() {
+fn a_drafted_t_shirt_drapes_on_the_dress_form_with_its_sleeves_hanging() {
     let stage = Stage::shared();
     let s = t_shirt(&stage);
     let mut drape = Drape::new(Arc::new(s.project.clone()), &stage);
@@ -104,22 +105,22 @@ fn a_drafted_t_shirt_drapes_with_its_sleeves_on_the_arms() {
     let held = |(t, c): (usize, usize)| x[cloth.triangles()[t][c] as usize];
     let notch_gap = (held(notch_corner) - held(shoulder_corner)).length() * 1000.0;
     eprintln!("the cap notch is {notch_gap:.2} mm from the shoulder seam's end");
-    // Every live particle of each sleeve, and how far it is from its arm's line.
-    let mut farthest: f64 = 0.0;
-    for (shape, arm) in [(s.sleeve, 0), (s.twin, 1)] {
+    // Every live particle of each sleeve: the highest, and the one most on the wrong side.
+    let (mut highest, mut crossed) = (f64::MIN, f64::MIN);
+    for (shape, side) in [(s.sleeve, 1.0), (s.twin, -1.0)] {
         let panel = drape.fabric.panel(shape).unwrap();
-        let line = stage.arms().expect("the bundled body has arms")[arm];
         let range = panel.first_particle..panel.first_particle + panel.flat.len();
         for (i, q) in x.iter().enumerate().take(range.end).skip(range.start) {
             if cloth.is_alive(i) {
-                farthest = farthest.max(line.distance(*q));
+                highest = highest.max(q.y);
+                crossed = crossed.max(-q.x * side);
             }
         }
     }
-    eprintln!(
-        "the farthest sleeve point is {:.1} cm from its arm's line",
-        farthest * 100.0
-    );
+    // The cap's top is sewn to the shoulder seam's end, at the shoulder point: the top of the
+    // arm lines.
+    let shoulder_point = stage.arms().expect("the form has arm lines")[0].shoulder.y;
+    eprintln!("the sleeves reach {highest:.3} m (the shoulder point is at {shoulder_point:.3} m)");
     assert!(!r.has_nan);
     assert!(
         r.penetration_max_mm <= 2.0 && r.penetration_p99_mm <= 1.0,
@@ -133,18 +134,22 @@ fn a_drafted_t_shirt_drapes_with_its_sleeves_on_the_arms() {
     );
     assert!(!r.open_stitches, "welded shut");
     assert!(notch_gap <= 5.0, "the cap notch is off the shoulder seam");
-    assert!(farthest <= 0.12, "a sleeve slid off its arm");
-    // The sleeves rest on the bodice instead of passing through it. What is left is a patch
-    // about 3 cm across at the top of one cap, where three seams meet at a saddle and the
-    // fabric folded through itself while the seams pulled shut (self-collision begins once
-    // they have welded). Stiff seams press that fold harder (20–70 crossings run to run); a
-    // sleeve through the bodice would be hundreds.
+    // The sleeves rest on the bodice instead of passing through it, and keep off themselves
+    // from the first frame. What is left is a patch under a centimetre across at the foot of
+    // each underarm seam, where the sleeve's two edges met through the band self-collision
+    // leaves along a seam still open (about 12 crossings); a sleeve folded through itself is
+    // 80 or more, and one through the bodice hundreds.
     let crossings = cloth_crossings(cloth);
     eprintln!("the fabric crosses itself {crossings} times");
     assert!(
-        crossings <= 100,
-        "sleeve through the bodice: {crossings} crossings"
+        crossings <= 40,
+        "a sleeve folded through itself or the bodice: {crossings} crossings"
     );
+    assert!(
+        highest < shoulder_point + 0.02,
+        "a sleeve rides above the shoulder"
+    );
+    assert!(crossed < 0.0, "a sleeve hangs across to the other side");
     assert!(
         r.kinetic_energy <= 1e-4,
         "still moving: {} J",
@@ -172,21 +177,26 @@ fn the_drafted_t_shirt_drapes_the_same_every_time() {
 }
 
 #[test]
-fn the_sleeves_start_round_the_arms_clear_of_the_body() {
+fn the_sleeves_start_round_the_arm_lines_clear_of_the_form() {
     let stage = Stage::shared();
     let s = t_shirt(&stage);
     let drape = Drape::new(Arc::new(s.project), &stage);
     let x = drape.solver.cloth().positions();
     for (shape, arm) in [(s.sleeve, 0), (s.twin, 1)] {
         let panel = drape.fabric.panel(shape).unwrap();
-        let line = stage.arms().expect("the bundled body has arms")[arm];
+        let line = stage.arms().expect("the form has arm lines")[arm];
         let start = &x[panel.first_particle..panel.first_particle + panel.flat.len()];
         assert!(start.iter().all(|q| stage.signed_distance(*q) > 0.0));
-        // Wrapped round its arm, its top a little way down from the shoulder.
+        // Wrapped round its arm line, its top at the shoulder or a little way down.
+        let reach = opendrape_mesh::place::ARM_FALLBACK_RADIUS_M + 0.03;
+        assert!(start.iter().all(|q| line.distance(*q) < reach));
         let top = start
             .iter()
             .map(|q| (*q - line.shoulder).dot(line.direction))
             .fold(f64::MAX, f64::min);
-        assert!((0.0..0.1).contains(&top), "the top {top:.3} m down the arm");
+        assert!(
+            (-0.005..0.1).contains(&top),
+            "the top {top:.3} m down the arm line"
+        );
     }
 }

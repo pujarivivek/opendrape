@@ -1908,6 +1908,19 @@ fn a_gizmo_drag_still_held_when_play_is_pressed_ends_where_it_is() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = harness(dir.path(), SharedState::default());
     h.run();
+    // Zoomed out, so the big piece's handles are on screen.
+    let play = h.get_by_label("Play").rect();
+    h.hover_at(egui::pos2(play.min.x - 150.0, play.max.y + 200.0));
+    for _ in 0..10 {
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -60.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.step();
+    }
+    h.run();
     h.state_mut().editor_mut().doc.edit(|p| {
         p.add_piece(Piece::rectangle(
             PieceId(0),
@@ -2460,4 +2473,189 @@ fn the_camera_is_free_at_once_when_the_drape_ends_under_a_held_pull() {
     pointer_button(&mut h, start + DVec2::new(40.0, 0.0), false);
     h.step();
     assert_ne!(h.state().orbit_camera().unwrap().yaw, yaw, "it turned");
+}
+
+// The dress form: the 3D view, the drape and Place at follow the project's form, through an
+// edit, its undo and redo, and opening a file.
+
+fn cmd_key(h: &mut App, key: egui::Key, shift: bool) {
+    h.key_press_modifiers(
+        egui::Modifiers {
+            shift,
+            ..egui::Modifiers::COMMAND
+        },
+        key,
+    );
+    h.run();
+}
+
+#[test]
+fn a_form_change_swaps_the_stage_and_undo_and_redo_follow_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    assert_eq!(
+        h.state().stage().choice(),
+        Some(&opendrape_core::FormChoice::default())
+    );
+    let men = opendrape_drape::choice::base_choice("men-torso").unwrap();
+    h.state_mut().apply_form(men.clone()).unwrap();
+    h.run();
+    assert_eq!(h.state().stage().choice(), Some(&men));
+    assert!(h.state().editor().doc.is_dirty());
+    // The 3D view looks at the new form's waist.
+    let waist = h.state().stage().waist_y() as f32;
+    assert!((h.state().orbit_camera().unwrap().target.y - waist).abs() < 1e-6);
+    cmd_key(&mut h, egui::Key::Z, false);
+    assert_eq!(
+        h.state().stage().choice(),
+        Some(&opendrape_core::FormChoice::default())
+    );
+    cmd_key(&mut h, egui::Key::Z, true);
+    assert_eq!(h.state().stage().choice(), Some(&men));
+}
+
+#[test]
+fn a_form_change_while_draping_restarts_the_drape_on_the_new_form() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    drape_the_sewn_pieces(&mut h);
+    let us14 = opendrape_drape::choice::chart_choice("women-torso", "classic", "US 14").unwrap();
+    h.state_mut().apply_form(us14.clone()).unwrap();
+    h.run();
+    assert!(
+        !h.state().is_draping(),
+        "the drape restarts, as after Reset"
+    );
+    assert!(h.state().sim_frame().is_none(), "no cloth of the old form");
+    assert_eq!(h.state().stage().choice(), Some(&us14));
+    // Play drapes on the new form.
+    h.get_by_label("Play").click();
+    h.run_steps(2);
+    wait_until(&mut h, "the drape on the new form", |a| {
+        a.sim_frame().is_some_and(|f| f.time > 0.1)
+    });
+}
+
+#[test]
+fn a_form_that_cannot_be_built_is_refused_and_says_why() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    h.run();
+    let mut choice = opendrape_core::FormChoice::default();
+    choice.measurements.insert("waist".into(), 2000.0);
+    assert!(h.state_mut().apply_form(choice).is_err());
+    h.run();
+    assert_eq!(
+        h.state().editor().doc.project().form,
+        opendrape_core::FormChoice::default()
+    );
+    assert!(!h.state().editor().doc.is_dirty());
+}
+
+#[test]
+fn opening_a_file_puts_its_form_in_the_3d_view_and_one_that_cannot_be_built_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let men = opendrape_drape::choice::base_choice("men-torso").unwrap();
+    let mut good = Project::new();
+    good.form = men.clone();
+    let good_file = dir.path().join("men.odp");
+    opendrape_io::save(&good, &good_file).unwrap();
+    let mut bad = Project::new();
+    bad.form.id = "child-torso".into();
+    let bad_file = dir.path().join("child.odp");
+    opendrape_io::save(&bad, &bad_file).unwrap();
+    let mut h = harness_with(
+        dir.path(),
+        SharedState::default(),
+        FileDialogs::scripted(vec![Some(good_file), Some(bad_file)]),
+    );
+    h.run();
+    file_menu(&mut h, "Open…");
+    h.run();
+    assert_eq!(h.state().stage().choice(), Some(&men));
+    file_menu(&mut h, "Open…");
+    h.run();
+    h.get_by_label_contains("child-torso");
+    assert_eq!(
+        h.state().editor().doc.project().form,
+        men,
+        "the open file stays"
+    );
+    assert_eq!(h.state().stage().choice(), Some(&men));
+}
+
+#[test]
+fn opening_a_file_with_a_size_the_form_cannot_take_says_so_in_plain_words() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut too_big = Project::new();
+    too_big.form.size = opendrape_core::FormSize::Custom;
+    too_big.form.measurements.insert("waist".into(), 2000.0);
+    let file = dir.path().join("big.odp");
+    opendrape_io::save(&too_big, &file).unwrap();
+    let mut h = harness_with(
+        dir.path(),
+        SharedState::default(),
+        FileDialogs::scripted(vec![Some(file)]),
+    );
+    h.run();
+    file_menu(&mut h, "Open…");
+    h.run();
+    h.get_by_label_contains("Waist can be");
+    assert!(h.query_by_label_contains("mm on this form").is_none());
+    assert_eq!(
+        h.state().editor().doc.project().form,
+        opendrape_core::FormChoice::default()
+    );
+}
+
+#[test]
+fn unsaved_work_whose_form_cannot_be_built_is_restored_on_the_default_form_and_says_so() {
+    let (config, rescue) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut work = Project::new();
+    work.add_piece(Piece::rectangle(
+        PieceId(0),
+        "Front",
+        Point2::new(0.0, 0.0),
+        300.0,
+        500.0,
+    ));
+    work.form.id = "child-torso".into();
+    Recovery::new(Some(rescue.path())).write(&work, None);
+    let mut h = harness_recovering(config.path(), rescue.path());
+    h.run();
+    h.get_by_label("Restore").click();
+    h.run();
+    assert_eq!(pieces(&h), 1, "the work is back");
+    assert_eq!(
+        h.state().editor().doc.project().form,
+        opendrape_core::FormChoice::default()
+    );
+    assert_eq!(
+        h.state().stage().choice(),
+        Some(&opendrape_core::FormChoice::default())
+    );
+    h.get_by_label_contains("child-torso");
+    h.get_by_label_contains("default dress form");
+}
+
+#[test]
+fn the_pattern_on_the_left_knows_when_a_form_change_ends_the_drape() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(dir.path(), SharedState::default());
+    drape_the_sewn_pieces(&mut h);
+    assert!(h.state().editor().draping);
+    // The drape keeps the window redrawing: a few frames at a time.
+    h.state_mut().set_assets_open(true);
+    h.run_steps(2);
+    h.state_mut().set_left_shows_pattern(true);
+    h.run_steps(2);
+    let us14 = opendrape_drape::choice::chart_choice("women-torso", "classic", "US 14").unwrap();
+    h.state_mut().apply_form(us14).unwrap();
+    h.run_steps(2);
+    assert!(!h.state().is_draping());
+    assert!(
+        !h.state().editor().draping,
+        "Place at works again, with the 3D view hidden"
+    );
 }

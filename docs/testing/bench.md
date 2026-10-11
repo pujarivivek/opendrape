@@ -202,3 +202,47 @@ removed per pass on 12 mm cloth).
 `seam_probe` on the drafted skirt: the hinges across the seam read 0.1° at the median and
 2.8° at worst; on the T-shirt 0.2° median, with only the cap fold above a few degrees. The
 seam no longer presses the cap fold (9 crossings), and the cost is unchanged.
+
+## Self-collision from the first frame (2026-10-11, after merging main)
+
+Merging main brought the dress form's new sleeve placement (pieces are moved clear of the form
+away from its centre line, and the form has no arms, so the sleeves hang from the armholes).
+On it the T-shirt gate failed with 140 crossings: the sleeves had folded through themselves at
+the foot of their underarm seams. A probe over time showed the folds forming at 0.4–0.5 s,
+while the seams were still pulling shut and before self-collision began (it waited for every
+seam to weld), and self-collision cannot undo a fold once made.
+
+Now cloth keeps off cloth from the first frame, but for a band along each seam still open:
+particles within `Params::seam_band_rings` rings (2) of a stitch, and any triangle they are a
+corner of, are in no pair until their seam welds (`Cloth::open_band`, marked again at each
+weld). The band's width, swept on the T-shirt at Normal (every seam still welded on its own
+at 0.53 s whatever the width):
+
+| Band (rings) | Crossings at 6 s |
+|---|---|
+| 0 | 23 |
+| 1 | 12 |
+| 2 | 12 |
+| 3 | 84 |
+| every seam welded first (the old rule) | 140 |
+
+What is left at 2 rings is a patch under a centimetre across at the foot of each underarm
+seam, where the sleeve's two edges met through the band. The gate is now ≤ 40 crossings.
+
+Cost on one thread at Normal, same code, the old rule stood in for by a band wider than the
+garment (`drape_bench --seam-band 100000`):
+
+| Scene | Rule | ms/frame | of which self-collision | Pairs found | Strain p99 | Crossings | Seam crease |
+|---|---|---|---|---|---|---|---|
+| drafted-tshirt | after every weld (old) | 14.4 | 6.3 | 445 times | 5.1 % | 140 | 2.7° |
+| drafted-tshirt | from the first frame, band 2 | 15.6 | 7.5 | 629 times | 3.1 % | 12 | 1.2° |
+| drafted-skirt | after every weld (old) | 14.1 | 5.4 | 486 times | 3.6 % | 0 | 0.4° |
+| drafted-skirt | from the first frame, band 2 | 15.6 | 6.8 | 646 times | 3.2 % | 0 | 0.3° |
+
+- The extra 1.3–1.5 ms/frame is the pairs being found again during the half second of
+  sewing, when the pieces move fastest. A particle along an open seam is in no pair, so its
+  travel no longer triggers a look.
+- Both scenes cost more than Phase 4's table for other reasons: the skirt is main's fuller
+  draft (5,002 particles, was 3,868), and the T-shirt's sleeves, hanging from the armholes
+  with no arm inside, swing for a second and a half, finding pairs again 4–10 times a frame
+  as they fall. Finding them again only for what moved remains the next saving.

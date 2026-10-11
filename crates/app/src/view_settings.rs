@@ -95,6 +95,10 @@ pub struct ViewSettings {
     pub lighting: LightingChoice,
     #[serde(default)]
     pub drape: DrapeQualityChoice,
+    /// The dress form's measuring tapes are drawn (Assets → Show measuring tapes); its seams
+    /// always are.
+    #[serde(default)]
+    pub show_tapes: bool,
 }
 
 impl ViewSettings {
@@ -129,6 +133,7 @@ mod tests {
             quality: QualityChoice::Basic,
             lighting: LightingChoice::Soft,
             drape: DrapeQualityChoice::Auto,
+            show_tapes: false,
         };
         assert!(s.save(Some(dir.path())));
         assert_eq!(ViewSettings::load(Some(dir.path())), s);
@@ -190,6 +195,22 @@ mod tests {
             ViewSettings::load(Some(dir.path())).drape,
             DrapeQualityChoice::Auto
         );
+    }
+
+    #[test]
+    fn measuring_tapes_are_hidden_unless_turned_on_and_old_files_still_load() {
+        // The approved forms show their seams, not their measuring tapes.
+        assert!(!ViewSettings::default().show_tapes);
+        let dir = tempfile::tempdir().unwrap();
+        // Saved before measuring tapes were a setting.
+        std::fs::write(dir.path().join("view.json"), r#"{ "quality": "basic" }"#).unwrap();
+        assert!(!ViewSettings::load(Some(dir.path())).show_tapes);
+        let on = ViewSettings {
+            show_tapes: true,
+            ..ViewSettings::default()
+        };
+        assert!(on.save(Some(dir.path())));
+        assert!(ViewSettings::load(Some(dir.path())).show_tapes);
     }
 
     #[test]

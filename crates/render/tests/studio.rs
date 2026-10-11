@@ -43,6 +43,7 @@ fn plain() -> Overrides {
         contact: Some(false),
         rim: None,
         grid: Some(false),
+        bump: None,
         force_ldr: false,
     }
 }
@@ -1162,4 +1163,144 @@ fn a_tall_figures_shadow_is_not_cut_off() {
             "{along} m along: {shadowed} vs open floor {open}"
         );
     }
+}
+
+// The dress form's finishes: linen, brushed metal and its woven size label.
+
+/// The mean and spread (standard deviation) of luminance over the middle `n`×`n` pixels.
+fn centre_spread(img: &image::RgbaImage, n: u32) -> (f32, f32) {
+    let (cx, cy) = (img.width() / 2 - n / 2, img.height() / 2 - n / 2);
+    let values: Vec<f32> = (cy..cy + n)
+        .flat_map(|y| (cx..cx + n).map(move |x| (x, y)))
+        .map(|(x, y)| luminance(img.get_pixel(x, y)))
+        .collect();
+    let mean = values.iter().sum::<f32>() / values.len() as f32;
+    let var = values.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / values.len() as f32;
+    (mean, var.sqrt())
+}
+
+/// A big card 15 cm in front of the centre line (where the form's front is), in `material`,
+/// seen from `distance` m.
+fn card_shot(material: Material, distance: f32) -> image::RgbaImage {
+    let g = gpu();
+    let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::Medium);
+    r.set_overrides(plain());
+    let linen = srgb8_to_linear([208, 200, 193]);
+    let m = mesh(&mut r, &g, card(1.0, 0.15, 1.2), linen, material);
+    let target = RenderTarget::new(&g.device, 200, 200);
+    render_still(&mut r, &g, &target, &front_camera(distance), &[&m])
+}
+
+#[test]
+fn linen_shows_its_weave_up_close_and_never_shimmers_far_away() {
+    // Close, at about 0.8 mm a pixel (a thread a pixel: too fine to show itself), the slubs of
+    // uneven yarn show as a fine grain (about 2 levels of 255 here; a plain surface: none).
+    let (form_mean, form_spread) = centre_spread(&card_shot(Material::Form, 0.25), 80);
+    let (linen_mean, linen_spread) = centre_spread(&card_shot(Material::Linen, 0.25), 80);
+    assert!(
+        linen_spread > form_spread + 1.5,
+        "a weave: {linen_spread} against {form_spread}"
+    );
+    assert!(
+        (linen_mean - form_mean).abs() < 0.04 * form_mean,
+        "{linen_mean} {form_mean}"
+    );
+    // Far off (several threads a pixel): the weave has faded, leaving the yarn's soft mottle,
+    // and the colour is the same.
+    let (far_form, _) = centre_spread(&card_shot(Material::Form, 4.0), 60);
+    let (far_linen, far_spread) = centre_spread(&card_shot(Material::Linen, 4.0), 60);
+    assert!(far_spread < 6.0, "no shimmer: {far_spread}");
+    assert!(
+        (far_linen - far_form).abs() < 0.04 * far_form,
+        "{far_linen} {far_form}"
+    );
+}
+
+#[test]
+fn brushed_metal_reflects_the_studio_with_soft_highlights() {
+    let g = gpu();
+    let shot = |material| {
+        let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::Medium);
+        r.set_overrides(plain());
+        let silver = srgb8_to_linear([200, 200, 202]);
+        let m = mesh(
+            &mut r,
+            &g,
+            sphere(Vec3::new(0.0, 1.0, 0.0), 0.2),
+            silver,
+            material,
+        );
+        let target = RenderTarget::new(&g.device, 200, 200);
+        render_still(&mut r, &g, &target, &front_camera(1.5), &[&m])
+    };
+    let brightest = |img: &image::RgbaImage| img.pixels().map(luminance).fold(0.0, f32::max);
+    let (metal, matte) = (shot(Material::Metal), shot(Material::Form));
+    assert!(
+        brightest(&metal) > brightest(&matte) + 5.0,
+        "a highlight: {} against {}",
+        brightest(&metal),
+        brightest(&matte)
+    );
+    assert_ne!(centre_mean(&metal, 40), centre_mean(&matte, 40));
+}
+
+#[test]
+fn a_label_shows_its_picture_across_its_rectangle() {
+    use opendrape_render::studio::LabelImage;
+    let g = gpu();
+    let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::Medium);
+    r.set_overrides(plain());
+    let mut m = mesh(&mut r, &g, card(1.0, 0.0, 0.4), [1.0; 3], Material::Label);
+    // Red on the left half, blue on the right.
+    let picture = image::RgbaImage::from_fn(64, 32, |x, _| {
+        if x < 32 {
+            image::Rgba([220, 30, 30, 255])
+        } else {
+            image::Rgba([30, 30, 220, 255])
+        }
+    });
+    r.set_label(
+        &g.device,
+        &g.queue,
+        &mut m,
+        &LabelImage {
+            image: &picture,
+            centre: Vec3::new(0.0, 1.0, 0.0),
+            right: Vec3::X,
+            up: Vec3::Y,
+            size: [0.4, 0.4],
+        },
+    );
+    let target = RenderTarget::new(&g.device, 200, 200);
+    let img = render_still(&mut r, &g, &target, &front_camera(1.0), &[&m]);
+    let (left, right) = (img.get_pixel(80, 100), img.get_pixel(120, 100));
+    assert!(left[0] > left[2] + 60, "red on the left: {left:?}");
+    assert!(right[2] > right[0] + 60, "blue on the right: {right:?}");
+}
+
+#[test]
+fn linen_has_depth_its_slubs_catch_the_light() {
+    let shot = |bump: bool| {
+        let g = gpu();
+        let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::Medium);
+        r.set_overrides(Overrides {
+            bump: Some(bump),
+            ..plain()
+        });
+        let linen = srgb8_to_linear([208, 200, 193]);
+        let m = mesh(&mut r, &g, card(1.0, 0.15, 1.2), linen, Material::Linen);
+        let target = RenderTarget::new(&g.device, 200, 200);
+        render_still(&mut r, &g, &target, &front_camera(0.25), &[&m])
+    };
+    let (_, flat) = centre_spread(&shot(false), 80);
+    let (_, bumped) = centre_spread(&shot(true), 80);
+    assert!(bumped > flat + 0.5, "depth: {bumped} against {flat}");
+    // And still no shimmer from far off.
+    let g = gpu();
+    let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::Medium);
+    r.set_overrides(plain());
+    let m = mesh(&mut r, &g, card(1.0, 0.15, 1.2), [0.6; 3], Material::Linen);
+    let target = RenderTarget::new(&g.device, 200, 200);
+    let far = render_still(&mut r, &g, &target, &front_camera(4.0), &[&m]);
+    assert!(centre_spread(&far, 60).1 < 6.0);
 }

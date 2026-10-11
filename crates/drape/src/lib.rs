@@ -14,4 +14,7 @@ pub use build::{
     DENSITY_KG_M2, Drape, DrapeNote, Fabric, FabricPanel, PIN_COMPLIANCE, build_drape,
 };
 pub use quality::DrapeQuality;
-pub use stage::{Arm, FORM_ARM_LEAN_DEG, FORM_ARM_LENGTH_M, FORM_ARM_OUT_M, Stage};
+pub use stage::{
+    Arm, FORM_ARM_LEAN_DEG, FORM_ARM_LENGTH_M, FORM_ARM_OUT_M, FormLabel, LABEL_ABOVE_BOTTOM_M,
+    LABEL_SIZE_M, Stage,
+};

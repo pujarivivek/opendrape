@@ -175,7 +175,7 @@ fn place_at_left_arm_puts_a_sleeve_round_it_and_its_twin_round_the_other_as_one_
     let mut h = harness_with_form();
     let (sleeve, twin) = with_sleeves(&mut h);
     right_click(&mut h, 250.0, 200.0);
-    h.get_by_label("Place at left arm").click();
+    h.get_by_label("Place at left armhole").click();
     h.run();
     let p = placement(&h, sleeve).expect("placed");
     let r = p.curve.expect("curved round the arm");
@@ -224,7 +224,7 @@ fn while_draping_placements_are_not_offered() {
     type_into(&mut h, "Position Y", "100");
     assert_eq!(placement(&h, id), None, "the field is greyed out");
     right_click(&mut h, 250.0, 300.0);
-    h.get_by_label("Place at left arm").click();
+    h.get_by_label("Place at left armhole").click();
     h.run();
     assert_eq!(placement(&h, id), None, "and so is Place at…");
 }
@@ -279,7 +279,7 @@ fn on_a_form_without_arms_place_at_arm_is_greyed_out_and_says_why() {
     h.run();
     let (sleeve, twin) = with_sleeves(&mut h);
     right_click(&mut h, 250.0, 200.0);
-    for label in ["Place at left arm", "Place at right arm"] {
+    for label in ["Place at left armhole", "Place at right armhole"] {
         assert!(
             h.get_by_label(label).accesskit_node().is_disabled(),
             "{label}"
@@ -290,7 +290,7 @@ fn on_a_form_without_arms_place_at_arm_is_greyed_out_and_says_why() {
             .accesskit_node()
             .is_disabled()
     );
-    h.get_by_label("Place at left arm").click();
+    h.get_by_label("Place at left armhole").click();
     h.run();
     assert_eq!((placement(&h, sleeve), placement(&h, twin)), (None, None));
     // Asked for anyway, it changes nothing and the notice says why.
@@ -299,7 +299,10 @@ fn on_a_form_without_arms_place_at_arm_is_greyed_out_and_says_why() {
     h.run();
     assert_eq!((placement(&h, sleeve), placement(&h, twin)), (None, None));
     assert_eq!(h.state().doc.can_undo(), undo_before, "not an undo step");
-    assert_eq!(h.state().notice.as_deref(), Some("This form has no arms."));
+    assert_eq!(
+        h.state().notice.as_deref(),
+        Some("This form has no armholes to place a sleeve at.")
+    );
     // The other places still work on it.
     h.state_mut().place_at(sleeve, place::PlaceAt::Front);
     assert!(placement(&h, sleeve).is_some_and(|p| p.curve.is_some()));

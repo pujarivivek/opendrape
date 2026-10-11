@@ -9,6 +9,7 @@ mod line_tool;
 mod notch_tool;
 mod paint;
 mod panel;
+pub(crate) use panel::text_field;
 mod pins;
 mod placing;
 mod seams;

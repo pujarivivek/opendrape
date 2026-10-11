@@ -3,6 +3,7 @@
 
 use opendrape_body::form::{BuiltForm, Chart, Form, Quality, SizeError};
 use opendrape_core::{FormChoice, FormSize};
+use std::sync::OnceLock;
 
 /// Why a choice can't be built.
 #[derive(Clone, Debug, PartialEq)]
@@ -26,13 +27,34 @@ impl std::fmt::Display for FormProblem {
 
 impl std::error::Error for FormProblem {}
 
+/// The bundled form `id`, read from its file once.
+pub fn form(id: &str) -> Option<&'static Form> {
+    static FORMS: OnceLock<Vec<Form>> = OnceLock::new();
+    FORMS
+        .get_or_init(|| {
+            Form::IDS
+                .iter()
+                .filter_map(|id| Form::bundled(id))
+                .collect()
+        })
+        .iter()
+        .find(|f| f.file().id == id)
+}
+
+/// Every bundled chart, read from its file once.
+pub fn bundled_charts() -> &'static [Chart] {
+    static CHARTS: OnceLock<Vec<Chart>> = OnceLock::new();
+    CHARTS.get_or_init(Chart::bundled)
+}
+
 /// The form's charts, in picker order, each with its kind (`classic`, `everyday`): the part of
 /// its id after the form's.
 pub fn charts(form_id: &str) -> Vec<(String, Chart)> {
     let prefix = format!("{form_id}-");
-    Chart::for_form(form_id)
-        .into_iter()
-        .filter_map(|c| Some((c.id.strip_prefix(&prefix)?.to_string(), c)))
+    bundled_charts()
+        .iter()
+        .filter(|c| c.form == form_id)
+        .filter_map(|c| Some((c.id.strip_prefix(&prefix)?.to_string(), c.clone())))
         .collect()
 }
 
@@ -52,13 +74,12 @@ pub fn chart_choice(form_id: &str, kind: &str, label: &str) -> Option<FormChoice
 
 /// The form at the size it was shaped at, from its Classic chart.
 pub fn base_choice(form_id: &str) -> Option<FormChoice> {
-    let form = Form::bundled(form_id)?;
-    chart_choice(form_id, "classic", &form.file().base_size)
+    chart_choice(form_id, "classic", &form(form_id)?.file().base_size)
 }
 
 /// The girth sizes are known by: the form's first input (`bust`, or `chest`).
 pub fn girth_name(form_id: &str) -> Option<String> {
-    Form::bundled(form_id)?
+    form(form_id)?
         .inputs()
         .into_iter()
         .next()
@@ -90,7 +111,7 @@ pub fn with_measurement(choice: &FormChoice, name: &str, mm: f64) -> FormChoice 
 
 /// The form `choice` names, built at its measurements.
 pub fn build_form(choice: &FormChoice) -> Result<BuiltForm, FormProblem> {
-    let form = Form::bundled(&choice.id).ok_or_else(|| FormProblem::Unknown(choice.id.clone()))?;
+    let form = form(&choice.id).ok_or_else(|| FormProblem::Unknown(choice.id.clone()))?;
     form.build(&choice.measurements, Quality::Standard)
         .map_err(FormProblem::Size)
 }
@@ -174,5 +195,16 @@ mod tests {
         assert!(chart_choice("women-torso", "classic", "US 99").is_none());
         assert!(chart_choice("women-torso", "nordic", "US 8").is_none());
         assert!(build_form(&FormChoice::default()).is_ok());
+    }
+    #[test]
+    fn the_bundled_forms_and_charts_are_read_once() {
+        // The Assets panel asks for them every frame: parsing 100 KB of JSON each time would
+        // cost a weak laptop several milliseconds a frame.
+        let a = form("women-torso").unwrap();
+        let b = form("women-torso").unwrap();
+        assert!(std::ptr::eq(a, b));
+        assert!(form("child-torso").is_none());
+        assert_eq!(a.file().id, "women-torso");
+        assert!(std::ptr::eq(bundled_charts(), bundled_charts()));
     }
 }

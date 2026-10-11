@@ -11,7 +11,9 @@
 //! seam (a stitched pair and the neighbours of each end, which a weld joins); and a particle
 //! and a triangle of its own panel whose corners all lie at least one and a half edge
 //! lengths from it on the pattern, so that a panel's own neighbourhood, held by its links, is
-//! never pushed about.
+//! never pushed about. While a seam is still pulling shut, nothing within a few rings of it
+//! (`Cloth::open_band`) is kept apart from anything: the pieces have to pass through whatever
+//! lies between them to meet. Everywhere else cloth keeps off cloth from the first frame.
 
 use crate::cloth::Cloth;
 use glam::DVec3;
@@ -81,13 +83,17 @@ impl SelfContacts {
     /// found (or they never were, or the triangles have changed). Returns whether it did.
     pub(crate) fn refresh(&mut self, c: &Cloth) -> bool {
         let m2 = self.margin * self.margin;
+        // A particle along a seam still open is in no pair, nor is any triangle it is a
+        // corner of, however fast the seam pulls it: its travel changes nothing.
+        let banded = |i: usize| c.open_band.get(i).copied().unwrap_or(false);
         let stale = self.topology != Some(c.topology_version)
             || self.built_at.len() != c.x.len()
             || c.x
                 .iter()
                 .zip(&self.built_at)
                 .zip(&c.alive)
-                .any(|((x, at), &alive)| alive && x.distance_squared(*at) > m2);
+                .enumerate()
+                .any(|(i, ((x, at), &alive))| alive && !banded(i) && x.distance_squared(*at) > m2);
         if stale {
             self.rebuild(c);
         }
@@ -320,6 +326,10 @@ impl SelfContacts {
 
 /// Whether particle `i` is kept a thickness off triangle `tri` (see the module doc).
 fn kept_apart(c: &Cloth, i: usize, tri: &[u32; 3]) -> bool {
+    // Along a seam still open nothing is kept apart: the seam has to shut.
+    if !c.open_band.is_empty() && (c.open_band[i] || tri.iter().any(|&k| c.open_band[k as usize])) {
+        return false;
+    }
     tri.iter().all(|&k| {
         let k = k as usize;
         if c.panel[i] == c.panel[k] {
@@ -488,10 +498,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_strip_folded_onto_itself_opens_to_a_thickness() {
-        // A 10 × 1 cell strip folded in half at cell 5: the two halves lie 2 mm apart.
-        let h = 0.01;
+    /// A 10 × 1 cell strip (cells `h`) folded in half at cell 5: the two halves lie 2 mm apart.
+    fn folded_strip(h: f64) -> Panel {
         let mut panel = sheet(10, 1, h, 0.0, 0.0, 0.0);
         for (k, p) in panel.positions.iter_mut().enumerate() {
             let i = k % 11;
@@ -499,12 +507,80 @@ mod tests {
                 *p = DVec3::new((10 - i) as f64 * h, 0.002, p.z);
             }
         }
+        panel
+    }
+
+    #[test]
+    fn a_strip_folded_onto_itself_opens_to_a_thickness() {
         let mut b = ClothBuilder::new(0.15);
-        b.add_panel(&panel, 1.0);
+        b.add_panel(&folded_strip(0.01), 1.0);
         let mut s = Solver::new(b.build(), still());
         for _ in 0..60 {
             s.step(None);
         }
+        assert_fold_opened(&s);
+    }
+
+    #[test]
+    fn the_fold_still_opens_while_a_seam_elsewhere_is_open() {
+        // The folded strip, and a metre away two squares sewn together but held apart (both
+        // ends of the stitch pinned), so that seam can never shut: cloth keeps off cloth
+        // meanwhile, everywhere but along the open seam.
+        let mut b = ClothBuilder::new(0.15);
+        b.add_panel(&folded_strip(0.01), 1.0);
+        let p = b.add_panel(&sheet(1, 1, 0.01, 1.0, 0.0, 0.0), 1.0);
+        let q = b.add_panel(&sheet(1, 1, 0.01, 1.5, 0.0, 0.0), 1.0);
+        b.stitch((p, 1), (q, 0));
+        b.pin((p, 1));
+        b.pin((q, 0));
+        let params = Params {
+            weld_timeout: None,
+            ..still()
+        };
+        let mut s = Solver::new(b.build(), params);
+        for _ in 0..60 {
+            s.step(None);
+        }
+        assert!(s.cloth().has_open_stitches(), "held open");
+        let band = s.cloth().open_band.iter().filter(|&&b| b).count();
+        assert!(
+            (2..=8).contains(&band),
+            "the band is the two squares: {band}"
+        );
+        assert!(
+            !s.cloth().open_band[..22].iter().any(|&b| b),
+            "not the strip"
+        );
+        assert_fold_opened(&s);
+    }
+
+    #[test]
+    fn the_band_along_an_open_seam_is_its_stitches_and_their_rings() {
+        // Two 3 × 3 sheets (4 × 4 points, `j * 4 + i`) sewn along their facing columns.
+        let mut b = ClothBuilder::new(0.15);
+        let p = b.add_panel(&sheet(3, 3, 0.012, 0.0, 1.0, 0.0), 1.0);
+        let q = b.add_panel(&sheet(3, 3, 0.012, 0.136, 1.0, 0.0), 1.0);
+        for j in 0..4 {
+            b.stitch((p, j * 4 + 3), (q, j * 4));
+        }
+        let mut c = b.build();
+        assert!(c.open_band.is_empty(), "unmarked");
+        c.mark_open_band(0);
+        let marked = |c: &Cloth| c.open_band.iter().filter(|&&b| b).count();
+        assert_eq!(marked(&c), 8, "the stitched columns");
+        c.mark_open_band(1);
+        assert_eq!(marked(&c), 16, "and the columns beside them");
+        for k in 0..32 {
+            let (i, second) = (k % 4, k >= 16);
+            assert_eq!(c.open_band[k], if second { i <= 1 } else { i >= 2 }, "{k}");
+        }
+        c.weld_stitches();
+        c.mark_open_band(1);
+        assert!(c.open_band.is_empty(), "nothing open");
+    }
+
+    /// The folded strip's halves lie a thickness apart along the fold.
+    fn assert_fold_opened(s: &Solver) {
         let c = s.cloth();
         let (d, x) = (
             self_collision_distance(s.params(), c.spacing()),

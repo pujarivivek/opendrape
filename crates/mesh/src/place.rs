@@ -377,14 +377,17 @@ const RESEAT_STEP_M: f64 = 0.01;
 /// ...until all are [`PLACE_GAP_M`] clear, but no further than this (m).
 pub const RESEAT_MAX_M: f64 = 0.3;
 
-/// `placement` moved straight out, along the piece's front (`rotation` · +z), by the least
-/// multiple of [`RESEAT_STEP_M`] that puts every point of `shape` [`PLACE_GAP_M`] clear of
-/// the form (`distance` is its signed distance, negative inside). A curved piece's curve grows
-/// by the same amount, so it stays wrapped round the same axis. Unchanged when every point is
+/// `placement` moved straight out, away from the form (`away`, a unit direction, out from the
+/// form's centre line through the piece), by the least multiple of [`RESEAT_STEP_M`] that puts
+/// every point of `shape` [`PLACE_GAP_M`] clear of the form (`distance` is its signed distance,
+/// negative inside). A piece facing outwards (its front, `rotation` · +z, within about 45° of
+/// `away`, as Place at leaves it) moves along its front instead, and a curved one's curve grows
+/// by as much, so it stays wrapped round the same axis. Unchanged when every point is
 /// [`RESEAT_GAP_M`] clear already, or when nothing within [`RESEAT_MAX_M`] clears it.
 pub fn moved_clear(
     shape: &Shape,
     placement: &Placement,
+    away: DVec3,
     distance: &dyn Fn(DVec3) -> f64,
 ) -> Placement {
     let outline = geom::outline_points(&shape.piece, 0.5);
@@ -400,14 +403,16 @@ pub fn moved_clear(
     if nearest(placement) >= RESEAT_GAP_M {
         return *placement;
     }
-    let out = rotation(placement) * DVec3::Z;
+    let front = rotation(placement) * DVec3::Z;
+    let facing_out = front.dot(away) > std::f64::consts::FRAC_1_SQRT_2;
+    let out = if facing_out { front } else { away };
     let steps = (RESEAT_MAX_M / RESEAT_STEP_M).round() as usize;
     (1..=steps)
         .map(|k| {
             let d = k as f64 * RESEAT_STEP_M;
             Placement {
                 position: (position(placement) + out * d).to_array(),
-                curve: placement.curve.map(|r| r + d),
+                curve: placement.curve.map(|r| if facing_out { r + d } else { r }),
                 ..*placement
             }
         })
@@ -1306,7 +1311,7 @@ mod tests {
         // A cylinder of radius 0.2 round the y axis: the piece (wrapped at 0.15 round it) is
         // inside it.
         let distance = |q: DVec3| q.x.hypot(q.z) - 0.2;
-        let moved = moved_clear(&shape, &placed, &distance);
+        let moved = moved_clear(&shape, &placed, DVec3::Z, &distance);
         let r = moved.curve.unwrap();
         assert!(
             (moved.position[2] - r).abs() < 1e-9,
@@ -1317,11 +1322,11 @@ mod tests {
             "{r}"
         );
         // Clear already: unchanged.
-        assert_eq!(moved_clear(&shape, &moved, &distance), moved);
+        assert_eq!(moved_clear(&shape, &moved, DVec3::Z, &distance), moved);
         // A flat piece moves along its front.
         let flat = Placement::at([0.0, 1.0, 0.1]);
         let plane = |q: DVec3| q.z - 0.15;
-        let out = moved_clear(&shape, &flat, &plane);
+        let out = moved_clear(&shape, &flat, DVec3::Z, &plane);
         assert!((out.position[2] - 0.18).abs() < 1e-9, "{out:?}");
         assert_eq!(
             (out.position[0], out.position[1], out.curve),
@@ -1334,6 +1339,6 @@ mod tests {
         let shape = one_rect();
         let placed = Placement::at([0.0, 1.0, 0.0]);
         let everywhere = |_: DVec3| -1.0;
-        assert_eq!(moved_clear(&shape, &placed, &everywhere), placed);
+        assert_eq!(moved_clear(&shape, &placed, DVec3::Z, &everywhere), placed);
     }
 }

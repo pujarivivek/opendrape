@@ -10,11 +10,13 @@ you drafted for M4b (or draft it again from that checklist).
 
 - [ ] **Sleeves rest on the bodice.** Press **Play**. Once the seams have shut and the shirt
       hangs, orbit round: the sleeves sit on the bodice at the armholes and the hem hangs
-      clear. Before this build a sleeve passed through the bodice. (One small fold at the
-      top of a cap, where three seams meet, may still poke through: that is a known limit.)
+      clear. Before this build a sleeve passed through the bodice. (A few points at the foot
+      of each underarm seam, where the sleeve's edges met on their way shut, may still poke
+      through: that is a known limit.)
 - [ ] **Seams are flat.** Look along the side seams and the shoulder seams: a smooth join,
       no sharp crease and no zigzag. The seams shut one at a time as each pulls closed, in
-      about half a second, with gravity starting just after.
+      about half a second, with gravity starting just after. While they shut, the fabric
+      already keeps off itself everywhere but right along the seams.
 - [ ] **Seams show as stitch lines.** Zoom in on a seam: a fine line runs along it, a
       shallow groove with a soft crest beside it, like a sewn seam on a real garment. It is
       shading only (the fabric is still flat there), and an unsewn edge has no line.

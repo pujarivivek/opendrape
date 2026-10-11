@@ -1,6 +1,6 @@
 //! M4a's drape gate: a skirt drafted the way a student would (a front cut on the fold, a
 //! mirrored pair of back panels, the side seams and the centre back sewn, each piece moved to
-//! waist height and Placed at the front or back of the form) is draped on the bundled body
+//! waist height and Placed at the front or back of the form) is draped on the default dress form
 //! through the same code the app runs (`opendrape-drape`: its `Stage` for the form, its frame,
 //! its floor and its surface-distance ray, and its `build_drape` for the fabric, the
 //! placements and the stitches).
@@ -31,7 +31,7 @@ fn cloth(stage: &Stage) -> (Solver, usize) {
 /// The form alone, for measuring how far the cloth is inside it.
 fn body(stage: &Stage) -> BodyCollider {
     let (positions, triangles) = stage.render_mesh();
-    BodyCollider::new(positions, triangles).expect("the bundled body is closed")
+    BodyCollider::new(positions, triangles).expect("the form is closed")
 }
 
 /// The largest and mean distance (mm) between the particles the solver stitches.
@@ -122,9 +122,16 @@ fn a_drafted_skirt_drapes_on_the_form_without_poking_through_and_settles() {
         "still moving: {} J",
         r.kinetic_energy
     );
+    // Held up at the waist, and no lower at the hem than its slanted side seams reach (61 cm
+    // from the waist, where the centre is 55: the hem dips at the sides, as on an A-line whose
+    // hem hasn't been trued), with a little give.
+    let side_seam = (drafted::SKIRT_LENGTH_MM.powi(2)
+        + (drafted::SKIRT_HEM_QUARTER_MM - drafted::SKIRT_WAIST_QUARTER_MM).powi(2))
+    .sqrt();
+    let lowest = drafted::SKIRT_WAIST_Y - side_seam / 1000.0 - 0.04;
     assert!(
-        r.lowest_y > 0.4 && r.highest_y > 1.0,
-        "slid down: {}..{}",
+        r.lowest_y > lowest && r.highest_y > 1.0,
+        "slid down: {}..{} (lowest allowed {lowest:.3})",
         r.lowest_y,
         r.highest_y
     );

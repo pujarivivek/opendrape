@@ -12,6 +12,10 @@ use opendrape_mesh::place::PlaceAt;
 pub const SKIRT_WAIST_Y: f64 = 1.03;
 /// The skirt's length (mm).
 pub const SKIRT_LENGTH_MM: f64 = 550.0;
+/// A quarter of the skirt's waist and of its hem (mm): the front half's width at each (the
+/// fold is the other half). Drafted for the default form's hips (93 cm), with room over them.
+pub const SKIRT_WAIST_QUARTER_MM: f64 = 177.5;
+pub const SKIRT_HEM_QUARTER_MM: f64 = 440.0;
 /// Where the bodice's neck points go (m): on the base of the neck.
 pub const NECK_Y: f64 = 1.36;
 
@@ -19,7 +23,7 @@ fn p(x: f64, y: f64) -> Point2 {
     Point2::new(x, y)
 }
 
-/// The skirt: a front half on the fold (hem 300, waist 177.5, 550 long, the fold its left edge),
+/// The skirt: a front half on the fold (hem 440, waist 177.5, 550 long, the fold its left edge),
 /// a "Back left" (side seam slanted on its left, centre back straight on its right) and its
 /// mirror image to its right. Side seams: the front's right edge to the back's slanted edge,
 /// both starting at the hem (the mirror image sews the other side). Centre back: the back to
@@ -29,7 +33,7 @@ pub fn skirt(stage: &Stage) -> Project {
     let mut front = Piece::polygon(
         PieceId(0),
         "Front",
-        &[p(0.0, 0.0), p(300.0, 0.0), p(177.5, 550.0), p(0.0, 550.0)],
+        &[p(0.0, 0.0), p(440.0, 0.0), p(177.5, 550.0), p(0.0, 550.0)],
     );
     front.fold = Some(3);
     let front = pr.add_piece(front);
@@ -37,10 +41,10 @@ pub fn skirt(stage: &Stage) -> Project {
         PieceId(0),
         "Back left",
         &[
-            p(400.0, 0.0),
-            p(700.0, 0.0),
-            p(700.0, 550.0),
-            p(522.5, 550.0),
+            p(500.0, 0.0),
+            p(940.0, 0.0),
+            p(940.0, 550.0),
+            p(762.5, 550.0),
         ],
     ));
     let twin = pr

@@ -65,6 +65,9 @@ pub struct Cloth {
     /// Pairs across a seam (each stitched pair, and the neighbours of either end) that are
     /// never pushed apart by self-collision, sorted.
     pub(crate) excluded: Vec<(u32, u32)>,
+    /// Particles within `Params::seam_band_rings` rings of a stitch still open: self-collision
+    /// leaves them alone, so the seam can shut (empty: none).
+    pub(crate) open_band: Vec<bool>,
 }
 
 pub struct ClothBuilder {
@@ -426,6 +429,43 @@ impl Cloth {
     /// Welds every seam whose stitches are all within `gap` (m): each stitched pair merges
     /// into one particle and the constraints are rebuilt on the welded mesh, so a closed seam
     /// behaves like continuous fabric with zero gap. Returns the seams welded.
+    /// Marks the particles within `rings` rings (over the fabric's links) of either end of a
+    /// stitch still open, for self-collision to leave alone: an empty band when none is open.
+    pub(crate) fn mark_open_band(&mut self, rings: usize) {
+        if self.stitches.is_empty() {
+            self.open_band.clear();
+            return;
+        }
+        let mut ring: Vec<Vec<u32>> = vec![Vec::new(); self.x.len()];
+        for l in self.stretch.iter().chain(&self.shear) {
+            ring[l.a as usize].push(l.b);
+            ring[l.b as usize].push(l.a);
+        }
+        let mut band = vec![false; self.x.len()];
+        let mut frontier: Vec<u32> = Vec::new();
+        for s in &self.stitches {
+            for k in [s.a, s.b] {
+                if !band[k as usize] {
+                    band[k as usize] = true;
+                    frontier.push(k);
+                }
+            }
+        }
+        for _ in 0..rings {
+            let mut next = Vec::new();
+            for &f in &frontier {
+                for &n in &ring[f as usize] {
+                    if !band[n as usize] {
+                        band[n as usize] = true;
+                        next.push(n);
+                    }
+                }
+            }
+            frontier = next;
+        }
+        self.open_band = band;
+    }
+
     pub fn weld_closed(&mut self, gap: f64) -> Vec<u32> {
         let closed: Vec<u32> = self
             .open_seam_gaps()

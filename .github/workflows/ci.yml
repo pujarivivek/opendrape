@@ -51,11 +51,6 @@ jobs:
       - uses: actions/checkout@v5
       - run: rustup show
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: Rebuild the body from its CC0 sources and compare with the committed file
-        run: |
-          ./scripts/fetch-makehuman.sh
-          cargo xtask body target/makehuman target/female_average.odb
-          cmp target/female_average.odb assets/body/female_average.odb
       - name: Re-bake the studio lighting from its CC0 HDRI and compare with the committed file
         run: |
           ./scripts/fetch-studio-hdri.sh

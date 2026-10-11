@@ -73,8 +73,17 @@ pub struct BuiltForm {
     pub torso: BodyMesh,
     /// Tape-line ribbons, for drawing only.
     pub tapes: BodyMesh,
+    /// The same, apart: fine sewn seams along the tape lines that aren't girths (centre front
+    /// and back, princess lines, side and shoulder seams, neckline, armholes)...
+    pub seams: BodyMesh,
+    /// ...and the measuring tapes round the girths (bust or chest, waist, hips).
+    pub girth_tapes: BodyMesh,
     /// Neck cap, rod, knob, pole and base, for drawing only. Each piece is closed.
     pub stand: BodyMesh,
+    /// The same, by finish: the metal neck cap and its rod...
+    pub cap: BodyMesh,
+    /// ...and the dark knob, pole and base.
+    pub post: BodyMesh,
     /// Landmark positions, metres; off-centre landmarks also as `<name>_R` on the right side.
     pub landmarks: BTreeMap<String, DVec3>,
     /// Station heights, metres.
@@ -158,9 +167,20 @@ impl Form {
         let rings = &trim.rings;
         let landmarks = landmarks(&self.torso, rings);
         let tapes = tape::tapes(&self.torso, rings);
+        let is_girth = |t: &tape::Tape| {
+            let name = t.name.strip_suffix("_R").unwrap_or(&t.name);
+            matches!(self.torso.tapes.get(name), Some(TapeDef::Ring { .. }))
+        };
+        let (girths, seams): (Vec<tape::Tape>, Vec<tape::Tape>) =
+            tapes.iter().cloned().partition(is_girth);
+        let (cap, post) = stand::stand_finishes(&self.torso, &base, rings, &trim.wall);
         Ok(BuiltForm {
             torso: rings.mesh(),
             tapes: tape::ribbons(&tapes, rings),
+            seams: tape::ribbons_of_width(&seams, rings, tape::SEAM_HALF_WIDTH),
+            girth_tapes: tape::ribbons(&girths, rings),
+            cap,
+            post,
             stand: stand::stand(&self.torso, &base, rings, &trim.wall),
             stations: self
                 .torso
@@ -237,6 +257,49 @@ mod tests {
 
     fn own_size(f: &Form) -> Measurements {
         f.base_measurements(Quality::Standard)
+    }
+
+    #[test]
+    fn the_seams_and_the_measuring_tapes_are_apart_and_the_seams_are_thin() {
+        let f = form();
+        let b = f.build(&own_size(&f), Quality::Standard).unwrap();
+        assert!(!b.seams.triangles.is_empty() && !b.girth_tapes.triangles.is_empty());
+        // Together they are every tape line: the ring tapes measure, the rest are sewn seams.
+        assert_eq!(
+            b.seams.positions.len() + b.girth_tapes.positions.len(),
+            b.tapes.positions.len()
+        );
+        let rings = f
+            .file()
+            .tapes
+            .values()
+            .filter(|t| matches!(t, TapeDef::Ring { .. }))
+            .count();
+        // Each ring tape: two edges of 96 points (the standard ring has 96 around).
+        assert_eq!(b.girth_tapes.positions.len(), rings * 2 * 96);
+        // A seam is a fine line: its two edges are a seam's width apart.
+        let width = |m: &BodyMesh| m.positions[0].distance(m.positions[1]) as f64;
+        assert!((width(&b.seams) - 2.0 * tape::SEAM_HALF_WIDTH).abs() < 1e-5);
+        assert!((width(&b.girth_tapes) - 2.0 * tape::RIBBON_HALF_WIDTH).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_stand_is_a_metal_cap_on_top_and_a_dark_post_below() {
+        let f = form();
+        let b = f.build(&own_size(&f), Quality::Standard).unwrap();
+        assert_eq!(
+            b.cap.triangles.len() + b.post.triangles.len(),
+            b.stand.triangles.len()
+        );
+        assert_eq!(boundary_edge_count(&b.cap), 0);
+        assert_eq!(boundary_edge_count(&b.post), 0);
+        assert_eq!(lowest(&b.post), 0.0, "the base stands on the floor");
+        assert!(
+            f64::from(lowest(&b.cap)) > b.stations["shoulder"],
+            "the cap is on the neck"
+        );
+        // The knob is the post's top: above the cap.
+        assert!(highest(&b.post) > highest(&b.cap));
     }
 
     #[test]

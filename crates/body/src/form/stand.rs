@@ -28,11 +28,19 @@ const KNOB_HEIGHT: f64 = 0.026;
 /// up and down.
 const CAP_ABOVE: f64 = 0.004;
 const COLLAR_BELOW: f64 = 0.022;
+/// The cap's top edge is rounded this much (m)...
+const CAP_ROUND: f64 = 0.004;
+/// ...in this many steps.
+const CAP_ROUND_STEPS: usize = 6;
 /// The cap's outline is the cut seen from above, pushed out by this much all round.
 const CAP_MARGIN: f64 = 0.0025;
 /// Directions the margin is rounded with at each corner of the cut's outline (its clearance is
 /// at least `CAP_MARGIN`·cos(π/`MARGIN_STEPS`)).
 const MARGIN_STEPS: usize = 32;
+/// The cap's outline is a smooth curve with a point this often (m)...
+const CAP_OUTLINE_STEP: f64 = 0.0015;
+/// ...smoothed at least this many times (more for a coarser hull, up to four times as many).
+const CAP_SMOOTHING: usize = 12;
 /// Sides of the round pieces.
 const SIDES: u32 = 24;
 /// A vertex this close to the plane (metres) is on it.
@@ -64,27 +72,78 @@ fn cylinder(base: DVec3, radius: f64, height: f64) -> BodyMesh {
 }
 
 /// The cap: a closed solid on `outline` (counter-clockwise seen along x then z, as `convex_hull`
-/// makes it), its top `above` the plane and its foot `below` it, both straight up and down, the
-/// sides vertical. Vertices: the top outline, the foot outline, then the top and foot centres.
-fn cap_solid(plane: &Plane, outline: &[DVec2], above: f64, below: f64) -> BodyMesh {
+/// makes it), its top `above` the plane and its foot `below` it, the sides vertical. Its top
+/// edge is rounded, a quarter circle `round` in radius in [`CAP_ROUND_STEPS`] steps (none when
+/// `round` is 0). Vertices: the outline's rings from the top down (the flat top's edge first,
+/// then round the curve, then the foot), then the top and foot centres.
+fn cap_solid(plane: &Plane, outline: &[DVec2], above: f64, below: f64, round: f64) -> BodyMesh {
     let n = outline.len() as u32;
     let at = |c: DVec2, height: f64| DVec3::new(c.x, plane.y_at(c.x, c.y) + height, c.y).as_vec3();
+    let centre = outline.iter().sum::<DVec2>() / f64::from(n);
+    // Each corner's way out: the mean of its two sides' outward normals.
+    let out: Vec<DVec2> = (0..outline.len())
+        .map(|j| {
+            let len = outline.len();
+            let (prev, here, next) = (
+                outline[(j + len - 1) % len],
+                outline[j],
+                outline[(j + 1) % len],
+            );
+            let side = |a: DVec2, b: DVec2| {
+                let perp = (b - a).perp().normalize_or_zero();
+                if perp.dot(here - centre) < 0.0 {
+                    -perp
+                } else {
+                    perp
+                }
+            };
+            (side(prev, here) + side(here, next)).normalize_or_zero()
+        })
+        .collect();
+    // The rings from the top down: (how far in from the outline, height).
+    let mut rings: Vec<(f64, f64)> = if round > 0.0 {
+        (0..=CAP_ROUND_STEPS)
+            .rev()
+            .map(|k| {
+                let phi = std::f64::consts::FRAC_PI_2 * k as f64 / CAP_ROUND_STEPS as f64;
+                (round * (1.0 - phi.cos()), above - round + round * phi.sin())
+            })
+            .collect()
+    } else {
+        vec![(0.0, above)]
+    };
+    rings.push((0.0, -below));
     let mut m = BodyMesh {
         positions: vec![],
         triangles: vec![],
     };
-    for height in [above, -below] {
-        m.positions.extend(outline.iter().map(|&c| at(c, height)));
+    for &(inset, height) in &rings {
+        m.positions.extend(
+            outline
+                .iter()
+                .zip(&out)
+                .map(|(&c, &o)| at(c - o * inset, height)),
+        );
     }
-    let centre = outline.iter().sum::<DVec2>() / f64::from(n);
+    let count = rings.len() as u32;
     m.positions.push(at(centre, above));
     m.positions.push(at(centre, -below));
-    let (top, foot) = (2 * n, 2 * n + 1);
+    let (top, foot) = (count * n, count * n + 1);
+    let ring = |r: u32, j: u32| r * n + j;
     for j in 0..n {
         let k = (j + 1) % n;
-        let (a, b, c, d) = (j, k, n + k, n + j);
-        m.triangles
-            .extend([[top, b, a], [foot, d, c], [a, c, d], [a, b, c]]);
+        let last = count - 1;
+        m.triangles.extend([
+            [top, ring(0, k), ring(0, j)],
+            [foot, ring(last, j), ring(last, k)],
+        ]);
+        for r in 0..last {
+            let (u, l) = (r, r + 1);
+            m.triangles.extend([
+                [ring(u, j), ring(l, k), ring(l, j)],
+                [ring(u, j), ring(u, k), ring(l, k)],
+            ]);
+        }
     }
     m
 }
@@ -147,7 +206,90 @@ fn cap_outline(plane: &Plane, rings: &Rings, wall: &[DVec2]) -> Vec<DVec2> {
             })
         })
         .collect();
-    convex_hull(rounded)
+    smoothed(&convex_hull(rounded))
+}
+
+/// `outline` (convex, counter-clockwise) as a smooth curve: points every [`CAP_OUTLINE_STEP`]
+/// round it, each drawn towards its neighbours' middle over and over (over about the length of
+/// the hull's longest flat, at least [`CAP_SMOOTHING`] times), then the curve
+/// pushed out just as far as it takes to cover `outline` again. Metal shows every flat, and a
+/// hull is all flats and corners.
+fn smoothed(outline: &[DVec2]) -> Vec<DVec2> {
+    let n = outline.len();
+    if n < 3 {
+        return outline.to_vec();
+    }
+    let side = |j: usize| outline[j].distance(outline[(j + 1) % n]);
+    let perimeter: f64 = (0..n).map(side).sum();
+    let count = ((perimeter / CAP_OUTLINE_STEP).round() as usize).max(12);
+    let step = perimeter / count as f64;
+    let (mut j, mut walked) = (0, 0.0);
+    let mut points: Vec<DVec2> = (0..count)
+        .map(|k| {
+            let at = k as f64 * step;
+            while j + 1 < n && walked + side(j) < at {
+                walked += side(j);
+                j += 1;
+            }
+            let t = ((at - walked) / side(j).max(1e-12)).clamp(0.0, 1.0);
+            outline[j].lerp(outline[(j + 1) % n], t)
+        })
+        .collect();
+    // Smoothed over about as far as the hull's longest flat, so a coarser hull gets more.
+    let longest = (0..n).map(side).fold(0.0, f64::max);
+    let passes = ((longest / CAP_OUTLINE_STEP).powi(2) / 4.0).round() as usize;
+    for _ in 0..passes.clamp(CAP_SMOOTHING, 4 * CAP_SMOOTHING) {
+        points = (0..count)
+            .map(|k| {
+                let middle = (points[(k + count - 1) % count] + points[(k + 1) % count]) / 2.0;
+                points[k].lerp(middle, 0.5)
+            })
+            .collect();
+    }
+    // How far the farthest corner of `outline` is outside the curve (0 if none is).
+    let centre = points.iter().sum::<DVec2>() / count as f64;
+    let outward = |a: DVec2, b: DVec2| {
+        let perp = (b - a).perp().normalize_or_zero();
+        if perp.dot(a - centre) < 0.0 {
+            -perp
+        } else {
+            perp
+        }
+    };
+    let outside = |points: &[DVec2]| {
+        outline
+            .iter()
+            .map(|&q| {
+                (0..count)
+                    .map(|k| {
+                        let (a, b) = (points[k], points[(k + 1) % count]);
+                        (q - a).dot(outward(a, b))
+                    })
+                    .fold(f64::MIN, f64::max)
+            })
+            .fold(0.0, f64::max)
+    };
+    // Each point's way out: the mean of its two sides' outward normals.
+    let normals: Vec<DVec2> = (0..count)
+        .map(|k| {
+            let (prev, here, next) = (
+                points[(k + count - 1) % count],
+                points[k],
+                points[(k + 1) % count],
+            );
+            (outward(prev, here) + outward(here, next)).normalize_or_zero()
+        })
+        .collect();
+    for _ in 0..3 {
+        let gap = outside(&points);
+        if gap <= 0.0 {
+            break;
+        }
+        for (p, n) in points.iter_mut().zip(&normals) {
+            *p += *n * gap;
+        }
+    }
+    points
 }
 
 /// The five closed pieces of the stand.
@@ -169,7 +311,7 @@ fn parts(file: &FormFile, base: &Rings, rings: &Rings, wall: &[DVec2]) -> Parts 
             triangles: vec![],
         }
     } else {
-        cap_solid(&plane, &outline, CAP_ABOVE, COLLAR_BELOW)
+        cap_solid(&plane, &outline, CAP_ABOVE, COLLAR_BELOW, CAP_ROUND)
     };
     // Where the pole axis crosses the cap's top face. The face is slanted, so the rod's flat
     // end is sunk by the slope across its radius to meet it all round; the rod still stands
@@ -209,11 +351,28 @@ fn parts(file: &FormFile, base: &Rings, rings: &Rings, wall: &[DVec2]) -> Parts 
 /// pieces appended into one mesh, each of them closed.
 pub(super) fn stand(file: &FormFile, base: &Rings, rings: &Rings, wall: &[DVec2]) -> BodyMesh {
     let p = parts(file, base, rings, wall);
+    joined([p.cap, p.rod, p.knob, p.pole, p.base])
+}
+
+/// The same stand as [`stand`] in its two finishes: the metal neck cap and the rod on it, then
+/// the dark knob, pole and base.
+pub(super) fn stand_finishes(
+    file: &FormFile,
+    base: &Rings,
+    rings: &Rings,
+    wall: &[DVec2],
+) -> (BodyMesh, BodyMesh) {
+    let p = parts(file, base, rings, wall);
+    (joined([p.cap, p.rod]), joined([p.knob, p.pole, p.base]))
+}
+
+/// Closed pieces appended into one mesh.
+fn joined<const N: usize>(pieces: [BodyMesh; N]) -> BodyMesh {
     let mut out = BodyMesh {
         positions: vec![],
         triangles: vec![],
     };
-    for part in [p.cap, p.rod, p.knob, p.pole, p.base] {
+    for part in pieces {
         let offset = out.positions.len() as u32;
         out.positions.extend(part.positions);
         out.triangles
@@ -268,13 +427,19 @@ mod tests {
     }
 
     /// Sides of a cap: its vertices are the top outline, the foot outline and two centres.
+    /// Rings of a built (rounded) cap: the flat top's edge, the rest of the rounded edge down to
+    /// the top of the side, and the foot.
+    const CAP_RINGS: usize = CAP_ROUND_STEPS + 2;
+
     fn sides(cap: &BodyMesh) -> usize {
-        (cap.positions.len() - 2) / 2
+        (cap.positions.len() - 2) / CAP_RINGS
     }
 
-    /// The cap's outline seen from above, as (x, z): its top vertices.
+    /// The cap's outline seen from above, as (x, z): its foot's vertices (its sides are
+    /// vertical, and its top is rounded inside the outline).
     fn top_outline(cap: &BodyMesh) -> Vec<DVec2> {
-        cap.positions[..sides(cap)]
+        let n = sides(cap);
+        cap.positions[(CAP_RINGS - 1) * n..CAP_RINGS * n]
             .iter()
             .map(|p| DVec2::new(f64::from(p.x), f64::from(p.z)))
             .collect()
@@ -439,6 +604,44 @@ mod tests {
     }
 
     #[test]
+    fn the_caps_outline_is_a_smooth_evenly_spaced_curve() {
+        // Metal shows every flat: the outline turns a little at every point, never a lot at one.
+        for (json, extreme) in both_real_forms() {
+            for (case, s) in real_cases(json, extreme) {
+                let id = format!("{} {case}", s.file.id);
+                let outline = top_outline(&parts(&s.file, &s.base, &s.rings, &s.wall).cap);
+                let n = outline.len();
+                let lengths: Vec<f64> = (0..n)
+                    .map(|j| outline[j].distance(outline[(j + 1) % n]))
+                    .collect();
+                let mean = lengths.iter().sum::<f64>() / n as f64;
+                for (j, len) in lengths.iter().enumerate() {
+                    assert!(
+                        (0.5 * mean..2.0 * mean).contains(len),
+                        "{id}: side {j} is {len}"
+                    );
+                }
+                // No corners: a gentle turn at every point, each much like the next.
+                let turns: Vec<f64> = (0..n)
+                    .map(|j| {
+                        let (a, b, c) =
+                            (outline[(j + n - 1) % n], outline[j], outline[(j + 1) % n]);
+                        (b - a).angle_to(c - b).to_degrees().abs()
+                    })
+                    .collect();
+                for j in 0..n {
+                    let (turn, next) = (turns[j], turns[(j + 1) % n]);
+                    assert!(turn < 4.0, "{id}: turns {turn:.1}° at {j}");
+                    assert!(
+                        (turn - next).abs() < 1.0,
+                        "{id}: {turn:.1}° then {next:.1}° at {j}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn the_cap_reaches_only_its_margin_beyond_the_cut_and_the_wall() {
         for (json, extreme) in both_real_forms() {
             for (case, s) in real_cases(json, extreme) {
@@ -454,13 +657,15 @@ mod tests {
                 let front = |v: &[f64]| v.iter().copied().fold(f64::MIN, f64::max);
                 let back = |v: &[f64]| v.iter().copied().fold(f64::MAX, f64::min);
                 // Front is +z, back is −z. Past the wall and the cut together, the cap goes only
-                // its margin, front and back.
+                // its margin, front and back, and at most a millimetre and a half more where its
+                // outline is smoothed into a curve (the hull's flats would show on the metal;
+                // measured 2.9 to 4.0 mm over every form and size here).
                 let both: Vec<f64> = section.iter().chain(&wall).copied().collect();
                 let past_front = front(&outline_z) - front(&both);
                 let past_back = back(&both) - back(&outline_z);
                 for (side, r) in [("front", past_front), ("back", past_back)] {
                     assert!(
-                        (0.0023..=0.0026).contains(&r),
+                        (0.0023..=0.0045).contains(&r),
                         "{id}: the cap reaches {:.2} mm past the cut and the wall at the {side}",
                         r * 1000.0
                     );
@@ -480,21 +685,31 @@ mod tests {
                 let plane = sized_plane(&s.file, &s.base, &s.rings);
                 let cap = parts(&s.file, &s.base, &s.rings, &s.wall).cap;
                 let n = sides(&cap);
-                assert!((40..=80).contains(&n), "{id}: {n} sides");
+                // A smooth curve with a point every 1.5 mm round a neck.
+                assert!((150..=400).contains(&n), "{id}: {n} sides");
                 // 4 mm above the cut at the top and a 22 mm collar below it, measured straight
-                // up and down; the sides are vertical.
-                for (k, p) in cap.positions.iter().enumerate() {
-                    let up = f64::from(p.y) - plane.y_at(f64::from(p.x), f64::from(p.z));
-                    let want = if k < n || k == 2 * n {
-                        CAP_ABOVE
-                    } else {
-                        -COLLAR_BELOW
-                    };
-                    assert!((up - want).abs() < 1e-6, "{id}: vertex {k} at {up}");
-                }
+                // up and down; the top edge rounds over; the sides are vertical.
+                let up =
+                    |p: &glam::Vec3| f64::from(p.y) - plane.y_at(f64::from(p.x), f64::from(p.z));
+                let (top_ring, side_top, foot) = (0, CAP_ROUND_STEPS, CAP_RINGS - 1);
                 for j in 0..n {
-                    let (top, foot) = (cap.positions[j], cap.positions[n + j]);
-                    assert_eq!((top.x, top.z), (foot.x, foot.z), "{id}: side {j} leans");
+                    let at = |r: usize| cap.positions[r * n + j];
+                    assert!(
+                        (up(&at(top_ring)) - CAP_ABOVE).abs() < 1e-6,
+                        "{id}: top {j}"
+                    );
+                    assert!(
+                        (up(&at(foot)) + COLLAR_BELOW).abs() < 1e-6,
+                        "{id}: foot {j}"
+                    );
+                    let (side, foot) = (at(side_top), at(foot));
+                    assert!(
+                        (side.x - foot.x).abs() < 1e-6 && (side.z - foot.z).abs() < 1e-6,
+                        "{id}: side {j} leans"
+                    );
+                }
+                for p in &cap.positions {
+                    assert!((-COLLAR_BELOW - 1e-6..=CAP_ABOVE + 1e-6).contains(&up(p)));
                 }
                 // The lowest point is at the front, below the cut; the highest at the back,
                 // above it.
@@ -677,6 +892,65 @@ mod tests {
     }
 
     #[test]
+    fn the_caps_top_edge_is_rounded_smoothly() {
+        let plane = base_plane(&fixture::torso());
+        const N: usize = 40;
+        let outline: Vec<DVec2> = (0..N)
+            .map(|k| {
+                let a = TAU * k as f64 / N as f64;
+                DVec2::new(0.05 * a.cos(), 0.03 * a.sin())
+            })
+            .collect();
+        let round = 0.004;
+        let m = cap_solid(&plane, &outline, 0.004, 0.022, round);
+        assert_closed_and_outward("rounded cap", &m);
+        let up = |p: &glam::Vec3| f64::from(p.y) - plane.y_at(f64::from(p.x), f64::from(p.z));
+        // The flat top stops `round` short of the side all round...
+        let inside = |p: &glam::Vec3| {
+            let q = DVec2::new(f64::from(p.x), f64::from(p.z));
+            outline
+                .iter()
+                .map(|o| o.distance(q))
+                .fold(f64::MAX, f64::min)
+        };
+        let top: Vec<_> = m
+            .positions
+            .iter()
+            .filter(|p| (up(p) - 0.004).abs() < 1e-6)
+            .collect();
+        assert!(top.len() > N);
+        assert!(
+            top.iter()
+                .all(|p| inside(p) > 0.9 * round || inside(p) > 0.02)
+        );
+        // ...and the edge curves down to the side through heights in between.
+        let between = m
+            .positions
+            .iter()
+            .filter(|p| up(p) > 0.004 - round + 1e-6 && up(p) < 0.004 - 1e-6)
+            .count();
+        assert!(between >= (CAP_ROUND_STEPS - 1) * N, "{between}");
+        // No two neighbouring faces round the edge turn more than a step of it.
+        let step = 90.0 / CAP_ROUND_STEPS as f64 + 1.0;
+        let normal = |t: &[u32; 3]| {
+            let [a, b, c] = t.map(|i| m.positions[i as usize].as_dvec3());
+            (b - a).cross(c - a).normalize()
+        };
+        for pair in m.triangles.windows(2) {
+            let (a, b) = (normal(&pair[0]), normal(&pair[1]));
+            let shares = pair[0].iter().filter(|v| pair[1].contains(v)).count() >= 2;
+            let on_the_rim = pair
+                .iter()
+                .flatten()
+                .all(|&v| up(&m.positions[v as usize]) > 0.004 - round - 1e-6);
+            if shares && on_the_rim {
+                let turn = a.dot(b).clamp(-1.0, 1.0).acos().to_degrees();
+                assert!(turn <= step, "{turn}°");
+            }
+        }
+    }
+
+    #[test]
     fn the_cap_solid_is_closed_outward_and_exactly_the_height_asked() {
         let plane = base_plane(&fixture::torso());
         // Counter-clockwise as `convex_hull` makes it: x then z.
@@ -687,7 +961,7 @@ mod tests {
                 DVec2::new(0.05 * a.cos(), 0.03 * a.sin())
             })
             .collect();
-        let m = cap_solid(&plane, &outline, 0.004, 0.022);
+        let m = cap_solid(&plane, &outline, 0.004, 0.022, 0.0);
         assert_closed_and_outward("cap", &m);
         assert_eq!(m.triangles.len(), 4 * N);
         for (k, p) in m.positions.iter().enumerate() {
