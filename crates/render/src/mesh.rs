@@ -30,65 +30,6 @@ pub fn vertex_normals(positions: &[Vec3], triangles: &[[u32; 3]]) -> Vec<Vec3> {
         .collect()
 }
 
-#[cfg(test)]
-mod crease_tests {
-    use super::*;
-
-    /// A unit cube: 8 corners, 12 triangles.
-    fn cube() -> (Vec<Vec3>, Vec<[u32; 3]>) {
-        let p = (0..8)
-            .map(|i| Vec3::new((i & 1) as f32, ((i >> 1) & 1) as f32, ((i >> 2) & 1) as f32))
-            .collect();
-        let t = vec![
-            [0, 2, 3],
-            [0, 3, 1],
-            [4, 5, 7],
-            [4, 7, 6],
-            [0, 1, 5],
-            [0, 5, 4],
-            [2, 6, 7],
-            [2, 7, 3],
-            [0, 4, 6],
-            [0, 6, 2],
-            [1, 3, 7],
-            [1, 7, 5],
-        ];
-        (p, t)
-    }
-
-    #[test]
-    fn sharp_edges_get_their_own_corners_and_flat_faces_their_own_normals() {
-        let (p, t) = cube();
-        let (sp, st) = split_creases(&p, &t, 45f32.to_radians());
-        // Each corner of the cube touches three faces: one copy for each.
-        assert_eq!(sp.len(), 24);
-        assert_eq!(st.len(), t.len());
-        let normals = vertex_normals(&sp, &st);
-        for tri in &st {
-            let face = (sp[tri[1] as usize] - sp[tri[0] as usize])
-                .cross(sp[tri[2] as usize] - sp[tri[0] as usize])
-                .normalize();
-            for &k in tri {
-                assert!(normals[k as usize].dot(face) > 0.999, "flat-shaded faces");
-            }
-        }
-    }
-
-    #[test]
-    fn a_gently_curved_mesh_keeps_its_shared_corners() {
-        // A shallow tent: two triangles 10° apart share their edge.
-        let p = vec![
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(0.5, 1.0, 0.09),
-            Vec3::new(0.5, -1.0, 0.09),
-        ];
-        let t = vec![[0, 1, 2], [1, 0, 3]];
-        let (sp, st) = split_creases(&p, &t, 45f32.to_radians());
-        assert_eq!((sp.len(), st), (4, t));
-    }
-}
-
 /// The mesh with a copy of a vertex for each group of its triangles that meet it at less than
 /// `angle` (radians) from one another, so that [`vertex_normals`] keeps the edges sharper than
 /// that sharp (the rim of a cap, a pole's end) and still smooths gentle curves.
@@ -357,5 +298,64 @@ impl MeshRenderer {
             }
         }
         queue.submit([encoder.finish()]);
+    }
+}
+
+#[cfg(test)]
+mod crease_tests {
+    use super::*;
+
+    /// A unit cube: 8 corners, 12 triangles.
+    fn cube() -> (Vec<Vec3>, Vec<[u32; 3]>) {
+        let p = (0..8)
+            .map(|i| Vec3::new((i & 1) as f32, ((i >> 1) & 1) as f32, ((i >> 2) & 1) as f32))
+            .collect();
+        let t = vec![
+            [0, 2, 3],
+            [0, 3, 1],
+            [4, 5, 7],
+            [4, 7, 6],
+            [0, 1, 5],
+            [0, 5, 4],
+            [2, 6, 7],
+            [2, 7, 3],
+            [0, 4, 6],
+            [0, 6, 2],
+            [1, 3, 7],
+            [1, 7, 5],
+        ];
+        (p, t)
+    }
+
+    #[test]
+    fn sharp_edges_get_their_own_corners_and_flat_faces_their_own_normals() {
+        let (p, t) = cube();
+        let (sp, st) = split_creases(&p, &t, 45f32.to_radians());
+        // Each corner of the cube touches three faces: one copy for each.
+        assert_eq!(sp.len(), 24);
+        assert_eq!(st.len(), t.len());
+        let normals = vertex_normals(&sp, &st);
+        for tri in &st {
+            let face = (sp[tri[1] as usize] - sp[tri[0] as usize])
+                .cross(sp[tri[2] as usize] - sp[tri[0] as usize])
+                .normalize();
+            for &k in tri {
+                assert!(normals[k as usize].dot(face) > 0.999, "flat-shaded faces");
+            }
+        }
+    }
+
+    #[test]
+    fn a_gently_curved_mesh_keeps_its_shared_corners() {
+        // A shallow tent: two triangles 10° apart share their edge.
+        let p = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.5, 1.0, 0.09),
+            Vec3::new(0.5, -1.0, 0.09),
+        ];
+        let t = vec![[0, 1, 2], [1, 0, 3]];
+        let (sp, st) = split_creases(&p, &t, 45f32.to_radians());
+        assert_eq!((sp.len(), st), (4, t));
     }
 }
