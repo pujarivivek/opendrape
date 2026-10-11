@@ -15,6 +15,9 @@ you drafted for M4b (or draft it again from that checklist).
 - [ ] **Seams are flat.** Look along the side seams and the shoulder seams: a smooth join,
       no sharp crease and no zigzag. The seams shut one at a time as each pulls closed, in
       about half a second, with gravity starting just after.
+- [ ] **Seams show as stitch lines.** Zoom in on a seam: a fine line runs along it, a
+      shallow groove with a soft crest beside it, like a sewn seam on a real garment. It is
+      shading only (the fabric is still flat there), and an unsewn edge has no line.
 - [ ] **Fabric has a bias.** Draft a 30 × 30 cm square, press **Play**, and grab a corner
       with the pointer and pull sideways: it gives diagonally (shears), and pulling along an
       edge barely stretches it.
