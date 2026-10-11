@@ -36,15 +36,41 @@ const PIN_STEP_M: f64 = 0.005;
 /// A mesh to draw: positions and triangles.
 type Mesh = (Vec<Vec3>, Vec<[u32; 3]>);
 
+/// The form's woven size label: this wide and tall (m)...
+pub const LABEL_SIZE_M: [f32; 2] = [0.08, 0.03];
+/// ...its middle this far (m) above the form's bottom station, on the centre front...
+pub const LABEL_ABOVE_BOTTOM_M: f64 = 0.05;
+/// ...and this far (m) off the form's surface.
+const LABEL_LIFT_M: f64 = 0.0008;
+/// The label's patch of surface has this many cells across and up.
+const LABEL_CELLS: [usize; 2] = [12, 4];
+
+/// Where the form's size label goes: a patch of its surface, slightly lifted, to draw the label
+/// on, and the label's frame (its middle, its right and up directions and its size, m).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FormLabel {
+    pub positions: Vec<Vec3>,
+    pub triangles: Vec<[u32; 3]>,
+    pub centre: Vec3,
+    pub right: Vec3,
+    pub up: Vec3,
+    pub size: [f32; 2],
+}
+
 /// The form, its frame and its collider.
 pub struct Stage {
     /// What the form was built for; None for a stage made from a bare mesh.
     choice: Option<FormChoice>,
     positions: Vec<Vec3>,
     triangles: Vec<[u32; 3]>,
-    /// The form's tape lines and stand, to draw only (empty for a bare mesh).
+    /// The form's seams, measuring tapes, metal neck cap and dark post (knob, pole and base),
+    /// to draw only (empty for a bare mesh).
+    seams: Mesh,
     tapes: Mesh,
+    cap: Mesh,
     stand: Mesh,
+    /// Where its size label goes (None for a bare mesh).
+    label: Option<FormLabel>,
     /// The form alone: rays and the stage's own signed distance.
     torso: BodyCollider,
     /// The form and the floor, for the solver.
@@ -73,8 +99,11 @@ impl Stage {
             choice: None,
             positions,
             triangles,
+            seams: Mesh::default(),
             tapes: Mesh::default(),
+            cap: Mesh::default(),
             stand: Mesh::default(),
+            label: None,
             torso,
             collider,
             shoulder_y: SHOULDER_SHARE * height,
@@ -93,12 +122,17 @@ impl Stage {
         let mesh = &built.torso;
         let torso = BodyCollider::new(&mesh.positions, &mesh.triangles).ok()?;
         let parts = vec![BodyCollider::new(&mesh.positions, &mesh.triangles).ok()?];
+        let copy = |m: &opendrape_body::BodyMesh| (m.positions.clone(), m.triangles.clone());
+        let label_y = *built.stations.get("bottom")? + LABEL_ABOVE_BOTTOM_M;
         Some(Self {
             choice: Some(choice),
             positions: mesh.positions.clone(),
             triangles: mesh.triangles.clone(),
-            tapes: (built.tapes.positions.clone(), built.tapes.triangles.clone()),
-            stand: (built.stand.positions.clone(), built.stand.triangles.clone()),
+            seams: copy(&built.seams),
+            tapes: copy(&built.girth_tapes),
+            cap: copy(&built.cap),
+            stand: copy(&built.post),
+            label: label_patch(&torso, label_y),
             torso,
             collider: CompoundCollider::new(parts, Some(0.0)),
             shoulder_y: *built.stations.get("shoulder")?,
@@ -135,14 +169,29 @@ impl Stage {
         (&self.positions, &self.triangles)
     }
 
-    /// The form's tape lines, to draw (none for a bare mesh).
+    /// The form's sewn seams, to draw (none for a bare mesh).
+    pub fn seams_mesh(&self) -> (&[Vec3], &[[u32; 3]]) {
+        (&self.seams.0, &self.seams.1)
+    }
+
+    /// The form's measuring tapes round its girths, to draw (none for a bare mesh).
     pub fn tapes_mesh(&self) -> (&[Vec3], &[[u32; 3]]) {
         (&self.tapes.0, &self.tapes.1)
     }
 
-    /// The form's stand (neck cap, pole and base), to draw (none for a bare mesh).
+    /// The form's metal neck cap and the rod on it, to draw (none for a bare mesh).
+    pub fn cap_mesh(&self) -> (&[Vec3], &[[u32; 3]]) {
+        (&self.cap.0, &self.cap.1)
+    }
+
+    /// The form's dark knob, pole and base, to draw (none for a bare mesh).
     pub fn stand_mesh(&self) -> (&[Vec3], &[[u32; 3]]) {
         (&self.stand.0, &self.stand.1)
+    }
+
+    /// Where the form's size label goes (None for a bare mesh).
+    pub fn label(&self) -> Option<&FormLabel> {
+        self.label.as_ref()
     }
 
     /// The form and the floor, for the solver.
@@ -273,6 +322,47 @@ impl Stage {
             &|p| self.signed_distance(p) < 0.0,
         ))
     }
+}
+
+/// The patch of `torso`'s front a label [`LABEL_SIZE_M`] large covers, centred on the centre
+/// front at height `y`: a grid of points found by rays from the centre line (spaced by arc
+/// length round the form), each lifted [`LABEL_LIFT_M`] off the surface. None when a ray misses.
+fn label_patch(torso: &BodyCollider, y: f64) -> Option<FormLabel> {
+    let ray = |angle: f64, y: f64| {
+        let dir = DVec3::new(angle.sin(), 0.0, angle.cos());
+        torso
+            .ray_exit(DVec3::new(0.0, y, 0.0), dir, 1.0)
+            .map(|d| dir * (d + LABEL_LIFT_M) + DVec3::new(0.0, y, 0.0))
+    };
+    let centre = ray(0.0, y)?;
+    let [w, h] = LABEL_SIZE_M.map(f64::from);
+    let [nx, ny] = LABEL_CELLS;
+    let mut positions = Vec::new();
+    for j in 0..=ny {
+        let py = y + (j as f64 / ny as f64 - 0.5) * h;
+        for i in 0..=nx {
+            // Across by its width on the front: the angle whose point is that far over.
+            let x = (i as f64 / nx as f64 - 0.5) * w;
+            positions.push(ray((x / centre.z).atan(), py)?.as_vec3());
+        }
+    }
+    let at = |i: usize, j: usize| (j * (nx + 1) + i) as u32;
+    let mut triangles = Vec::new();
+    for j in 0..ny {
+        for i in 0..nx {
+            // Counter-clockwise seen from the front, so they face out.
+            triangles.push([at(i, j), at(i + 1, j), at(i + 1, j + 1)]);
+            triangles.push([at(i, j), at(i + 1, j + 1), at(i, j + 1)]);
+        }
+    }
+    Some(FormLabel {
+        positions,
+        triangles,
+        centre: centre.as_vec3(),
+        right: Vec3::X,
+        up: Vec3::Y,
+        size: LABEL_SIZE_M,
+    })
 }
 
 /// The imaginary arm lines of a form without arms: from [`FORM_ARM_OUT_M`] out of each
@@ -773,5 +863,53 @@ mod tests {
             );
         }
         assert_eq!(pr.check(), Ok(()));
+    }
+    #[test]
+    fn a_form_stage_hands_over_its_parts_to_draw() {
+        let choice = FormChoice::default();
+        let built = crate::choice::build_form(&choice).unwrap();
+        let stage = form_stage(&choice);
+        assert_eq!(stage.seams_mesh().1.len(), built.seams.triangles.len());
+        assert_eq!(
+            stage.tapes_mesh().1.len(),
+            built.girth_tapes.triangles.len()
+        );
+        assert_eq!(stage.cap_mesh().1.len(), built.cap.triangles.len());
+        assert_eq!(stage.stand_mesh().1.len(), built.post.triangles.len());
+    }
+
+    #[test]
+    fn the_size_label_sits_on_the_front_just_above_the_bottom_hugging_the_form() {
+        let stage = form_stage(&FormChoice::default());
+        let label = stage.label().expect("a form has a label");
+        let built = crate::choice::build_form(&FormChoice::default()).unwrap();
+        let bottom = built.stations["bottom"];
+        assert!((label.centre.y as f64 - bottom - LABEL_ABOVE_BOTTOM_M).abs() < 1e-6);
+        assert!(
+            label.centre.x.abs() < 1e-6 && label.centre.z > 0.05,
+            "on the front"
+        );
+        assert_eq!((label.right, label.up), (Vec3::X, Vec3::Y));
+        assert_eq!(label.size, LABEL_SIZE_M);
+        assert!(!label.triangles.is_empty());
+        for p in &label.positions {
+            let d = stage.signed_distance(p.as_dvec3());
+            assert!((0.0..0.002).contains(&d), "{p} is {d} m off the form");
+            // Within the label's rectangle, seen from the front.
+            let off = *p - label.centre;
+            assert!(off.x.abs() <= LABEL_SIZE_M[0] / 2.0 + 1e-4);
+            assert!(off.y.abs() <= LABEL_SIZE_M[1] / 2.0 + 1e-4);
+        }
+        // Its triangles face out, like the form's.
+        let t = label.triangles[0].map(|i| label.positions[i as usize]);
+        assert!((t[1] - t[0]).cross(t[2] - t[0]).z > 0.0);
+        // A bare mesh has none.
+        let (positions, triangles) = tube(0.0, 0.0, 0.17, 0.0, 1.6);
+        assert!(
+            Stage::from_mesh(positions, triangles)
+                .unwrap()
+                .label()
+                .is_none()
+        );
     }
 }
