@@ -35,6 +35,9 @@ pub struct Cloth {
     pub(crate) stretch: Vec<Link>,
     /// Hinges across structural edges: the fabric's resistance to folding.
     pub(crate) bend: Vec<Link>,
+    /// Hinges across welded seams, resting where the pattern lays flat: far stiffer than the
+    /// fabric's own bending, as a sewn seam is (`Params::seam_compliance`).
+    pub(crate) seam_bend: Vec<Link>,
     /// Edges on the bias, and the hinges across them (a cell's other diagonal): the fabric
     /// shears along these, softly.
     pub(crate) shear: Vec<Link>,
@@ -385,6 +388,12 @@ impl Cloth {
     pub fn bend_link_count(&self) -> usize {
         self.bend.len()
     }
+    /// The hinges across welded seams.
+    pub fn seam_bend_links(&self) -> impl Iterator<Item = (usize, usize, f64)> + '_ {
+        self.seam_bend
+            .iter()
+            .map(|l| (l.a as usize, l.b as usize, l.rest))
+    }
     pub fn bend_links(&self) -> impl Iterator<Item = (usize, usize, f64)> + '_ {
         self.bend
             .iter()
@@ -569,25 +578,41 @@ impl Cloth {
         // Hinges that were there keep their rest (those across the bias are still among the
         // shear links). A hinge across the seam rests where the pattern lays flat, not where
         // the fabric happens to be as it welds.
-        let old: HashMap<(u32, u32), f64> = self
-            .bend
-            .iter()
-            .map(|l| (edge_key(m(l.a), m(l.b)), l.rest))
-            .collect();
+        let remembered = |links: &[Link]| -> HashMap<(u32, u32), f64> {
+            links
+                .iter()
+                .map(|l| (edge_key(m(l.a), m(l.b)), l.rest))
+                .collect()
+        };
+        let (old, old_seam) = (remembered(&self.bend), remembered(&self.seam_bend));
         let x = &self.x;
-        self.bend = hinges(&self.triangles)
-            .into_iter()
-            .filter(|h| !on_bias.contains(&edge_key(h.p, h.q)))
-            .map(|h| Link {
+        let (mut bend, mut seam_bend) = (Vec::new(), Vec::new());
+        for h in hinges(&self.triangles) {
+            let key = edge_key(h.p, h.q);
+            if on_bias.contains(&key) {
+                continue;
+            }
+            if let Some(&rest) = old.get(&key) {
+                bend.push(Link {
+                    a: h.p,
+                    b: h.q,
+                    rest,
+                });
+                continue;
+            }
+            let rest = old_seam
+                .get(&key)
+                .copied()
+                .or_else(|| unfolded(&rest_of, &h))
+                .unwrap_or_else(|| x[h.p as usize].distance(x[h.q as usize]));
+            seam_bend.push(Link {
                 a: h.p,
                 b: h.q,
-                rest: old
-                    .get(&edge_key(h.p, h.q))
-                    .copied()
-                    .or_else(|| unfolded(&rest_of, &h))
-                    .unwrap_or_else(|| x[h.p as usize].distance(x[h.q as usize])),
-            })
-            .collect();
+                rest,
+            });
+        }
+        self.bend = bend;
+        self.seam_bend = seam_bend;
         self.topology_version += 1;
     }
 }
@@ -663,8 +688,9 @@ mod tests {
             "triangles only use live particles"
         );
         assert_eq!(c.topology_version(), 1);
-        // The two triangles now share the welded edge, so a bending link spans it.
-        assert_eq!(c.bend_link_count(), 1);
+        // The two triangles now share the welded edge, so a seam hinge spans it.
+        assert_eq!(c.bend_link_count(), 0);
+        assert_eq!(c.seam_bend_links().count(), 1);
         assert_eq!(c.seam_edges(), &[(0, 1)], "the welded edge is the seam");
     }
 
@@ -760,8 +786,9 @@ mod tests {
         assert_eq!(c.stretch_links().count(), 7, "the shared edge once");
         assert_eq!(c.shear_links().count(), 4, "each cell's two diagonals");
         // The one hinge across the welded (structural) edge, resting flat: 20 cm apart.
-        let bend: Vec<_> = c.bend_links().collect();
+        let bend: Vec<_> = c.seam_bend_links().collect();
         assert_eq!(bend.len(), 1);
+        assert_eq!(c.bend_link_count(), 0);
         assert!((bend[0].2 - 0.2).abs() < 1e-9 || (bend[0].2 - 0.1f64.hypot(0.2)).abs() < 1e-9);
     }
 
@@ -785,7 +812,7 @@ mod tests {
         b.stitch((p, 2), (q, 2));
         let mut c = b.build();
         c.weld_stitches();
-        let rests: Vec<f64> = c.bend_links().map(|(_, _, r)| r).collect();
+        let rests: Vec<f64> = c.seam_bend_links().map(|(_, _, r)| r).collect();
         assert_eq!(rests.len(), 1);
         assert!((rests[0] - 0.2).abs() < 1e-9, "unfolded: {}", rests[0]);
     }

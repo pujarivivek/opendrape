@@ -32,6 +32,10 @@ pub struct Params {
     pub stretch_compliance: f64,
     pub bend_compliance: f64,
     pub shear_compliance: f64,
+    /// XPBD compliance (m/N) of the hinges across welded seams. A sewn seam is far stiffer
+    /// than the fabric: left as soft as the fabric's bending, the angle the two pieces met
+    /// at stays as a ridge down the seam.
+    pub seam_compliance: f64,
     /// Velocity damping per second.
     pub damping: f64,
     pub friction: f64,
@@ -69,6 +73,7 @@ impl Default for Params {
             stretch_compliance: 1e-6,
             bend_compliance: 1.0,
             shear_compliance: 0.05,
+            seam_compliance: 0.01,
             damping: 1.0,
             friction: 0.4,
             thickness: 0.003,
@@ -293,6 +298,14 @@ impl Solver {
                 solve_links(&mut c.x, &c.inv_mass, &c.stitches, 0.0, stitch_scale, sdt);
                 lap.lap(&mut ph.stitches);
                 solve_links(&mut c.x, &c.inv_mass, &c.bend, p.bend_compliance, 1.0, sdt);
+                solve_links(
+                    &mut c.x,
+                    &c.inv_mass,
+                    &c.seam_bend,
+                    p.seam_compliance,
+                    1.0,
+                    sdt,
+                );
                 lap.lap(&mut ph.bend);
                 solve_links(
                     &mut c.x,
@@ -503,6 +516,59 @@ mod tests {
         assert!(!s.cloth().has_open_stitches());
         assert!(s.cloth().positions().iter().all(|p| p.is_finite()));
         assert_eq!(s.take_notes(), vec![], "it closed on its own");
+    }
+
+    #[test]
+    fn a_welded_seam_opens_out_flat() {
+        // Two squares sewn along their facing edges, the second folded up 90° about that
+        // edge; no gravity. Once welded, the seam opens out until the squares are near flat.
+        let flat = vec![
+            DVec2::new(0.0, 0.0),
+            DVec2::new(0.1, 0.0),
+            DVec2::new(0.1, 0.1),
+            DVec2::new(0.0, 0.1),
+        ];
+        let square = |positions: Vec<DVec3>| Panel {
+            positions,
+            flat: Some(flat.clone()),
+            triangles: vec![[0, 1, 2], [0, 2, 3]],
+        };
+        let mut b = ClothBuilder::new(0.15);
+        let p = b.add_panel(
+            &square(flat.iter().map(|f| DVec3::new(f.x, f.y, 0.0)).collect()),
+            1.0,
+        );
+        // Its flat x runs along z, so its right edge (x = 0.1) meets the first's at x = 0.1.
+        let q = b.add_panel(
+            &square(
+                flat.iter()
+                    .map(|f| DVec3::new(0.1, f.y, 0.1 - f.x))
+                    .collect(),
+            ),
+            1.0,
+        );
+        b.stitch((p, 1), (q, 1));
+        b.stitch((p, 2), (q, 2));
+        let mut s = Solver::new(b.build(), no_gravity());
+        let angle = |s: &Solver| {
+            let x = s.cloth().positions();
+            // The far edges of the two squares, either side of the seam.
+            let (a, b) = ((x[0] + x[3]) * 0.5, (x[4] + x[7]) * 0.5);
+            let seam = (x[1] + x[2]) * 0.5;
+            (a - seam).angle_between(b - seam).to_degrees()
+        };
+        assert!((angle(&s) - 90.0).abs() < 1.0);
+        for _ in 0..120 {
+            s.step(None);
+        }
+        assert!(!s.cloth().has_open_stitches());
+        assert_eq!(
+            s.cloth().seam_bend_links().count(),
+            1,
+            "one hinge across the seam"
+        );
+        let opened = angle(&s);
+        assert!(opened > 170.0, "{opened}° between the squares");
     }
 
     #[test]

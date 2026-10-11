@@ -7,7 +7,7 @@
 //! - `--quality draft|normal|fine` a fabric detail preset for the drafted scenes (what the
 //!   app drapes at); without it, the solver's defaults and the flags below
 //! - `--edge-mm 12` fabric edge length for the drafted scenes
-//! - `--substeps 20`, `--iterations 2` for the drafted scenes
+//! - `--substeps 20`, `--iterations 2`, `--seam-compliance 0.01` for the drafted scenes
 //! - `--threads 1` the rayon pool's size (1 stands in for a slow laptop)
 //!
 //! Each scene prints a human line, its phases, and one `BENCH` line for scripts.
@@ -28,6 +28,7 @@ struct Opts {
     edge_mm: Option<f64>,
     substeps: Option<usize>,
     iterations: Option<usize>,
+    seam_compliance: Option<f64>,
     threads: Option<usize>,
 }
 
@@ -39,6 +40,7 @@ fn parse() -> Opts {
         edge_mm: None,
         substeps: None,
         iterations: None,
+        seam_compliance: None,
         threads: None,
     };
     let mut args = std::env::args().skip(1);
@@ -61,6 +63,9 @@ fn parse() -> Opts {
             "--edge-mm" => o.edge_mm = Some(value().parse().expect("edge mm")),
             "--substeps" => o.substeps = Some(value().parse().expect("substeps")),
             "--iterations" => o.iterations = Some(value().parse().expect("iterations")),
+            "--seam-compliance" => {
+                o.seam_compliance = Some(value().parse().expect("seam compliance"))
+            }
             "--threads" => o.threads = Some(value().parse().expect("threads")),
             other => panic!("unknown option {other}"),
         }
@@ -127,6 +132,7 @@ fn main() {
     let params = Params {
         substeps: o.substeps.unwrap_or(defaults.substeps),
         iterations: o.iterations.unwrap_or(defaults.iterations),
+        seam_compliance: o.seam_compliance.unwrap_or(defaults.seam_compliance),
         ..defaults
     };
     let mesh = MeshParams {

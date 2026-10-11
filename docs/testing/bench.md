@@ -162,3 +162,28 @@ should drape the T-shirt at about 60 frames a second on Draft and 30 on Normal.
   the next saving there.
 - The T-shirt's crossings vary from run to run (17 here, 24 before, 0 at 24 × 1): the fold at
   the top of a cap forms, or not, as the seams pull shut.
+
+## After the first look at the app (2026-10-11)
+
+Two things the pictures showed. The fabric beside a seam folded into a sawtooth: hinges across
+bias edges were soft everywhere, but that is only right inside a lattice cell, and the band of
+irregular triangles along every outline was left nearly free to fold. Only a cell's hinge
+shears now. And the seam stood as a ridge: a hinge across a welded seam is a distance link,
+which has almost no pull near flat (150° is 3 % off its flat length) while the fabric's
+bending is soft. The hinges across welded seams now have their own stiffness,
+`Params::seam_compliance`, swept here on the drafted scenes at Normal's 30 × 1 (crease is the
+mean angle between the triangles either side of a seam edge; crossings are the cap fold):
+
+| seam compliance | T-shirt crease | T-shirt crossings | skirt crease | demo skirt crease |
+|---|---|---|---|---|
+| 1.0 (as the fabric) | 29.5° | 21 | 11.9° | 8.9° |
+| 0.3 | 24.5° | 66 | 9.1° | |
+| 0.1 | 20.0° | 70 | 7.7° | |
+| 0.03 | 15.5° | 46 | 6.3° | |
+| **0.01 (chosen)** | 14.5° | 39 | 7.5° | 4.5° |
+| 0.001 | 13.6° | 41 | 6.4° | |
+
+The skirts' seams now read 4–7°, the curvature of the body under them. The T-shirt's 14°
+is mostly the set-in sleeves, where a seam really does turn a corner. A stiffer seam presses
+the cap fold harder, so its crossings rise (the gate is 100; a sleeve through the bodice
+would be hundreds).
