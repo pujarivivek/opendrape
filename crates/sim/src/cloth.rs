@@ -231,11 +231,27 @@ impl ClothBuilder {
                 self.cloth.stretch.push(link(e));
             }
         }
+        // Whether a hinge's two triangles are one square cell of the lattice, so the link
+        // between its opposite corners is the cell's other diagonal: a shear spring. The
+        // irregular triangles in the band along an outline bend like any other fabric, even
+        // across an edge on the bias; left soft, that band folds into a sawtooth beside every
+        // seam.
+        let is_cell = |h: &Hinge| {
+            let Some(f) = &panel.flat else { return false };
+            let d = |a: u32, b: u32| f[a as usize].distance(f[b as usize]);
+            let diagonals = (d(h.u, h.v), d(h.p, h.q));
+            let sides = [d(h.u, h.p), d(h.p, h.v), d(h.v, h.q), d(h.q, h.u)];
+            let side = sides.iter().sum::<f64>() / 4.0;
+            side > 0.0
+                && sides.iter().all(|s| (s - side).abs() <= 0.05 * side)
+                && (diagonals.0 - diagonals.1).abs() <= 0.05 * side
+                && (diagonals.0 - side * std::f64::consts::SQRT_2).abs() <= 0.05 * side
+        };
         for h in hinges(&panel.triangles) {
             if !has_mass(&(h.p, h.q)) {
                 continue;
             }
-            if on_bias(h.u, h.v) {
+            if on_bias(h.u, h.v) && is_cell(&h) {
                 self.cloth.shear.push(link((h.p, h.q)));
             } else {
                 self.cloth.bend.push(link((h.p, h.q)));
@@ -696,6 +712,31 @@ mod tests {
         b.add_panel(&cell(), 1.0);
         let c = b.build();
         assert_eq!((c.stretch_links().count(), c.shear_links().count()), (5, 0));
+        // Two irregular triangles (the band along an outline) sharing an edge on the bias:
+        // the edge shears, but the hinge across it bends like any fabric.
+        let band = Panel {
+            positions: vec![
+                DVec3::ZERO,
+                DVec3::new(0.11, 0.07, 0.0),
+                DVec3::new(0.02, 0.1, 0.0),
+                DVec3::new(0.13, -0.03, 0.0),
+            ],
+            flat: Some(vec![
+                DVec2::new(0.0, 0.0),
+                DVec2::new(0.11, 0.07),
+                DVec2::new(0.02, 0.1),
+                DVec2::new(0.13, -0.03),
+            ]),
+            triangles: vec![[0, 1, 2], [0, 3, 1]],
+        };
+        let mut b = ClothBuilder::new(0.15);
+        b.add_grain_panel(&band, 1.0, DVec2::X);
+        let c = b.build();
+        assert_eq!(c.bend_link_count(), 1, "the hinge bends");
+        assert!(
+            c.shear_links().count() >= 1,
+            "the shared edge is on the bias"
+        );
     }
 
     #[test]
