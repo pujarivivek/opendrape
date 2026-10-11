@@ -88,7 +88,13 @@ fn report(drape: &Drape, frame: usize, body: &dyn Solid) {
     let _ = sides;
     let mut angles = seam_fold_angles(c);
     angles.sort_by(f64::total_cmp);
-    let pct = |v: &[f64], q: f64| v[((v.len() - 1) as f64 * q) as usize];
+    let pct = |v: &[f64], q: f64| {
+        if v.is_empty() {
+            f64::NAN
+        } else {
+            v[((v.len() - 1) as f64 * q) as usize]
+        }
+    };
     // The step at the seam: how far off the body a seam particle sits, less the mean of its
     // neighbours' that are not on the seam (positive: the seam stands proud).
     let mut on_seam = vec![false; c.len()];

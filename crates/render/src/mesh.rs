@@ -15,23 +15,66 @@ struct Uniforms {
     color: [f32; 4],
 }
 
-/// Area-weighted vertex normals; vertices used by no triangle get +Y. A face wound the other
-/// way from the faces already summed at a vertex (a piece sewn to its mirror image placed
-/// without a turn) is turned to agree with them: the lighting is two-sided, so only the
-/// line matters, and summed as they come the two sides would cancel into a dark seam.
+/// Area-weighted vertex normals; vertices used by no triangle get +Y. The triangles must be
+/// wound consistently (see [`orient_consistently`]), or the two sides of a seam between
+/// pieces facing opposite ways cancel into a dark line.
 pub fn vertex_normals(positions: &[Vec3], triangles: &[[u32; 3]]) -> Vec<Vec3> {
     let mut n = vec![Vec3::ZERO; positions.len()];
     for t in triangles {
         let [a, b, c] = t.map(|k| k as usize);
         let face = (positions[b] - positions[a]).cross(positions[c] - positions[a]);
-        for k in [a, b, c] {
-            let agreed = if n[k].dot(face) < 0.0 { -face } else { face };
-            n[k] += agreed;
-        }
+        n[a] += face;
+        n[b] += face;
+        n[c] += face;
     }
     n.into_iter()
         .map(|v| v.try_normalize().unwrap_or(Vec3::Y))
         .collect()
+}
+
+/// The triangles wound the same way as their neighbours across every shared edge, so that a
+/// piece sewn to its mirror image placed without a turn (whose triangles face the other way)
+/// lights as one surface. Each connected run of triangles is walked from its first; a
+/// triangle reached across an edge that its neighbour goes round the same way is turned.
+/// The lighting is two-sided, so which way a run ends up facing does not matter.
+pub fn orient_consistently(triangles: &[[u32; 3]]) -> Vec<[u32; 3]> {
+    use std::collections::HashMap;
+    let mut out = triangles.to_vec();
+    let mut by_edge: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+    for (t, tri) in triangles.iter().enumerate() {
+        for k in 0..3 {
+            let (a, b) = (tri[k], tri[(k + 1) % 3]);
+            by_edge.entry((a.min(b), a.max(b))).or_default().push(t);
+        }
+    }
+    let mut seen = vec![false; out.len()];
+    let mut stack = Vec::new();
+    for start in 0..out.len() {
+        if seen[start] {
+            continue;
+        }
+        seen[start] = true;
+        stack.push(start);
+        while let Some(t) = stack.pop() {
+            let tri = out[t];
+            for k in 0..3 {
+                // This triangle goes a → b along the edge; a neighbour should go b → a.
+                let (a, b) = (tri[k], tri[(k + 1) % 3]);
+                for &n in &by_edge[&(a.min(b), a.max(b))] {
+                    if seen[n] {
+                        continue;
+                    }
+                    seen[n] = true;
+                    let m = out[n];
+                    if (0..3).any(|j| m[j] == a && m[(j + 1) % 3] == b) {
+                        out[n] = [m[0], m[2], m[1]];
+                    }
+                    stack.push(n);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// A triangle mesh on the GPU whose vertices (and triangles) can be replaced every frame.
@@ -197,9 +240,9 @@ impl MeshRenderer {
         triangles: Option<&[[u32; 3]]>,
     ) {
         if let Some(t) = triangles {
-            mesh.triangles = t.to_vec();
-            queue.write_buffer(&mesh.indices, 0, bytemuck::cast_slice(t));
-            mesh.index_count = (t.len() * 3) as u32;
+            mesh.triangles = orient_consistently(t);
+            queue.write_buffer(&mesh.indices, 0, bytemuck::cast_slice(&mesh.triangles));
+            mesh.index_count = (mesh.triangles.len() * 3) as u32;
         }
         let normals = vertex_normals(positions, &mesh.triangles);
         let verts: Vec<Vertex> = positions
@@ -285,22 +328,33 @@ mod tests {
             Vec3::new(2.0, 1.0, 0.0),
         ];
         let triangles = [[0, 1, 2], [0, 2, 3], [1, 5, 4], [1, 2, 5]];
-        let n = vertex_normals(&positions, &triangles);
-        for (k, v) in n.iter().enumerate() {
+        // Summed as they come, the normals disagree from vertex to vertex, so the shading
+        // between them passes through nothing.
+        let raw = vertex_normals(&positions, &triangles);
+        assert!(
+            raw.iter().any(|v| v.z > 0.5) && raw.iter().any(|v| v.z < -0.5),
+            "{raw:?}"
+        );
+        // Oriented first, every face points the same way and every normal is clean.
+        let oriented = orient_consistently(&triangles);
+        let face = |t: &[u32; 3]| {
+            let [a, b, c] = t.map(|k| k as usize);
+            (positions[b] - positions[a]).cross(positions[c] - positions[a])
+        };
+        assert!(oriented.iter().all(|t| face(t).z > 0.0), "{oriented:?}");
+        assert_eq!(
+            &oriented[..2],
+            &triangles[..2],
+            "the first run's way is kept"
+        );
+        for (k, v) in vertex_normals(&positions, &oriented).iter().enumerate() {
             assert!(
-                (v.length() - 1.0).abs() < 1e-6 && v.z.abs() > 0.999,
+                (v.length() - 1.0).abs() < 1e-6 && v.z > 0.999,
                 "vertex {k}: {v}"
             );
         }
-        // Summed as they come, the shared edge's normals would have cancelled.
-        let raw: Vec3 = triangles
-            .iter()
-            .map(|t| {
-                let [a, b, c] = t.map(|k| k as usize);
-                (positions[b] - positions[a]).cross(positions[c] - positions[a])
-            })
-            .filter(|_| true)
-            .sum();
-        assert!(raw.length() < 1e-6, "{raw}");
+        // Two separate runs are each oriented on their own, and nothing is lost.
+        let apart = [[0, 1, 2], [3, 5, 4]];
+        assert_eq!(orient_consistently(&apart), apart);
     }
 }

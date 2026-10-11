@@ -160,9 +160,9 @@ impl StudioMesh {
         triangles: Option<&[[u32; 3]]>,
     ) {
         if let Some(t) = triangles {
-            self.triangles = t.to_vec();
-            queue.write_buffer(&self.indices, 0, bytemuck::cast_slice(t));
-            self.index_count = (t.len() * 3) as u32;
+            self.triangles = crate::mesh::orient_consistently(t);
+            queue.write_buffer(&self.indices, 0, bytemuck::cast_slice(&self.triangles));
+            self.index_count = (self.triangles.len() * 3) as u32;
         }
         self.bounds = positions.iter().fold(
             (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
