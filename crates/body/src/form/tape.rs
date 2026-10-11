@@ -9,6 +9,8 @@ use std::f64::consts::TAU;
 
 /// Ribbons are 6 mm wide, lifted 0.5 mm off the surface so they never flicker into it.
 pub const RIBBON_HALF_WIDTH: f64 = 0.003;
+/// Half the width (m) of a sewn seam drawn along a tape line: a fine line.
+pub const SEAM_HALF_WIDTH: f64 = 0.0012;
 pub const RIBBON_LIFT: f64 = 0.0005;
 
 /// A tape line sampled on a sized form.
@@ -184,6 +186,11 @@ fn ring_tape(name: &str, i: usize, rings: &Rings) -> Tape {
 
 /// Thin ribbons along every tape, lifted off the surface, for drawing only (open, not collided).
 pub fn ribbons(tapes: &[Tape], rings: &Rings) -> BodyMesh {
+    ribbons_of_width(tapes, rings, RIBBON_HALF_WIDTH)
+}
+
+/// Ribbons `half_width` (m) either side of every tape, lifted off the surface.
+pub fn ribbons_of_width(tapes: &[Tape], rings: &Rings, half_width: f64) -> BodyMesh {
     let mut mesh = BodyMesh {
         positions: vec![],
         triangles: vec![],
@@ -208,7 +215,7 @@ pub fn ribbons(tapes: &[Tape], rings: &Rings) -> BodyMesh {
             };
             let tangent = (t.points[next] - t.points[prev]).normalize_or_zero();
             let normal = rings.normal(t.uv[k].x, t.uv[k].y);
-            let side = normal.cross(tangent).normalize_or_zero() * RIBBON_HALF_WIDTH;
+            let side = normal.cross(tangent).normalize_or_zero() * half_width;
             let p = t.points[k] + normal * RIBBON_LIFT;
             mesh.positions.push((p - side).as_vec3());
             mesh.positions.push((p + side).as_vec3());

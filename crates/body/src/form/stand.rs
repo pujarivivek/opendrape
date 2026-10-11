@@ -209,11 +209,28 @@ fn parts(file: &FormFile, base: &Rings, rings: &Rings, wall: &[DVec2]) -> Parts 
 /// pieces appended into one mesh, each of them closed.
 pub(super) fn stand(file: &FormFile, base: &Rings, rings: &Rings, wall: &[DVec2]) -> BodyMesh {
     let p = parts(file, base, rings, wall);
+    joined([p.cap, p.rod, p.knob, p.pole, p.base])
+}
+
+/// The same stand as [`stand`] in its two finishes: the metal neck cap and the rod on it, then
+/// the dark knob, pole and base.
+pub(super) fn stand_finishes(
+    file: &FormFile,
+    base: &Rings,
+    rings: &Rings,
+    wall: &[DVec2],
+) -> (BodyMesh, BodyMesh) {
+    let p = parts(file, base, rings, wall);
+    (joined([p.cap, p.rod]), joined([p.knob, p.pole, p.base]))
+}
+
+/// Closed pieces appended into one mesh.
+fn joined<const N: usize>(pieces: [BodyMesh; N]) -> BodyMesh {
     let mut out = BodyMesh {
         positions: vec![],
         triangles: vec![],
     };
-    for part in [p.cap, p.rod, p.knob, p.pole, p.base] {
+    for part in pieces {
         let offset = out.positions.len() as u32;
         out.positions.extend(part.positions);
         out.triangles
