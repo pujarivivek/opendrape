@@ -34,7 +34,14 @@ pub struct FabricPanel {
     pub triangles: Vec<[u32; 3]>,
     pub first_particle: usize,
     pub first_triangle: usize,
+    /// How far (mm, on the pattern) each point is from the nearest sewn stretch of the
+    /// panel's outline: 0 along a seam, so the view can draw the stitch lines.
+    /// [`NO_SEAM_MM`] everywhere on a panel nothing is sewn to.
+    pub seam_mm: Vec<f32>,
 }
+
+/// The seam distance of a point nowhere near a seam (mm).
+pub const NO_SEAM_MM: f32 = 1.0e4;
 
 /// Where a drape's cloth came from on the pattern: its panels, in cloth order.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -48,13 +55,15 @@ impl Fabric {
         let panels = mesh
             .panels
             .iter()
-            .map(|p| {
+            .enumerate()
+            .map(|(k, p)| {
                 let panel = FabricPanel {
                     shape: p.shape,
                     flat: p.flat.clone(),
                     triangles: p.triangles.clone(),
                     first_particle: particle,
                     first_triangle: triangle,
+                    seam_mm: seam_distances(mesh, k),
                 };
                 particle += p.flat.len();
                 triangle += p.triangles.len();
@@ -69,6 +78,67 @@ impl Fabric {
         self.panels.iter().find(|p| p.shape == shape)
     }
 
+    /// Every particle's distance (mm) from the nearest sewn seam on its piece, in cloth
+    /// order, for the view to draw the stitch lines by.
+    pub fn seam_mm(&self) -> Vec<f32> {
+        self.panels
+            .iter()
+            .flat_map(|p| p.seam_mm.iter().copied())
+            .collect()
+    }
+}
+
+/// How far (mm) each point of panel `k` of `mesh` is from the nearest stretch of its outline
+/// that a seam sews: two outline points in a row that are both stitched make such a stretch.
+fn seam_distances(mesh: &GarmentMesh, k: usize) -> Vec<f32> {
+    let panel = &mesh.panels[k];
+    let mut stitched = vec![false; panel.flat.len()];
+    for &((pa, a), (pb, b)) in &mesh.stitches {
+        if pa == k {
+            stitched[a as usize] = true;
+        }
+        if pb == k {
+            stitched[b as usize] = true;
+        }
+    }
+    let outline: Vec<u32> = panel.edges.iter().flatten().copied().collect();
+    let mut segments: Vec<([f64; 2], [f64; 2])> = Vec::new();
+    // Each edge runs from its start corner to its end corner and the next edge starts at
+    // that corner, so the flattened outline repeats every corner and comes back round to the
+    // first: every stretch between points in a row is covered, the repeats skipped.
+    for w in outline.windows(2) {
+        let (a, b) = (w[0] as usize, w[1] as usize);
+        if a != b && stitched[a] && stitched[b] {
+            segments.push((panel.flat[a], panel.flat[b]));
+        }
+    }
+    if segments.is_empty() {
+        return vec![NO_SEAM_MM; panel.flat.len()];
+    }
+    panel
+        .flat
+        .iter()
+        .map(|p| {
+            let p = DVec2::from_array(*p);
+            let nearest = segments
+                .iter()
+                .map(|&(a, b)| {
+                    let (a, b) = (DVec2::from_array(a), DVec2::from_array(b));
+                    let ab = b - a;
+                    let t = if ab.length_squared() > 0.0 {
+                        ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    p.distance(a + ab * t)
+                })
+                .fold(f64::MAX, f64::min);
+            (nearest * 1000.0) as f32
+        })
+        .collect()
+}
+
+impl Fabric {
     /// The panel that cloth triangle `triangle` belongs to, and its index in the panel.
     fn triangle(&self, triangle: usize) -> Option<(&FabricPanel, usize)> {
         self.panels.iter().find_map(|p| {
@@ -319,6 +389,41 @@ mod tests {
 
     /// Two 200 × 300 mm panels on the pattern table, 100 mm apart, sewn along the side between
     /// them: A's right edge to B's left edge, both starting at the bottom.
+    #[test]
+    fn every_point_knows_how_far_the_nearest_seam_is() {
+        let stage = Stage::shared();
+        let drape = Drape::new(Arc::new(two_panels()), &stage);
+        let seams = drape.fabric.seam_mm();
+        assert_eq!(seams.len(), drape.solver.cloth().len());
+        let stitched: Vec<usize> = drape
+            .solver
+            .cloth()
+            .stitch_pairs()
+            .flat_map(|(a, b)| [a, b])
+            .collect();
+        assert!(!stitched.is_empty());
+        assert!(
+            stitched.iter().all(|&i| seams[i] < 1e-3),
+            "stitched points are on the seam"
+        );
+        let far = seams.iter().copied().fold(0.0, f32::max);
+        assert!(
+            far > 50.0 && far < NO_SEAM_MM,
+            "the far side of a sewn panel: {far}"
+        );
+        // A panel nothing is sewn to is nowhere near a seam.
+        let mut pr = Project::new();
+        pr.add_piece(opendrape_core::Piece::rectangle(
+            PieceId(0),
+            "Alone",
+            Point2::new(0.0, 0.0),
+            200.0,
+            200.0,
+        ));
+        let alone = Drape::new(Arc::new(pr), &stage);
+        assert!(alone.fabric.seam_mm().iter().all(|&d| d == NO_SEAM_MM));
+    }
+
     #[test]
     fn draft_makes_fewer_particles_and_a_rebuild_keeps_the_detail() {
         let stage = Stage::shared();

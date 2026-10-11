@@ -4,7 +4,7 @@ use crate::theme::{FABRIC, FORM_SRGB, SELECTED_FABRIC};
 use crate::view_settings::{LightingChoice, QualityChoice, ViewSettings};
 use glam::DVec2;
 use opendrape_core::PieceId;
-use opendrape_drape::Stage;
+use opendrape_drape::{Fabric, Stage};
 use opendrape_render::colour::srgb8_to_linear;
 use opendrape_render::studio::quality::{self, Quality};
 use opendrape_render::studio::{Material, StudioMesh, StudioRenderer};
@@ -16,6 +16,9 @@ struct ClothOnGpu {
     mesh: StudioMesh,
     seq: u64,
     triangles: Arc<Vec<[u32; 3]>>,
+    /// The fabric whose seam distances the mesh has (a new one each time an edit makes the
+    /// fabric again).
+    fabric: Arc<Fabric>,
 }
 
 /// What the 3D view shows besides the form.
@@ -229,6 +232,10 @@ impl Viewport {
             Some(c) => {
                 let new_tris =
                     (!Arc::ptr_eq(&c.triangles, &f.triangles)).then_some(f.triangles.as_slice());
+                if !Arc::ptr_eq(&c.fabric, &f.fabric) {
+                    c.mesh.set_seams(&f.fabric.seam_mm());
+                    c.fabric = f.fabric.clone();
+                }
                 self.renderer.update_mesh(
                     &rs.device,
                     &rs.queue,
@@ -240,7 +247,7 @@ impl Viewport {
                 c.triangles = f.triangles.clone();
             }
             None => {
-                let mesh = self.renderer.create_mesh(
+                let mut mesh = self.renderer.create_mesh(
                     &rs.device,
                     &rs.queue,
                     &f.positions,
@@ -248,10 +255,14 @@ impl Viewport {
                     FABRIC,
                     Material::Cloth,
                 );
+                mesh.set_seams(&f.fabric.seam_mm());
+                self.renderer
+                    .update_mesh(&rs.device, &rs.queue, &mut mesh, &f.positions, None);
                 self.cloth = Some(ClothOnGpu {
                     mesh,
                     seq: f.seq,
                     triangles: f.triangles.clone(),
+                    fabric: f.fabric.clone(),
                 });
             }
         }

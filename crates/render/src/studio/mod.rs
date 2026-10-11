@@ -391,6 +391,7 @@ impl StudioRenderer {
             mesh.upload(queue, positions, triangles);
         } else {
             let tris = triangles.map_or_else(|| mesh.triangles().to_vec(), <[_]>::to_vec);
+            let seams = std::mem::take(&mut mesh.seams);
             *mesh = StudioMesh::new(
                 MeshGpu {
                     device,
@@ -403,6 +404,10 @@ impl StudioRenderer {
                 mesh.colour,
                 mesh.material,
             );
+            if !seams.is_empty() {
+                mesh.seams = seams;
+                mesh.upload(queue, positions, None);
+            }
         }
     }
 
@@ -457,7 +462,7 @@ impl StudioRenderer {
         let vertex = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Vertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3],
+            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32],
         };
         let mesh = pipeline(
             "studio meshes",

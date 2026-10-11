@@ -6,7 +6,13 @@ use glam::{Mat4, Vec3};
 pub(crate) struct Vertex {
     pub(crate) position: [f32; 3],
     pub(crate) normal: [f32; 3],
+    /// How far (mm) this point is from the nearest sewn seam on its piece: the studio draws
+    /// a stitch line as a groove in the shading along it. [`NO_SEAM_MM`] when there is none.
+    pub(crate) seam: f32,
 }
+
+/// The seam distance of a vertex nowhere near a seam (mm).
+pub const NO_SEAM_MM: f32 = 1.0e4;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -251,6 +257,7 @@ impl MeshRenderer {
             .map(|(p, n)| Vertex {
                 position: p.to_array(),
                 normal: n.to_array(),
+                seam: NO_SEAM_MM,
             })
             .collect();
         queue.write_buffer(&mesh.vertices, 0, bytemuck::cast_slice(&verts));

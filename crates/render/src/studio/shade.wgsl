@@ -236,12 +236,14 @@ fn finish(c: vec3<f32>) -> vec4<f32> {
 struct VsIn {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
+    @location(2) seam: f32,
 };
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) world: vec3<f32>,
     @location(1) normal: vec3<f32>,
+    @location(2) seam: f32,
 };
 
 @vertex
@@ -250,7 +252,18 @@ fn vs_mesh(v: VsIn) -> VsOut {
     out.clip = frame.view_proj * vec4<f32>(v.position, 1.0);
     out.world = v.position;
     out.normal = v.normal;
+    out.seam = v.seam;
     return out;
+}
+
+// How a sewn seam stands at `d` mm from the stitch line (metres, 0 flat): a narrow groove
+// where the stitches pull the fabric in, and a slight rise either side where the allowance
+// underneath lifts it. The light then draws each seam as a fine crest with a shadow beside
+// it, as a real one reads.
+fn seam_height(d: f32) -> f32 {
+    let groove = -0.35 * exp(-(d * d) / 1.0);
+    let shoulder = 0.15 * exp(-((d - 2.2) * (d - 2.2)) / 1.44);
+    return (groove + shoulder) * 0.001;
 }
 
 @fragment
@@ -258,6 +271,22 @@ fn fs_mesh(v: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     var n = normalize(v.normal);
     var albedo = draw.colour.rgb;
     let material = draw.material.x;
+    // The seam's groove bends the normal (bump mapping from a height, Mikkelsen 2010): the
+    // derivatives come first, where control flow is still uniform.
+    let height = seam_height(v.seam);
+    let dh_dx = dpdx(height);
+    let dh_dy = dpdy(height);
+    let sigma_s = dpdx(v.world);
+    let sigma_t = dpdy(v.world);
+    if (material == CLOTH && v.seam < 8.0) {
+        let r1 = cross(sigma_t, n);
+        let r2 = cross(n, sigma_s);
+        let det = dot(sigma_s, r1);
+        let grad = sign(det) * (dh_dx * r1 + dh_dy * r2);
+        n = normalize(abs(det) * n - grad);
+        // Stitches shade the groove a little as well.
+        albedo = albedo * (1.0 - 0.12 * exp(-(v.seam * v.seam) / 1.44));
+    }
     if (!front) {
         // The other side: seen from inside a garment, like its lining.
         n = -n;

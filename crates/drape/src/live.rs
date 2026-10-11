@@ -1178,6 +1178,7 @@ mod tests {
     fn panel_of(flat: Vec<[f64; 2]>, triangles: Vec<[u32; 3]>) -> FabricPanel {
         FabricPanel {
             shape: PieceId(1),
+            seam_mm: vec![crate::build::NO_SEAM_MM; flat.len()],
             flat,
             triangles,
             first_particle: 0,

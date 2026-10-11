@@ -408,6 +408,61 @@ fn cloth_facing_the_light_has_no_shadow_stripes() {
     );
 }
 
+/// A sewn seam shows in the shading: a card with a seam down its middle is lit differently
+/// along that line (a groove with a crest beside it), and evenly away from it and without one.
+#[test]
+fn a_seam_down_a_card_shows_in_the_shading() {
+    let g = gpu();
+    let mut r = StudioRenderer::new(&g.device, &g.adapter, Quality::High);
+    r.set_overrides(plain());
+    let target = RenderTarget::new(&g.device, 256, 256);
+    // Three columns of vertices, the middle one on the seam.
+    let (h, y) = (0.3, 1.0);
+    let p = vec![
+        Vec3::new(-h, y - h, 0.0),
+        Vec3::new(0.0, y - h, 0.0),
+        Vec3::new(h, y - h, 0.0),
+        Vec3::new(-h, y + h, 0.0),
+        Vec3::new(0.0, y + h, 0.0),
+        Vec3::new(h, y + h, 0.0),
+    ];
+    let t = vec![[0, 1, 4], [0, 4, 3], [1, 2, 5], [1, 5, 4]];
+    let mut c = mesh(&mut r, &g, (p.clone(), t), [0.6; 3], Material::Cloth);
+    let camera = front_camera(1.2);
+    let row = |img: &image::RgbaImage| -> Vec<f32> {
+        (96..160)
+            .map(|x| luminance(img.get_pixel(x, 128)))
+            .collect()
+    };
+    let without = row(&render_still(&mut r, &g, &target, &camera, &[&c]));
+    c.set_seams(&[300.0, 0.0, 300.0, 300.0, 0.0, 300.0]);
+    r.update_mesh(&g.device, &g.queue, &mut c, &p, None);
+    let img = render_still(&mut r, &g, &target, &camera, &[&c]);
+    img.save(format!("{}/studio_seam.png", env!("CARGO_TARGET_TMPDIR")))
+        .ok();
+    let with = row(&img);
+    let (lo, hi) = without
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)));
+    assert!(
+        hi - lo < 3.0,
+        "a card with no seam is lit evenly: {lo}..{hi}"
+    );
+    let change = with
+        .iter()
+        .zip(&without)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0, f32::max);
+    assert!(
+        change > 4.0,
+        "the seam changes the shading by only {change}"
+    );
+    assert!(
+        (with[0] - without[0]).abs() < 1.0 && (with[63] - without[63]).abs() < 1.0,
+        "away from the seam nothing changes"
+    );
+}
+
 /// The shadow maps are drawn again only when the geometry changes, not when the camera moves.
 #[test]
 fn shadow_maps_are_redrawn_only_when_geometry_changes() {

@@ -1,7 +1,7 @@
 //! Meshes the studio draws: the form, the cloth and the floor, each with its colour and kind
 //! of surface.
 
-use crate::mesh::{Vertex, vertex_normals};
+use crate::mesh::{NO_SEAM_MM, Vertex, vertex_normals};
 use glam::Vec3;
 
 /// What a mesh is made of, which decides how light falls on it.
@@ -57,6 +57,9 @@ pub struct StudioMesh {
     pub(crate) material: Material,
     /// The smallest box holding its vertices (min, max), for fitting the shadow map.
     pub(crate) bounds: (Vec3, Vec3),
+    /// Each vertex's distance (mm) from the nearest sewn seam, if the mesh has seams (see
+    /// [`Self::set_seams`]); empty for none.
+    pub(crate) seams: Vec<f32>,
 }
 
 impl StudioMesh {
@@ -137,9 +140,17 @@ impl StudioMesh {
             colour,
             material,
             bounds: (Vec3::ZERO, Vec3::ZERO),
+            seams: Vec::new(),
         };
         mesh.upload(queue, positions, Some(triangles));
         mesh
+    }
+
+    /// Tells the mesh how far (mm) each of its vertices is from the nearest sewn seam, so the
+    /// studio can draw the stitch lines (a groove in the shading along each). Takes effect at
+    /// the next upload of positions; an empty slice means no seams.
+    pub fn set_seams(&mut self, seams: &[f32]) {
+        self.seams = seams.to_vec();
     }
 
     /// Whether `positions` and `triangles` fit in the buffers this mesh has.
@@ -172,9 +183,11 @@ impl StudioMesh {
         let verts: Vec<Vertex> = positions
             .iter()
             .zip(&normals)
-            .map(|(p, n)| Vertex {
+            .enumerate()
+            .map(|(i, (p, n))| Vertex {
                 position: p.to_array(),
                 normal: n.to_array(),
+                seam: self.seams.get(i).copied().unwrap_or(NO_SEAM_MM),
             })
             .collect();
         queue.write_buffer(&self.vertices, 0, bytemuck::cast_slice(&verts));
