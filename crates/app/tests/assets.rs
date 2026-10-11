@@ -309,14 +309,14 @@ fn going_up_to_the_largest_size_moves_placed_pieces_out_of_the_form() {
 }
 
 #[test]
-fn show_tape_lines_is_remembered_with_the_view_settings() {
+fn show_measuring_tapes_is_remembered_with_the_view_settings() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = harness(dir.path());
     open_assets(&mut h);
-    h.get_by_label("Show tape lines").click();
+    h.get_by_label("Show measuring tapes").click();
     h.run();
     let saved = std::fs::read_to_string(dir.path().join("view.json")).unwrap();
-    assert!(saved.contains(r#""show_tapes": false"#), "{saved}");
+    assert!(saved.contains(r#""show_tapes": true"#), "{saved}");
 }
 
 #[test]

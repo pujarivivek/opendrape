@@ -1,11 +1,15 @@
 //! How the studio looks: its colours and sizes, in one place.
 
-/// The dress form: matte linen beige, as sRGB.
-pub const FORM_SRGB: [u8; 3] = [188, 168, 153];
-/// The dress form's tape lines: a dark brown tape, as sRGB.
+/// The dress form's linen cover: a light warm grey-beige, as sRGB (the approved forms).
+pub const FORM_SRGB: [u8; 3] = [208, 200, 193];
+/// Its sewn seams: the same linen, a little darker.
+pub const SEAM_SRGB: [u8; 3] = [176, 168, 160];
+/// Its measuring tapes, when shown: a dark brown tape, as sRGB.
 pub const TAPE_SRGB: [u8; 3] = [72, 58, 50];
-/// The dress form's stand (neck cap, pole and base): charcoal, as sRGB.
-pub const STAND_SRGB: [u8; 3] = [64, 64, 68];
+/// Its stand's knob, pole and base: charcoal, as sRGB.
+pub const STAND_SRGB: [u8; 3] = [58, 58, 62];
+/// Its brushed-metal neck cap: the metal's reflectance, as sRGB.
+pub const METAL_SRGB: [u8; 3] = [228, 228, 231];
 
 /// The backdrop: light, airy grey at the horizon, a little darker above (sRGB, as displayed).
 pub(crate) const HORIZON_SRGB: [u8; 3] = [218, 218, 220];

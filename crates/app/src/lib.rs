@@ -8,6 +8,7 @@ pub mod diagnostics;
 pub mod draping;
 pub mod editor;
 pub mod file_dialogs;
+pub mod form_label;
 pub mod gpu;
 #[doc(hidden)]
 pub mod i18n;

@@ -290,7 +290,7 @@ form-out-of-range = { $name } can be { $min }–{ $max } on this form
 form-unknown = this version of OpenDrape has no dress form called “{ $id }”
 recovery-form-replaced = Your work was restored on the default dress form, because { $error }.
 form-measured = Measured on the form:
-form-show-tapes = Show tape lines
+form-show-tapes = Show measuring tapes
 measure-bust = Bust
 measure-chest = Chest
 measure-under-bust = Under-bust
@@ -303,3 +303,13 @@ measure-back-waist-length = Back waist length
 measure-waist-to-hip = Waist to hip
 measure-front-waist-length = Front waist length
 measure-apex-to-apex = Apex to apex
+
+## The woven size label on the dress form.
+label-brand = OpenDrape
+label-form-women = WOMEN'S FORM
+label-form-men = MEN'S FORM
+label-size = SIZE { $size }
+label-custom = CUSTOM SIZE
+label-form-and-size = { $form } · { $size }
+label-girths-bust = BUST { $bust } · WAIST { $waist } · HIP { $hip } { $unit }
+label-girths-chest = CHEST { $chest } · WAIST { $waist } · HIP { $hip } { $unit }

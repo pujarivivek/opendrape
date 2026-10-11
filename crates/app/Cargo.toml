@@ -19,6 +19,7 @@ opendrape-render.workspace = true
 opendrape-sim.workspace = true
 earcut.workspace = true
 glam.workspace = true
+image.workspace = true
 arc-swap.workspace = true
 crossbeam-channel.workspace = true
 eframe.workspace = true

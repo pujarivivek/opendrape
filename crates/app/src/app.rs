@@ -124,6 +124,8 @@ pub struct OpenDrapeApp {
     next_stage: Option<Arc<Stage>>,
     /// A form that could not be built, so it isn't tried again every frame.
     unbuilt: Option<FormChoice>,
+    /// The form and the units its size label was last drawn for.
+    labelled: Option<(Option<FormChoice>, Units)>,
     /// The project the drape was last given (at Play, or since by an edit while draping).
     draped: Option<Arc<Project>>,
     /// The pieces as the 3D view shows them while arranging.
@@ -184,7 +186,11 @@ impl OpenDrapeApp {
         let offered = recovery.take();
         let view_settings = ViewSettings::load(startup.store.dir());
         Self {
-            viewport: render_state.map(|rs| Viewport::new(rs, &stage, view_settings)),
+            viewport: render_state.map(|rs| {
+                let project = editor.doc.project();
+                let label = crate::form_label::lines(&project.form, project.units);
+                Viewport::new(rs, &stage, view_settings, &label)
+            }),
             view_settings,
             diagnostics: Diagnostics::collect(info.as_ref(), startup.decision),
             startup,
@@ -197,6 +203,7 @@ impl OpenDrapeApp {
             stage,
             next_stage: None,
             unbuilt: None,
+            labelled: None,
             draped: None,
             arranged: SceneCache::default(),
             arranger: Arranger::default(),
@@ -388,7 +395,12 @@ impl OpenDrapeApp {
             else {
                 continue;
             };
-            let texture = viewport.thumbnail(rs, &stage, assets::THUMB, ctx.pixels_per_point());
+            let label = crate::form_label::lines(
+                stage.choice().expect("a form's stage"),
+                self.editor.doc.project().units,
+            );
+            let texture =
+                viewport.thumbnail(rs, &stage, &label, assets::THUMB, ctx.pixels_per_point());
             self.forms.thumbs.insert(id.to_string(), texture);
         }
     }
@@ -427,10 +439,30 @@ impl OpenDrapeApp {
         if self.editor.stage.is_some() {
             self.editor.stage = Some(stage.clone());
         }
+        let project = self.editor.doc.project();
+        let label = crate::form_label::lines(&project.form, project.units);
         if let (Some(viewport), Some(rs)) = (self.viewport.as_mut(), frame.wgpu_render_state()) {
-            viewport.set_stage(rs, &stage);
+            viewport.set_stage(rs, &stage, &label);
         }
         self.stage = stage;
+    }
+
+    /// The form's size label follows the project's units (its form is followed by
+    /// [`Self::sync_stage`]).
+    fn sync_label(&mut self, frame: &eframe::Frame) {
+        let now = (
+            self.stage.choice().cloned(),
+            self.editor.doc.project().units,
+        );
+        if self.labelled.as_ref() == Some(&now) {
+            return;
+        }
+        if let (Some(choice), Some(viewport), Some(rs)) =
+            (&now.0, self.viewport.as_mut(), frame.wgpu_render_state())
+        {
+            viewport.set_label(rs, &self.stage, &crate::form_label::lines(choice, now.1));
+        }
+        self.labelled = Some(now);
     }
 
     /// The pieces as the 3D view shows them while arranging.
@@ -1446,6 +1478,7 @@ impl eframe::App for OpenDrapeApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.sync_stage(frame);
+        self.sync_label(frame);
         self.guard_close(&ctx);
         let shortcut = self.file_shortcut(&ctx);
         let workspace_key = self.workspace_shortcut(&ctx);

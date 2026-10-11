@@ -43,9 +43,11 @@ pub const SEAM_BADGE_TEXT: Color32 = Color32::WHITE;
 
 /// The dress form in the 3D view: matte linen beige (sRGB).
 pub const FORM_SRGB: [u8; 3] = opendrape_render::studio::look::FORM_SRGB;
-/// The form's tape lines and its stand.
+/// The form's seams, measuring tapes, stand and metal neck cap.
+pub const SEAM_SRGB: [u8; 3] = opendrape_render::studio::look::SEAM_SRGB;
 pub const TAPE_SRGB: [u8; 3] = opendrape_render::studio::look::TAPE_SRGB;
 pub const STAND_SRGB: [u8; 3] = opendrape_render::studio::look::STAND_SRGB;
+pub const METAL_SRGB: [u8; 3] = opendrape_render::studio::look::METAL_SRGB;
 /// The fabric (a cotton blue) and the selected piece (a warmer orange), as linear RGB.
 pub const FABRIC: [f32; 3] = [0.17, 0.36, 0.70];
 pub const SELECTED_FABRIC: [f32; 3] = [0.95, 0.55, 0.25];
@@ -169,7 +171,7 @@ mod tests {
             ]
         );
         assert_eq!(GIZMO_BRIGHT, Color32::from_rgb(255, 200, 0));
-        assert_eq!(FORM_SRGB, [188, 168, 153]);
+        assert_eq!(FORM_SRGB, [208, 200, 193]);
         assert_eq!(FABRIC, [0.17, 0.36, 0.70]);
         assert_eq!(SELECTED_FABRIC, [0.95, 0.55, 0.25]);
         assert_eq!(STATS_TEXT, Color32::from_gray(60));

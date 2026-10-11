@@ -55,29 +55,16 @@ impl LightingChoice {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ViewSettings {
     #[serde(default)]
     pub quality: QualityChoice,
     #[serde(default)]
     pub lighting: LightingChoice,
-    /// The dress form's tape lines are drawn (Assets → Show tape lines).
-    #[serde(default = "shown")]
+    /// The dress form's measuring tapes are drawn (Assets → Show measuring tapes); its seams
+    /// always are.
+    #[serde(default)]
     pub show_tapes: bool,
-}
-
-fn shown() -> bool {
-    true
-}
-
-impl Default for ViewSettings {
-    fn default() -> Self {
-        Self {
-            quality: QualityChoice::default(),
-            lighting: LightingChoice::default(),
-            show_tapes: true,
-        }
-    }
 }
 
 impl ViewSettings {
@@ -150,18 +137,19 @@ mod tests {
     }
 
     #[test]
-    fn tape_lines_show_unless_turned_off_and_old_files_still_load() {
-        assert!(ViewSettings::default().show_tapes);
+    fn measuring_tapes_are_hidden_unless_turned_on_and_old_files_still_load() {
+        // The approved forms show their seams, not their measuring tapes.
+        assert!(!ViewSettings::default().show_tapes);
         let dir = tempfile::tempdir().unwrap();
-        // Saved before tape lines were a setting.
+        // Saved before measuring tapes were a setting.
         std::fs::write(dir.path().join("view.json"), r#"{ "quality": "basic" }"#).unwrap();
-        assert!(ViewSettings::load(Some(dir.path())).show_tapes);
-        let off = ViewSettings {
-            show_tapes: false,
+        assert!(!ViewSettings::load(Some(dir.path())).show_tapes);
+        let on = ViewSettings {
+            show_tapes: true,
             ..ViewSettings::default()
         };
-        assert!(off.save(Some(dir.path())));
-        assert!(!ViewSettings::load(Some(dir.path())).show_tapes);
+        assert!(on.save(Some(dir.path())));
+        assert!(ViewSettings::load(Some(dir.path())).show_tapes);
     }
 
     #[test]
