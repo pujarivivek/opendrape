@@ -66,8 +66,12 @@ const CLOTH_RISE: f32 = 0.0002;
 // Brushed metal's roughness.
 const METAL_ROUGHNESS: f32 = 0.45;
 const LINING: f32 = 0.8;
-// How much of the fabric's ambient occlusion (between its threads) darkens cloth.
+// How much of the fabric's ambient occlusion (between its threads) darkens cloth, how much
+// its weave's light and dark is stretched (1: as scanned; poplin's is slight), and how much
+// more uneven muslin's yarn is than linen's.
 const WEAVE_SHADE: f32 = 0.5;
+const WEAVE_CONTRAST: f32 = 2.5;
+const MUSLIN_YARN: f32 = 2.0;
 // How much the folds' darkening also takes from the key light.
 const AO_ON_KEY: f32 = 0.5;
 
@@ -481,8 +485,9 @@ fn fs_mesh(v: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
         if (draw.material.y == 1u) {
             // Dressed in its fabric: the weave's light and dark and its relief up close, and
             // the unevenness of its yarn from further off.
-            albedo = albedo * (2.0 * pictured.r) * mix(1.0, pictured.a, WEAVE_SHADE)
-                * (1.0 + yarn(v.weave, weave_span));
+            albedo = albedo * (1.0 + WEAVE_CONTRAST * (2.0 * pictured.r - 1.0))
+                * mix(1.0, pictured.a, WEAVE_SHADE)
+                * (1.0 + MUSLIN_YARN * yarn(v.weave, weave_span));
             n = woven(n, dpx, dpy, duvx, duvy, pictured.gb);
         }
         if (d < SEAM_REACH_MM) {

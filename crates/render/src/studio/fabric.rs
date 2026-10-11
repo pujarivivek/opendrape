@@ -8,9 +8,14 @@
 use std::sync::LazyLock;
 
 /// The scan's size (m): across the weft, then along the warp.
-pub const MUSLIN_TILE_M: [f32; 2] = [0.291_02, 0.280_80];
+pub const SCAN_M: [f32; 2] = [0.291_02, 0.280_80];
+/// The weave is laid at this many times the scan's size: muslin's threads are coarser than
+/// poplin's, and at the scan's own size they vanish between the pixels of a whole garment.
+pub const MUSLIN_SCALE: f32 = 2.0;
+/// The weave's tile on the cloth (m).
+pub const MUSLIN_TILE_M: [f32; 2] = [SCAN_M[0] * MUSLIN_SCALE, SCAN_M[1] * MUSLIN_SCALE];
 /// How strongly the weave's relief tilts the light (1: as scanned).
-pub const MUSLIN_RELIEF: f32 = 1.0;
+pub const MUSLIN_RELIEF: f32 = 2.0;
 
 static MUSLIN: LazyLock<image::RgbaImage> = LazyLock::new(|| {
     image::load_from_memory(include_bytes!("../../../../assets/fabric/muslin.png"))

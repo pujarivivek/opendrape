@@ -11,7 +11,7 @@ pub mod quality;
 pub mod stage;
 
 pub use build::{
-    DENSITY_KG_M2, Drape, DrapeNote, Fabric, FabricPanel, PIN_COMPLIANCE, build_drape,
+    DENSITY_KG_M2, Drape, DrapeNote, Fabric, FabricPanel, PIN_COMPLIANCE, build_drape, weave_of,
 };
 pub use quality::DrapeQuality;
 pub use stage::{

@@ -23,6 +23,8 @@ pub struct ArrangedPanel {
     pub placement: Placement,
     pub positions: Vec<DVec3>,
     pub triangles: Vec<[u32; 3]>,
+    /// Each point's place on the fabric's weave (m), so the piece is drawn in its fabric.
+    pub weave: Vec<[f32; 2]>,
 }
 
 /// Every piece that could be made into fabric, at its placement.
@@ -145,6 +147,7 @@ impl SceneCache {
                     placement,
                     positions,
                     triangles: panel.triangles.clone(),
+                    weave: opendrape_drape::weave_of(&panel.flat, panel.grain),
                 })
             })
             .collect();

@@ -96,15 +96,7 @@ impl Fabric {
     pub fn weave_m(&self) -> Vec<[f32; 2]> {
         self.panels
             .iter()
-            .flat_map(|p| {
-                let warp = DVec2::from_array(p.grain).normalize_or_zero();
-                let warp = if warp == DVec2::ZERO { DVec2::Y } else { warp };
-                let weft = DVec2::new(warp.y, -warp.x);
-                p.flat.iter().map(move |f| {
-                    let f = DVec2::from_array(*f);
-                    [f.dot(weft) as f32, f.dot(warp) as f32]
-                })
-            })
+            .flat_map(|p| weave_of(&p.flat, p.grain))
             .collect()
     }
 
@@ -138,6 +130,20 @@ impl Fabric {
         }
         live
     }
+}
+
+/// Where each of a panel's flat points (m, on the pattern table) lies on its fabric's weave
+/// (m): across the grain, then along it, for `grain` the panel's warp direction.
+pub fn weave_of(flat: &[[f64; 2]], grain: [f64; 2]) -> Vec<[f32; 2]> {
+    let warp = DVec2::from_array(grain).normalize_or_zero();
+    let warp = if warp == DVec2::ZERO { DVec2::Y } else { warp };
+    let weft = DVec2::new(warp.y, -warp.x);
+    flat.iter()
+        .map(|f| {
+            let f = DVec2::from_array(*f);
+            [f.dot(weft) as f32, f.dot(warp) as f32]
+        })
+        .collect()
 }
 
 /// How far (mm) each point of panel `k` of `mesh` is from the nearest stretch of its outline

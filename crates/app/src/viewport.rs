@@ -301,7 +301,7 @@ impl Viewport {
                 .map(|p| {
                     let positions: Vec<glam::Vec3> =
                         p.positions.iter().map(|q| q.as_vec3()).collect();
-                    let mesh = self.renderer.create_mesh(
+                    let mut mesh = self.renderer.create_mesh(
                         &rs.device,
                         &rs.queue,
                         &positions,
@@ -309,6 +309,9 @@ impl Viewport {
                         FABRIC,
                         Material::Cloth,
                     );
+                    mesh.set_weave(&p.weave, &p.triangles);
+                    self.renderer
+                        .update_mesh(&rs.device, &rs.queue, &mut mesh, &positions, None);
                     (p.shape, mesh)
                 })
                 .collect();
