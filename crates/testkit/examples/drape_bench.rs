@@ -29,6 +29,7 @@ struct Opts {
     substeps: Option<usize>,
     iterations: Option<usize>,
     seam_compliance: Option<f64>,
+    stretch_compliance: Option<f64>,
     threads: Option<usize>,
 }
 
@@ -41,6 +42,7 @@ fn parse() -> Opts {
         substeps: None,
         iterations: None,
         seam_compliance: None,
+        stretch_compliance: None,
         threads: None,
     };
     let mut args = std::env::args().skip(1);
@@ -65,6 +67,9 @@ fn parse() -> Opts {
             "--iterations" => o.iterations = Some(value().parse().expect("iterations")),
             "--seam-compliance" => {
                 o.seam_compliance = Some(value().parse().expect("seam compliance"))
+            }
+            "--stretch-compliance" => {
+                o.stretch_compliance = Some(value().parse().expect("stretch compliance"))
             }
             "--threads" => o.threads = Some(value().parse().expect("threads")),
             other => panic!("unknown option {other}"),
@@ -133,6 +138,7 @@ fn main() {
         substeps: o.substeps.unwrap_or(defaults.substeps),
         iterations: o.iterations.unwrap_or(defaults.iterations),
         seam_compliance: o.seam_compliance.unwrap_or(defaults.seam_compliance),
+        stretch_compliance: o.stretch_compliance.unwrap_or(defaults.stretch_compliance),
         ..defaults
     };
     let mesh = MeshParams {

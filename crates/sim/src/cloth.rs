@@ -433,16 +433,21 @@ impl Cloth {
             .filter(|&(_, d)| d <= gap)
             .map(|(g, _)| g)
             .collect();
-        if closed.is_empty() {
-            return closed;
+        self.weld_groups(&closed);
+        closed
+    }
+
+    /// Welds the seams `groups` (sorted), closed or not: each stitched pair meets halfway.
+    pub fn weld_groups(&mut self, groups: &[u32]) {
+        if groups.is_empty() {
+            return;
         }
         let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.stitches)
             .into_iter()
             .zip(std::mem::take(&mut self.stitch_group))
-            .partition(|(_, g)| closed.binary_search(g).is_ok());
+            .partition(|(_, g)| groups.binary_search(g).is_ok());
         (self.stitches, self.stitch_group) = later.into_iter().unzip();
         self.merge(now.into_iter().map(|(l, _)| l));
-        closed
     }
 
     /// Welds every seam, closed or not.

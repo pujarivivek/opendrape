@@ -207,29 +207,42 @@ fn segment_crosses_triangle(a: DVec3, b: DVec3, [p, q, r]: [DVec3; 3]) -> bool {
 /// either side of each seam edge, 0 for seams that lie flat like continuous fabric. None
 /// before anything has welded.
 pub fn seam_crease_deg(cloth: &Cloth) -> Option<f64> {
+    let angles = seam_fold_angles(cloth);
+    (!angles.is_empty()).then(|| angles.iter().sum::<f64>() / angles.len() as f64)
+}
+
+/// The fold at each welded seam edge (degrees, 0 lying flat): the angle between the two
+/// triangles either side of it, taken about the edge itself so that it reads the same
+/// whichever way round each piece's triangles are wound (a piece sewn to its mirror image
+/// placed without a turn faces the other way).
+pub fn seam_fold_angles(cloth: &Cloth) -> Vec<f64> {
     use std::collections::HashMap;
     let seams = cloth.seam_edges();
     if seams.is_empty() {
-        return None;
+        return Vec::new();
     }
     let x = cloth.positions();
-    let mut normals: HashMap<(u32, u32), Vec<DVec3>> = HashMap::new();
+    // For each seam edge, the vertex opposite it in each triangle that has it.
+    let mut opposite: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
     for t in cloth.triangles() {
-        let n = (x[t[1] as usize] - x[t[0] as usize]).cross(x[t[2] as usize] - x[t[0] as usize]);
         for k in 0..3 {
             let (a, b) = (t[k], t[(k + 1) % 3]);
-            if seams.binary_search(&(a.min(b), a.max(b))).is_ok() {
-                normals.entry((a.min(b), a.max(b))).or_default().push(n);
+            let key = (a.min(b), a.max(b));
+            if seams.binary_search(&key).is_ok() {
+                opposite.entry(key).or_default().push(t[(k + 2) % 3]);
             }
         }
     }
-    let angles: Vec<f64> = seams
+    seams
         .iter()
-        .filter_map(|e| match normals.get(e).map(Vec::as_slice) {
-            Some([n1, n2]) => {
-                let (l1, l2) = (n1.length(), n2.length());
-                (l1 > 0.0 && l2 > 0.0).then(|| {
-                    (n1.dot(*n2) / (l1 * l2))
+        .filter_map(|&(u, v)| match opposite.get(&(u, v)).map(Vec::as_slice) {
+            Some(&[p, q]) => {
+                let e = x[v as usize] - x[u as usize];
+                let np = e.cross(x[p as usize] - x[u as usize]);
+                let nq = (x[q as usize] - x[u as usize]).cross(e);
+                let (lp, lq) = (np.length(), nq.length());
+                (lp > 0.0 && lq > 0.0).then(|| {
+                    (np.dot(nq) / (lp * lq))
                         .clamp(-1.0, 1.0)
                         .acos()
                         .to_degrees()
@@ -237,8 +250,7 @@ pub fn seam_crease_deg(cloth: &Cloth) -> Option<f64> {
             }
             _ => None,
         })
-        .collect();
-    (!angles.is_empty()).then(|| angles.iter().sum::<f64>() / angles.len() as f64)
+        .collect()
 }
 
 /// Steps `solver` against `collider` for `seconds`; returns wall-clock ms per frame.
@@ -344,5 +356,25 @@ mod tests {
         c.weld_stitches();
         let crease = seam_crease_deg(&c).unwrap();
         assert!((crease - 90.0).abs() < 1e-6, "{crease}");
+    }
+
+    #[test]
+    fn a_seam_reads_flat_however_the_two_pieces_are_wound() {
+        // The second square's triangles wound the other way (its mirror image, as a twin
+        // placed without a turn is): flat is still 0°.
+        let mut b = ClothBuilder::new(0.15);
+        let p = b.add_panel(&side_by_side(0.0), 1.0);
+        let q = b.add_panel(
+            &Panel {
+                triangles: vec![[0, 2, 1], [0, 3, 2]],
+                ..side_by_side(0.1)
+            },
+            1.0,
+        );
+        b.stitch((p, 1), (q, 0));
+        b.stitch((p, 2), (q, 3));
+        let mut c = b.build();
+        c.weld_stitches();
+        assert!(seam_crease_deg(&c).unwrap() < 1e-9, "flat");
     }
 }

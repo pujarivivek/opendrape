@@ -2626,6 +2626,7 @@ dependencies = [
  "opendrape-core",
  "opendrape-drape",
  "opendrape-geom",
+ "opendrape-io",
  "opendrape-mesh",
  "opendrape-sim",
  "rayon",

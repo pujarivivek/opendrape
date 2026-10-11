@@ -27,6 +27,13 @@ pub struct Params {
     pub weld_gap: f64,
     /// When seams that still haven't closed are welded anyway, with a note (None: never).
     pub weld_timeout: Option<f64>,
+    /// A seam that has stopped closing (its gap has not shrunk by `weld_stall_shrink` for
+    /// `weld_stall_time` seconds after the stitch ramp) welds anyway if its gap is within this
+    /// (m): a garment a little small for the form closes with the gap taken up as strain, as
+    /// fabric does, instead of hanging open until the timeout.
+    pub weld_stall_gap: f64,
+    pub weld_stall_time: f64,
+    pub weld_stall_shrink: f64,
     /// XPBD compliance (m/N) of fabric edges along the warp and weft, of bending, and of the
     /// bias (the diagonals of the fabric's cells, and the hinges across them).
     pub stretch_compliance: f64,
@@ -70,6 +77,9 @@ impl Default for Params {
             stitch_close_time: 0.5,
             weld_gap: 0.004,
             weld_timeout: Some(3.0),
+            weld_stall_gap: 0.02,
+            weld_stall_time: 0.25,
+            weld_stall_shrink: 0.0005,
             stretch_compliance: 1e-6,
             bend_compliance: 1.0,
             shear_compliance: 0.05,
@@ -141,6 +151,9 @@ pub struct Solver {
     contacts: Vec<Contact>,
     /// How many particles the body has been asked about so far.
     body_queries: u64,
+    /// For each open seam, the smallest gap it has reached and when: a seam that stops
+    /// closing a little short welds anyway (`Params::weld_stall_gap`).
+    seam_best: std::collections::BTreeMap<u32, (f64, f64)>,
 }
 
 impl Solver {
@@ -154,6 +167,7 @@ impl Solver {
             self_contacts: None,
             contacts: Vec::new(),
             body_queries: 0,
+            seam_best: std::collections::BTreeMap::new(),
         }
     }
     /// How many particles the body has been asked about so far: a settled drape asks about
@@ -209,7 +223,21 @@ impl Solver {
                 }
                 self.cloth.weld_stitches();
             } else {
-                self.cloth.weld_closed(p.weld_gap);
+                // Closed seams weld; so do seams that have stopped closing a little short.
+                let mut weld: Vec<u32> = Vec::new();
+                for (group, gap) in self.cloth.open_seam_gaps() {
+                    let best = self.seam_best.entry(group).or_insert((gap, t));
+                    if gap < best.0 - p.weld_stall_shrink {
+                        *best = (gap, t);
+                    }
+                    let stalled = t >= p.stitch_close_time
+                        && t - best.1 >= p.weld_stall_time
+                        && gap <= p.weld_stall_gap;
+                    if gap <= p.weld_gap || stalled {
+                        weld.push(group);
+                    }
+                }
+                self.cloth.weld_groups(&weld);
             }
             // A weld renumbers the triangles' particles: any pairs found are stale.
             if let Some(sc) = &mut self.self_contacts {
@@ -622,6 +650,60 @@ mod tests {
         assert_eq!(s.cloth().seam_hinge_count(), 1, "one hinge across the seam");
         let left = fold(&s);
         assert!(left < 5.0, "{left}° of fold left at the seam");
+    }
+
+    #[test]
+    fn a_seam_that_stops_a_little_short_welds_without_a_note() {
+        // Two triangles whose far corners are pinned so their stitched edges can get no
+        // closer than 1 cm: past the ramp, once the gap has stopped shrinking, they weld, and
+        // nothing is said. A seam held 5 cm short waits for the timeout instead.
+        let held = |short: f64| {
+            let mut b = ClothBuilder::new(0.15);
+            let flat = vec![
+                DVec2::new(0.0, 0.0),
+                DVec2::new(0.1, 0.0),
+                DVec2::new(0.0, 0.1),
+            ];
+            let panel = |z: f64| Panel {
+                positions: flat.iter().map(|p| p.extend(z)).collect(),
+                flat: Some(flat.clone()),
+                triangles: vec![[0, 1, 2]],
+            };
+            // The stitched corners start 10 cm apart; the pinned corners `short` apart.
+            let (p, q) = (b.add_panel(&panel(0.0), 1.0), b.add_panel(&panel(0.1), 1.0));
+            b.stitch_in((p, 0), (q, 0), 3);
+            b.stitch_in((p, 1), (q, 1), 3);
+            b.pin((p, 2));
+            b.pin((q, 2));
+            let mut c = b.build();
+            c.x[5].z = short;
+            c.prev[5] = c.x[5];
+            Solver::new(c, no_gravity())
+        };
+        let mut s = held(0.01);
+        let mut welded_at = None;
+        for _ in 0..120 {
+            s.step(None);
+            if welded_at.is_none() && !s.cloth().has_open_stitches() {
+                welded_at = Some(s.time());
+            }
+        }
+        let at = welded_at.expect("welded within 2 s");
+        assert!(at > 0.5 && at < 1.5, "welded at {at} s");
+        assert_eq!(s.take_notes(), vec![], "a little short is not worth a note");
+        // Every corner pinned, the edges 10 cm apart: not a little short, so it waits.
+        let mut s = held(0.1);
+        for k in 0..3 {
+            s.cloth_mut().inv_mass[k] = 0.0;
+            s.cloth_mut().inv_mass[3 + k] = 0.0;
+        }
+        for _ in 0..120 {
+            s.step(None);
+        }
+        assert!(
+            s.cloth().has_open_stitches(),
+            "10 cm short waits for the timeout"
+        );
     }
 
     #[test]

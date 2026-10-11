@@ -13,6 +13,7 @@ opendrape-body.workspace = true
 opendrape-core.workspace = true
 opendrape-drape.workspace = true
 opendrape-geom.workspace = true
+opendrape-io.workspace = true
 opendrape-mesh.workspace = true
 opendrape-sim.workspace = true
 glam.workspace = true

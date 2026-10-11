@@ -15,15 +15,19 @@ struct Uniforms {
     color: [f32; 4],
 }
 
-/// Area-weighted vertex normals; vertices used by no triangle get +Y.
+/// Area-weighted vertex normals; vertices used by no triangle get +Y. A face wound the other
+/// way from the faces already summed at a vertex (a piece sewn to its mirror image placed
+/// without a turn) is turned to agree with them: the lighting is two-sided, so only the
+/// line matters, and summed as they come the two sides would cancel into a dark seam.
 pub fn vertex_normals(positions: &[Vec3], triangles: &[[u32; 3]]) -> Vec<Vec3> {
     let mut n = vec![Vec3::ZERO; positions.len()];
     for t in triangles {
         let [a, b, c] = t.map(|k| k as usize);
         let face = (positions[b] - positions[a]).cross(positions[c] - positions[a]);
-        n[a] += face;
-        n[b] += face;
-        n[c] += face;
+        for k in [a, b, c] {
+            let agreed = if n[k].dot(face) < 0.0 { -face } else { face };
+            n[k] += agreed;
+        }
     }
     n.into_iter()
         .map(|v| v.try_normalize().unwrap_or(Vec3::Y))
@@ -262,5 +266,41 @@ impl MeshRenderer {
             }
         }
         queue.submit([encoder.finish()]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_seam_between_pieces_wound_opposite_ways_still_gets_a_normal() {
+        // Two flat squares side by side sharing an edge, the second wound the other way.
+        let positions = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(2.0, 1.0, 0.0),
+        ];
+        let triangles = [[0, 1, 2], [0, 2, 3], [1, 5, 4], [1, 2, 5]];
+        let n = vertex_normals(&positions, &triangles);
+        for (k, v) in n.iter().enumerate() {
+            assert!(
+                (v.length() - 1.0).abs() < 1e-6 && v.z.abs() > 0.999,
+                "vertex {k}: {v}"
+            );
+        }
+        // Summed as they come, the shared edge's normals would have cancelled.
+        let raw: Vec3 = triangles
+            .iter()
+            .map(|t| {
+                let [a, b, c] = t.map(|k| k as usize);
+                (positions[b] - positions[a]).cross(positions[c] - positions[a])
+            })
+            .filter(|_| true)
+            .sum();
+        assert!(raw.length() < 1e-6, "{raw}");
     }
 }
