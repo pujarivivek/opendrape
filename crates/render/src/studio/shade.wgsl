@@ -256,14 +256,26 @@ fn vs_mesh(v: VsIn) -> VsOut {
     return out;
 }
 
-// How a sewn seam stands at `d` mm from the stitch line (metres, 0 flat): a narrow groove
-// where the stitches pull the fabric in, and a slight rise either side where the allowance
-// underneath lifts it. The light then draws each seam as a fine crest with a shadow beside
-// it, as a real one reads.
-fn seam_height(d: f32) -> f32 {
-    let groove = -0.35 * exp(-(d * d) / 1.0);
-    let shoulder = 0.15 * exp(-((d - 2.2) * (d - 2.2)) / 1.44);
-    return (groove + shoulder) * 0.001;
+// How a sewn seam stands at `d` mm from the stitch line: a narrow groove where the stitches
+// pull the fabric in, and a slight rise either side where the allowance underneath lifts it.
+// The light then draws each seam as a fine crest with a shadow beside it, as a real one
+// reads. The slope (mm per mm) is what bends the normal; the heights are in mm.
+const SEAM_GROOVE_MM: f32 = 0.45;
+const SEAM_GROOVE_WIDTH_MM: f32 = 0.75;
+const SEAM_CREST_MM: f32 = 0.2;
+const SEAM_CREST_AT_MM: f32 = 1.7;
+const SEAM_CREST_WIDTH_MM: f32 = 0.9;
+// Past this (mm) a seam leaves the shading alone.
+const SEAM_REACH_MM: f32 = 6.0;
+
+// The seam profile's slope at `d` mm from the stitch line (mm per mm).
+fn seam_slope(d: f32) -> f32 {
+    let gw = SEAM_GROOVE_WIDTH_MM * SEAM_GROOVE_WIDTH_MM;
+    let groove = -SEAM_GROOVE_MM * exp(-(d * d) / gw);
+    let c = d - SEAM_CREST_AT_MM;
+    let cw = SEAM_CREST_WIDTH_MM * SEAM_CREST_WIDTH_MM;
+    let crest = SEAM_CREST_MM * exp(-(c * c) / cw);
+    return -2.0 * d / gw * groove - 2.0 * c / cw * crest;
 }
 
 @fragment
@@ -271,21 +283,29 @@ fn fs_mesh(v: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     var n = normalize(v.normal);
     var albedo = draw.colour.rgb;
     let material = draw.material.x;
-    // The seam's groove bends the normal (bump mapping from a height, Mikkelsen 2010): the
-    // derivatives come first, where control flow is still uniform.
-    let height = seam_height(v.seam);
-    let dh_dx = dpdx(height);
-    let dh_dy = dpdy(height);
+    // The seam's groove bends the normal (bump mapping from a height, Mikkelsen 2010). The
+    // seam distance changes by `per_px` mm from one pixel to the next: seen from far enough
+    // away that the groove would fall between pixels, the whole profile is scaled up to stay
+    // about a pixel wide (its slope, so its strength, unchanged), as a drawn line would.
+    // Derivatives come first, where control flow is still uniform.
+    let d_dx = dpdx(v.seam);
+    let d_dy = dpdy(v.seam);
+    let per_px = abs(d_dx) + abs(d_dy);
+    let scale = max(1.0, 0.75 * per_px / SEAM_GROOVE_WIDTH_MM);
+    let d = v.seam / scale;
+    let slope = seam_slope(d);
+    let dh_dx = slope * d_dx * 0.001;
+    let dh_dy = slope * d_dy * 0.001;
     let sigma_s = dpdx(v.world);
     let sigma_t = dpdy(v.world);
-    if (material == CLOTH && v.seam < 8.0) {
+    if (material == CLOTH && d < SEAM_REACH_MM) {
         let r1 = cross(sigma_t, n);
         let r2 = cross(n, sigma_s);
         let det = dot(sigma_s, r1);
         let grad = sign(det) * (dh_dx * r1 + dh_dy * r2);
         n = normalize(abs(det) * n - grad);
         // Stitches shade the groove a little as well.
-        albedo = albedo * (1.0 - 0.12 * exp(-(v.seam * v.seam) / 1.44));
+        albedo = albedo * (1.0 - 0.16 * exp(-(d * d) / 0.8));
     }
     if (!front) {
         // The other side: seen from inside a garment, like its lining.
