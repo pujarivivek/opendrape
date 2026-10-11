@@ -1,4 +1,4 @@
-use crate::cloth::{Cloth, Link};
+use crate::cloth::{Cloth, Hinge, Link};
 use crate::collide::{Collider, Plane};
 use crate::self_collide::SelfContacts;
 use crate::timing::{Lap, PhaseTimes};
@@ -32,9 +32,9 @@ pub struct Params {
     pub stretch_compliance: f64,
     pub bend_compliance: f64,
     pub shear_compliance: f64,
-    /// XPBD compliance (m/N) of the hinges across welded seams. A sewn seam is far stiffer
-    /// than the fabric: left as soft as the fabric's bending, the angle the two pieces met
-    /// at stays as a ridge down the seam.
+    /// XPBD compliance (rad/(N·m)) of the hinges across welded seams, which are held flat.
+    /// A sewn seam is far stiffer than the fabric: left as soft as the fabric's bending, the
+    /// angle the two pieces met at stays as a ridge down the seam.
     pub seam_compliance: f64,
     /// Velocity damping per second.
     pub damping: f64,
@@ -73,7 +73,7 @@ impl Default for Params {
             stretch_compliance: 1e-6,
             bend_compliance: 1.0,
             shear_compliance: 0.05,
-            seam_compliance: 0.01,
+            seam_compliance: 100.0,
             damping: 1.0,
             friction: 0.4,
             thickness: 0.003,
@@ -298,12 +298,11 @@ impl Solver {
                 solve_links(&mut c.x, &c.inv_mass, &c.stitches, 0.0, stitch_scale, sdt);
                 lap.lap(&mut ph.stitches);
                 solve_links(&mut c.x, &c.inv_mass, &c.bend, p.bend_compliance, 1.0, sdt);
-                solve_links(
+                solve_hinges(
                     &mut c.x,
                     &c.inv_mass,
-                    &c.seam_bend,
+                    &c.seam_hinges,
                     p.seam_compliance,
-                    1.0,
                     sdt,
                 );
                 lap.lap(&mut ph.bend);
@@ -376,6 +375,56 @@ fn solve_links(
         let corr = d * (lambda / len);
         x[a] += corr * w[a];
         x[b] -= corr * w[b];
+    }
+}
+
+/// One Gauss–Seidel pass holding each hinge flat: the angle between the two triangles about
+/// the edge `u`–`v` is driven to zero (XPBD on the angle, no pull along the fabric). The
+/// angle's gradient: at each opposite vertex, its triangle's normal over that vertex's height
+/// above the edge; at the edge's ends, the opposite vertices' gradients shared back by where
+/// each vertex's foot falls along the edge, so the four sum to nothing.
+fn solve_hinges(x: &mut [DVec3], w: &[f64], hinges: &[Hinge], compliance: f64, sdt: f64) {
+    let alpha = compliance / (sdt * sdt);
+    for h in hinges {
+        let (u, v, p, q) = (h.u as usize, h.v as usize, h.p as usize, h.q as usize);
+        let e = x[v] - x[u];
+        let len2 = e.length_squared();
+        if len2 < 1e-16 {
+            continue;
+        }
+        let (ep, eq) = (x[p] - x[u], x[q] - x[u]);
+        // Normals that agree when the hinge lies flat.
+        let (np, nq) = (e.cross(ep), eq.cross(e));
+        let (ap, aq) = (np.length(), nq.length()); // twice each triangle's area
+        if ap < 1e-14 || aq < 1e-14 {
+            continue;
+        }
+        let (np, nq) = (np / ap, nq / aq);
+        let ehat = e / len2.sqrt();
+        let angle = np.cross(nq).dot(ehat).atan2(np.dot(nq));
+        if angle.abs() < 1e-9 {
+            continue;
+        }
+        // Heights of p and q above the edge, and where their feet fall along it.
+        let len = len2.sqrt();
+        let (hp, hq) = (ap / len, aq / len);
+        let (tp, tq) = (ep.dot(e) / len2, eq.dot(e) / len2);
+        let gp = -np / hp;
+        let gq = -nq / hq;
+        let gu = -(gp * (1.0 - tp) + gq * (1.0 - tq));
+        let gv = -(gp * tp + gq * tq);
+        let wsum = w[u] * gu.length_squared()
+            + w[v] * gv.length_squared()
+            + w[p] * gp.length_squared()
+            + w[q] * gq.length_squared();
+        if wsum == 0.0 {
+            continue;
+        }
+        let lambda = -angle / (wsum + alpha);
+        x[u] += gu * (lambda * w[u]);
+        x[v] += gv * (lambda * w[v]);
+        x[p] += gp * (lambda * w[p]);
+        x[q] += gq * (lambda * w[q]);
     }
 }
 
@@ -549,26 +598,30 @@ mod tests {
         );
         b.stitch((p, 1), (q, 1));
         b.stitch((p, 2), (q, 2));
-        let mut s = Solver::new(b.build(), no_gravity());
-        let angle = |s: &Solver| {
-            let x = s.cloth().positions();
-            // The far edges of the two squares, either side of the seam.
-            let (a, b) = ((x[0] + x[3]) * 0.5, (x[4] + x[7]) * 0.5);
-            let seam = (x[1] + x[2]) * 0.5;
-            (a - seam).angle_between(b - seam).to_degrees()
+        // Compliance scales with mass: these 10 cm triangles weigh a hundredth of fabric's
+        // 12 mm cells per particle, so the test asks for a hundredth of the compliance.
+        let params = Params {
+            seam_compliance: 1.0,
+            ..no_gravity()
         };
-        assert!((angle(&s) - 90.0).abs() < 1.0);
+        let mut s = Solver::new(b.build(), params);
+        // The fold at the seam: the angle between the normals of the two triangles that share
+        // it (0° lying flat). The squares' far halves hang off their own, soft, diagonal
+        // hinges and lag behind, so they are not measured.
+        let fold = |s: &Solver| {
+            let x = s.cloth().positions();
+            let n1 = (x[2] - x[1]).cross(x[0] - x[1]);
+            let n2 = (x[4] - x[1]).cross(x[2] - x[1]);
+            n1.angle_between(n2).to_degrees()
+        };
+        assert!((fold(&s) - 90.0).abs() < 1.0, "{}°", fold(&s));
         for _ in 0..120 {
             s.step(None);
         }
         assert!(!s.cloth().has_open_stitches());
-        assert_eq!(
-            s.cloth().seam_bend_links().count(),
-            1,
-            "one hinge across the seam"
-        );
-        let opened = angle(&s);
-        assert!(opened > 170.0, "{opened}° between the squares");
+        assert_eq!(s.cloth().seam_hinge_count(), 1, "one hinge across the seam");
+        let left = fold(&s);
+        assert!(left < 5.0, "{left}° of fold left at the seam");
     }
 
     #[test]

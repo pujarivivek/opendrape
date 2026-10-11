@@ -35,9 +35,10 @@ pub struct Cloth {
     pub(crate) stretch: Vec<Link>,
     /// Hinges across structural edges: the fabric's resistance to folding.
     pub(crate) bend: Vec<Link>,
-    /// Hinges across welded seams, resting where the pattern lays flat: far stiffer than the
-    /// fabric's own bending, as a sewn seam is (`Params::seam_compliance`).
-    pub(crate) seam_bend: Vec<Link>,
+    /// Hinges across welded seams, held flat (`Params::seam_compliance`): a sewn seam is far
+    /// stiffer than the fabric, and a distance link can't hold an angle without also acting
+    /// along the fabric, which on a stretched garment buckles the seam into a ridge.
+    pub(crate) seam_hinges: Vec<Hinge>,
     /// Edges on the bias, and the hinges across them (a cell's other diagonal): the fabric
     /// shears along these, softly.
     pub(crate) shear: Vec<Link>,
@@ -98,13 +99,14 @@ fn unique_edges(triangles: &[[u32; 3]]) -> Vec<(u32, u32)> {
 }
 
 /// An edge `u`–`v` shared by exactly two triangles, and the vertices `p` and `q` opposite it in
-/// each: the fabric bends about the edge, and a distance link `p`–`q` resists it.
+/// each: the fabric bends about the edge. Within a panel a distance link `p`–`q` resists it;
+/// across a seam the angle itself is held.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Hinge {
-    u: u32,
-    v: u32,
-    p: u32,
-    q: u32,
+pub(crate) struct Hinge {
+    pub(crate) u: u32,
+    pub(crate) v: u32,
+    pub(crate) p: u32,
+    pub(crate) q: u32,
 }
 
 /// Every edge shared by exactly two triangles, sorted by edge.
@@ -126,31 +128,6 @@ fn hinges(triangles: &[[u32; 3]]) -> Vec<Hinge> {
             _ => None,
         })
         .collect()
-}
-
-/// How far apart a hinge's opposite vertices lie with both its triangles laid flat in one
-/// plane, from the rest lengths of the five edges alone (the law of cosines twice: the
-/// angles at `u`, added). None if a length is missing or the lengths make no triangle.
-fn unfolded(rest: &HashMap<(u32, u32), f64>, h: &Hinge) -> Option<f64> {
-    let len = |a, b| rest.get(&edge_key(a, b)).copied();
-    let (uv, up, vp, uq, vq) = (
-        len(h.u, h.v)?,
-        len(h.u, h.p)?,
-        len(h.v, h.p)?,
-        len(h.u, h.q)?,
-        len(h.v, h.q)?,
-    );
-    // The angle between sides `a` and `b`, with `c` opposite it.
-    let angle = |a: f64, b: f64, c: f64| {
-        if a <= 0.0 || b <= 0.0 {
-            return None;
-        }
-        let cos = (a * a + b * b - c * c) / (2.0 * a * b);
-        (cos.abs() <= 1.0 + 1e-9).then(|| cos.clamp(-1.0, 1.0).acos())
-    };
-    let at_u = angle(uv, up, vp)? + angle(uv, uq, vq)?;
-    let d2 = up * up + uq * uq - 2.0 * up * uq * at_u.cos();
-    (d2 > 0.0).then(|| d2.sqrt())
 }
 
 impl ClothBuilder {
@@ -388,11 +365,16 @@ impl Cloth {
     pub fn bend_link_count(&self) -> usize {
         self.bend.len()
     }
-    /// The hinges across welded seams.
-    pub fn seam_bend_links(&self) -> impl Iterator<Item = (usize, usize, f64)> + '_ {
-        self.seam_bend
+    /// How many hinges across welded seams are held flat.
+    pub fn seam_hinge_count(&self) -> usize {
+        self.seam_hinges.len()
+    }
+    /// The hinges across welded seams: the seam edge's particles, then the one opposite it in
+    /// each triangle.
+    pub fn seam_hinges(&self) -> impl Iterator<Item = [usize; 4]> + '_ {
+        self.seam_hinges
             .iter()
-            .map(|l| (l.a as usize, l.b as usize, l.rest))
+            .map(|h| [h.u as usize, h.v as usize, h.p as usize, h.q as usize])
     }
     pub fn bend_links(&self) -> impl Iterator<Item = (usize, usize, f64)> + '_ {
         self.bend
@@ -584,35 +566,25 @@ impl Cloth {
                 .map(|l| (edge_key(m(l.a), m(l.b)), l.rest))
                 .collect()
         };
-        let (old, old_seam) = (remembered(&self.bend), remembered(&self.seam_bend));
-        let x = &self.x;
-        let (mut bend, mut seam_bend) = (Vec::new(), Vec::new());
+        let old = remembered(&self.bend);
+        let (mut bend, mut seam_hinges) = (Vec::new(), Vec::new());
         for h in hinges(&self.triangles) {
             let key = edge_key(h.p, h.q);
             if on_bias.contains(&key) {
                 continue;
             }
-            if let Some(&rest) = old.get(&key) {
-                bend.push(Link {
+            match old.get(&key) {
+                Some(&rest) => bend.push(Link {
                     a: h.p,
                     b: h.q,
                     rest,
-                });
-                continue;
+                }),
+                // Across a seam, this weld's or an earlier one's: a hinge held flat.
+                None => seam_hinges.push(h),
             }
-            let rest = old_seam
-                .get(&key)
-                .copied()
-                .or_else(|| unfolded(&rest_of, &h))
-                .unwrap_or_else(|| x[h.p as usize].distance(x[h.q as usize]));
-            seam_bend.push(Link {
-                a: h.p,
-                b: h.q,
-                rest,
-            });
         }
         self.bend = bend;
-        self.seam_bend = seam_bend;
+        self.seam_hinges = seam_hinges;
         self.topology_version += 1;
     }
 }
@@ -690,7 +662,9 @@ mod tests {
         assert_eq!(c.topology_version(), 1);
         // The two triangles now share the welded edge, so a seam hinge spans it.
         assert_eq!(c.bend_link_count(), 0);
-        assert_eq!(c.seam_bend_links().count(), 1);
+        let hinges: Vec<_> = c.seam_hinges().collect();
+        assert_eq!(hinges.len(), 1);
+        assert_eq!(&hinges[0][..2], &[0, 1], "about the welded edge");
         assert_eq!(c.seam_edges(), &[(0, 1)], "the welded edge is the seam");
     }
 
@@ -785,11 +759,9 @@ mod tests {
         c.weld_stitches();
         assert_eq!(c.stretch_links().count(), 7, "the shared edge once");
         assert_eq!(c.shear_links().count(), 4, "each cell's two diagonals");
-        // The one hinge across the welded (structural) edge, resting flat: 20 cm apart.
-        let bend: Vec<_> = c.seam_bend_links().collect();
-        assert_eq!(bend.len(), 1);
+        // The one hinge across the welded (structural) edge is held flat.
+        assert_eq!(c.seam_hinge_count(), 1);
         assert_eq!(c.bend_link_count(), 0);
-        assert!((bend[0].2 - 0.2).abs() < 1e-9 || (bend[0].2 - 0.1f64.hypot(0.2)).abs() < 1e-9);
     }
 
     #[test]
@@ -812,9 +784,10 @@ mod tests {
         b.stitch((p, 2), (q, 2));
         let mut c = b.build();
         c.weld_stitches();
-        let rests: Vec<f64> = c.seam_bend_links().map(|(_, _, r)| r).collect();
-        assert_eq!(rests.len(), 1);
-        assert!((rests[0] - 0.2).abs() < 1e-9, "unfolded: {}", rests[0]);
+        // One hinge, about the welded leg, between the two far corners; no distance link.
+        let hinges: Vec<_> = c.seam_hinges().collect();
+        assert_eq!(hinges, vec![[0, 2, 1, 4]]);
+        assert_eq!(c.bend_link_count(), 0);
     }
 
     #[test]
