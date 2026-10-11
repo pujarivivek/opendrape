@@ -183,7 +183,22 @@ mean angle between the triangles either side of a seam edge; crossings are the c
 | **0.01 (chosen)** | 14.5° | 39 | 7.5° | 4.5° |
 | 0.001 | 13.6° | 41 | 6.4° | |
 
-The skirts' seams now read 4–7°, the curvature of the body under them. The T-shirt's 14°
-is mostly the set-in sleeves, where a seam really does turn a corner. A stiffer seam presses
-the cap fold harder, so its crossings rise (the gate is 100; a sleeve through the bodice
-would be hundreds).
+The skirts' seams then read 4–7°, the T-shirt's 14°, but the user's next picture still showed a
+ridge, and `seam_probe` showed why: the hinge links across the seam were up to 10 % *longer*
+than their flat rest. A distance link is also a strut along the fabric; on a skirt stretched
+over the hips its rest is shorter than the stretched fabric, and the cheapest way to satisfy
+it is to buckle the seam into a ridge. So the hinges across welded seams are now held at a
+flat angle by a constraint on the angle itself (`solve_hinges`: the triangles' normals over
+the opposite vertices' heights, shared back to the edge's ends), with no pull along the
+fabric. `Params::seam_compliance` is 100 in that constraint's units (about 80 % of the angle
+removed per pass on 12 mm cloth).
+
+| Scene | Preset | ms/frame (14 threads) | Strain p99 | Crossings | Seam crease |
+|---|---|---|---|---|---|
+| skirt (demo grid) | — | 16.9 | 7.6 % | 0 | 1.0° (was 8.9°) |
+| drafted-skirt | Normal | 8.6 | 4.0 % | 0 | 0.3° (was 7.5°) |
+| drafted-tshirt | Normal | 10.2 | 2.9 % | 9 | 1.3° (was 14.5°) |
+
+`seam_probe` on the drafted skirt: the hinges across the seam read 0.1° at the median and
+2.8° at worst; on the T-shirt 0.2° median, with only the cap fold above a few degrees. The
+seam no longer presses the cap fold (9 crossings), and the cost is unchanged.
